@@ -357,8 +357,10 @@ struct MainTVTabView: View {
     @State private var searchVM = SearchViewModel()
     @State private var selectedTab: AppSection = .home
     @Environment(\.innerTubeAPI) private var api
+    @Environment(BrowseViewModel.self) private var browseVM
 
     var body: some View {
+        @Bindable var browseVM = browseVM
         TabView(selection: $selectedTab) {
             ForEach(AppSection.allCases) { section in
                 NavigationStack { section.destination(api: api) }
@@ -371,6 +373,12 @@ struct MainTVTabView: View {
         .environment(searchVM)
         .onReceive(NotificationCenter.default.publisher(for: .activeChannelDidChange)) { _ in
             selectedTab = .home
+        }
+        // Deep link: a video named from outside the browse UI (today only the
+        // `--uitesting-deeplink-video=` launch argument, see SmartTubeTVApp) opens
+        // straight in the player.
+        .fullScreenCover(item: $browseVM.deepLinkedVideo) { video in
+            PlayerScreen(video: video, api: api)
         }
     }
 }

@@ -66,7 +66,7 @@ struct RSSFeedsView: View {
         }
         #if os(tvOS)
         .navigationDestination(item: $selectedVideo) { video in
-            PlayerView(video: video, api: api)
+            PlayerScreen(video: video, api: api)
         }
         #endif
         .task {

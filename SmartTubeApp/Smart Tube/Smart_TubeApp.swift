@@ -47,6 +47,18 @@ struct SmartTubeTVApp: App {
         #endif
     }
 
+    /// Handles `--uitesting-deeplink-video=<id>`: opens that video in the player as soon
+    /// as the UI is up, so tvOS UI tests (and manual checks) can reach the player without
+    /// depending on what the Home feed happens to contain. Mirrors the iOS app's handling
+    /// of the same argument in `AppEntry`.
+    private func openDeepLinkedVideoFromLaunchArguments() {
+        let prefix = "--uitesting-deeplink-video="
+        guard let argument = ProcessInfo.processInfo.arguments.first(where: { $0.hasPrefix(prefix) }) else { return }
+        let videoID = String(argument.dropFirst(prefix.count))
+        guard !videoID.isEmpty else { return }
+        browseViewModel.deepLinkedVideo = Video(id: videoID, title: videoID, channelTitle: "")
+    }
+
     var body: some Scene {
         WindowGroup {
             RootView()
@@ -72,6 +84,7 @@ struct SmartTubeTVApp: App {
                 .onChange(of: settingsStore.settings.historyState, initial: true) { _, newState in
                     browseViewModel.updateHistoryEnabled(newState == .enabled)
                 }
+                .task { openDeepLinkedVideoFromLaunchArguments() }
         }
     }
 }

@@ -52,7 +52,7 @@ public struct SearchView: View {
         #if os(tvOS)
         .toolbar(.hidden, for: .navigationBar)
         .navigationDestination(item: $selectedVideo) { video in
-            PlayerView(video: video, api: api)
+            PlayerScreen(video: video, api: api)
         }
         #elseif os(iOS)
         .toolbar(.hidden, for: .navigationBar)

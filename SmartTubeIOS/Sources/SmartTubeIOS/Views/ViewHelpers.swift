@@ -140,6 +140,18 @@ enum AppSymbol {
     static let nextTrack = "forward.end.fill"
     static let previousChapter = "backward.end.alt.fill"
     static let nextChapter = "forward.end.alt.fill"
+    static let play = "play.fill"
+    static let pause = "pause.fill"
+    static let replay = "arrow.counterclockwise"
+    static let captions = "captions.bubble"
+    /// `gobackward.N` / `goforward.N` exist only for these step sizes; others get the plain arrow.
+    private static let seekSymbolSteps: Set<Int> = [5, 10, 15, 30, 45, 60, 75, 90]
+    static func seekBackward(_ seconds: Int) -> String {
+        seekSymbolSteps.contains(seconds) ? "gobackward.\(seconds)" : "gobackward"
+    }
+    static func seekForward(_ seconds: Int) -> String {
+        seekSymbolSteps.contains(seconds) ? "goforward.\(seconds)" : "goforward"
+    }
     static let thumbsUp = "hand.thumbsup"
     static let thumbsDown = "hand.thumbsdown"
 

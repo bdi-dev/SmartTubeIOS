@@ -65,7 +65,7 @@ public struct LibraryView: View {
         #endif
         #if !os(iOS)
         .navigationDestination(item: $selectedVideo) { video in
-            PlayerView(video: video, api: api)
+            PlayerScreen(video: video, api: api)
         }
         #endif
         .navigationDestination(item: $selectedPlaylist) { stub in

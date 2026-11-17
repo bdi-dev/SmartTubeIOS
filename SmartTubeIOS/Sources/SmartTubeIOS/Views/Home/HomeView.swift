@@ -95,7 +95,7 @@ public struct HomeView: View {
                     PlayerView(video: video, api: api)
                 }
                 #else
-                PlayerView(video: video, api: api)
+                PlayerScreen(video: video, api: api)
                 #endif
             }
                 #endif

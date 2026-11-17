@@ -72,7 +72,7 @@ public struct PlaylistView: View {
         }
         #if os(tvOS)
         .navigationDestination(item: $selectedVideo) { video in
-            PlayerView(video: video, api: api)
+            PlayerScreen(video: video, api: api)
         }
         #endif
         .navigationDestination(item: $channelDestination) { dest in
@@ -180,6 +180,9 @@ public struct PlaylistView: View {
                 }
                 .padding(.horizontal)
                 .padding(.vertical, 8)
+                // Same focus section VideoGridSection uses: moving down from the header's
+                // buttons lands in the grid even when no card sits directly below them.
+                .focusSection()
                 #else
                 LazyVGrid(
                     columns: videoGridColumns(store.settings, landscape: isLandscapeLayout),

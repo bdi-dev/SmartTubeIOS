@@ -30,6 +30,12 @@ let package = Package(
             url: "https://github.com/firebase/firebase-ios-sdk",
             from: "12.0.0"
         ),
+        // libmpv (FFmpeg + libplacebo/MoltenVK) for the opt-in tvOS player engine.
+        // LGPL-3.0 build; linked only into the tvOS slice (see the target dependency below).
+        .package(
+            url: "https://github.com/mpvkit/MPVKit.git",
+            from: "1.0.0"
+        ),
     ],
     targets: [
         // MARK: Extractor – InnerTube API + stream models (no dependencies, no app state)
@@ -52,6 +58,7 @@ let package = Package(
             dependencies: [
                 "SmartTubeIOSCore",
                 .product(name: "FirebaseCrashlytics", package: "firebase-ios-sdk"),
+                .product(name: "MPVKit", package: "MPVKit", condition: .when(platforms: [.tvOS])),
             ],
             path: "Sources/SmartTubeIOS",
             resources: [

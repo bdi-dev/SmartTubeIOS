@@ -47,7 +47,7 @@ public struct SettingsView: View {
             sponsorBlockSection
             deArrowSection
             parentalControlsSection
-            #if os(macOS)
+            #if os(macOS) || os(tvOS)
             experimentalSection
             #endif
             aboutSection
@@ -428,6 +428,24 @@ public struct SettingsView: View {
         } footer: {
             Text(
                 "Uses YouTube's official embedded player instead of the direct stream pipeline. Quality selection is unavailable. Ads will play. Useful for videos that refuse to play via the standard path."
+            )
+        }
+    }
+    #endif
+
+    // MARK: - Experimental (tvOS)
+
+    #if os(tvOS)
+    private var experimentalSection: some View {
+        @Bindable var store = store
+        return Section {
+            Toggle("mpv Player", isOn: $store.settings.useMPVPlayerOnTV)
+                .accessibilityIdentifier("settings.useMPVPlayerOnTVToggle")
+        } header: {
+            Text("Experimental")
+        } footer: {
+            Text(
+                "Plays through mpv instead of the system player: opens YouTube's separate video and audio streams directly, including VP9. Chapters, the queue, autoplay and audio-track selection are not available in this player yet. Videos mpv cannot open can be played with the standard player."
             )
         }
     }

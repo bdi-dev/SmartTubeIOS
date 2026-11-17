@@ -51,7 +51,7 @@ public struct ChannelView: View {
         }
         #if !os(iOS) && !os(macOS)
         .fullScreenCover(item: $selectedVideo) { video in
-            PlayerView(video: video, api: api)
+            PlayerScreen(video: video, api: api)
         }
         #endif
         #if os(macOS)
@@ -205,6 +205,9 @@ public struct ChannelView: View {
                     }
                 }
                 .padding()
+                // Same focus section VideoGridSection uses: moving down from the header's
+                // buttons lands in the grid even when no card sits directly below them.
+                .focusSection()
                 #else
                 LazyVGrid(
                     columns: videoGridColumns(store.settings, landscape: isLandscapeLayout),

@@ -176,6 +176,11 @@ public struct AppSettings: Codable {
     /// instead of the AVPlayer-based pipeline. Ads will play. Quality control is unavailable.
     /// Opt-in experiment — has no effect on tvOS.
     public var useTOSPlayerOnMac: Bool
+    /// tvOS only, opt-in: play through libmpv (FFmpeg demuxing/decoding, libplacebo
+    /// rendering) instead of AVPlayer. mpv opens YouTube's adaptive video + audio streams
+    /// directly — including WebM/VP9 — so quality is not limited to what AVPlayer can
+    /// compose. A video that fails to open in mpv falls back to the AVPlayer path.
+    public var useMPVPlayerOnTV: Bool
 
     // Note: there is no `useTOSPlayerOnIOS` setting. The TOS-compliant player is
     // always used on iOS (PlayerRouter.open(), gated #if os(iOS)) — see
@@ -318,6 +323,7 @@ public struct AppSettings: Codable {
         #else
         useTOSPlayerOnMac = false
         #endif
+        useMPVPlayerOnTV = false
         settingsVersion = 1
     }
 }
@@ -391,6 +397,7 @@ extension AppSettings {
         case preferH264
         case iCloudSyncEnabled
         case useTOSPlayerOnMac
+        case useMPVPlayerOnTV
     }
 
     public init(from decoder: Decoder) throws {
@@ -458,5 +465,6 @@ extension AppSettings {
         preferH264 = c.safeDecode(Bool.self, forKey: .preferH264, default: d.preferH264)
         iCloudSyncEnabled = c.safeDecode(Bool.self, forKey: .iCloudSyncEnabled, default: d.iCloudSyncEnabled)
         useTOSPlayerOnMac = c.safeDecode(Bool.self, forKey: .useTOSPlayerOnMac, default: d.useTOSPlayerOnMac)
+        useMPVPlayerOnTV = c.safeDecode(Bool.self, forKey: .useMPVPlayerOnTV, default: d.useMPVPlayerOnTV)
     }
 }
