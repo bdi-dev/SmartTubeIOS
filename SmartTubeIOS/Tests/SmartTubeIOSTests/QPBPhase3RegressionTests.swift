@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 
+@testable import InnerTubeKit
 @testable import SmartTubeIOSCore
 
 // MARK: - QPB Phase 3 Regression Tests

@@ -4,6 +4,7 @@ import ImageIO
 import Testing
 import UniformTypeIdentifiers
 
+@testable import InnerTubeKit
 @testable import SmartTubeIOSCore
 
 // MARK: - HomeWidgetSnapshotTests (task #353)

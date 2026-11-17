@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 
+@testable import InnerTubeKit
 @testable import SmartTubeIOSCore
 
 // MARK: - Shorts Vertical Thumbnail Misclassification Tests

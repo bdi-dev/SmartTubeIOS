@@ -2,6 +2,7 @@
 import Foundation
 import Testing
 @testable import SmartTubeIOS
+@testable import InnerTubeKit
 @testable import SmartTubeIOSCore
 
 // MARK: - TOSPlaybackEndAutoplayTests

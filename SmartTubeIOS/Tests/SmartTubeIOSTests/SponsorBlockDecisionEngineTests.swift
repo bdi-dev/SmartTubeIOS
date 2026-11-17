@@ -1,5 +1,6 @@
 import Testing
 
+@testable import InnerTubeKit
 @testable import SmartTubeIOSCore
 
 // MARK: - SponsorBlockDecisionEngine unit tests

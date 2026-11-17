@@ -10,7 +10,14 @@ let package = Package(
         .tvOS(.v17),
     ],
     products: [
-        // Cross-platform core: models + InnerTube/SponsorBlock services (Foundation only).
+        // Stream extractor: InnerTube API, client profiles, PoToken/BotGuard, HLS manifest
+        // parsing and the wire models they return. No app state, no UI, no stores — the one
+        // module to patch when YouTube changes its API.
+        .library(
+            name: "InnerTubeKit",
+            targets: ["InnerTubeKit"]
+        ),
+        // Cross-platform core: view models, stores, SponsorBlock services. Re-exports InnerTubeKit.
         .library(
             name: "SmartTubeIOSCore",
             targets: ["SmartTubeIOSCore"]
@@ -23,13 +30,19 @@ let package = Package(
             url: "https://github.com/firebase/firebase-ios-sdk",
             from: "12.0.0"
         ),
-
     ],
     targets: [
+        // MARK: Extractor – InnerTube API + stream models (no dependencies, no app state)
+        .target(
+            name: "InnerTubeKit",
+            dependencies: [],
+            path: "Sources/InnerTubeKit",
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
         // MARK: Core – iOS, macOS (Foundation only)
         .target(
             name: "SmartTubeIOSCore",
-            dependencies: [],
+            dependencies: ["InnerTubeKit"],
             path: "Sources/SmartTubeIOSCore",
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
@@ -51,7 +64,7 @@ let package = Package(
         // MARK: Tests
         .testTarget(
             name: "SmartTubeIOSTests",
-            dependencies: ["SmartTubeIOSCore", "SmartTubeIOS"],
+            dependencies: ["InnerTubeKit", "SmartTubeIOSCore", "SmartTubeIOS"],
             path: "Tests/SmartTubeIOSTests",
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),

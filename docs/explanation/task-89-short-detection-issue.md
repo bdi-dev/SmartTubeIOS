@@ -79,7 +79,7 @@ if isShort {
 ```
 
 ## Files to Modify
-1. [InnerTubeAPI+VideoRenderers.swift](../../SmartTubeIOS/Sources/SmartTubeIOSCore/InnerTubeAPI+VideoRenderers.swift) — parseVideoRenderer function
+1. [InnerTubeAPI+VideoRenderers.swift](../../SmartTubeIOS/Sources/InnerTubeKit/InnerTubeAPI+VideoRenderers.swift) — parseVideoRenderer function
 2. [SmartTubeIOSTests.swift](../../SmartTubeIOS/Tests/SmartTubeIOSTests/SmartTubeIOSTests.swift) — add regression test case
 
 ## Why This Works

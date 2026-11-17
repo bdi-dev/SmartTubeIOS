@@ -3,8 +3,8 @@
 # SmartTubeIOS Home Feed & Shorts Architecture
 
 ## Key Files
-- **Core**: [SmartTubeIOSCore/InnerTubeAPI.swift](../../SmartTubeIOS/Sources/SmartTubeIOSCore/InnerTubeAPI.swift) - API layer & parsing
-- **Core Models**: [SmartTubeIOSCore/VideoGroup.swift](../../SmartTubeIOS/Sources/SmartTubeIOSCore/VideoGroup.swift), [SmartTubeIOSCore/Video.swift](../../SmartTubeIOS/Sources/SmartTubeIOSCore/Video.swift)
+- **Core**: [InnerTubeKit/InnerTubeAPI.swift](../../SmartTubeIOS/Sources/InnerTubeKit/InnerTubeAPI.swift) - API layer & parsing
+- **Core Models**: [InnerTubeKit/VideoGroup.swift](../../SmartTubeIOS/Sources/InnerTubeKit/VideoGroup.swift), [InnerTubeKit/Video.swift](../../SmartTubeIOS/Sources/InnerTubeKit/Video.swift)
 - **ViewModels**: [HomeViewModel.swift](../../SmartTubeIOS/Sources/SmartTubeIOSCore/HomeViewModel.swift), [BrowseViewModel.swift](../../SmartTubeIOS/Sources/SmartTubeIOSCore/BrowseViewModel.swift)
 - **Views**: [HomeView.swift](../../SmartTubeIOS/Sources/SmartTubeIOS/Views/Home/HomeView.swift), [BrowseView.swift](../../SmartTubeIOS/Sources/SmartTubeIOS/Views/Browse/BrowseView.swift), [VideoCardView.swift](../../SmartTubeIOS/Sources/SmartTubeIOS/Views/Browse/VideoCardView.swift)
 

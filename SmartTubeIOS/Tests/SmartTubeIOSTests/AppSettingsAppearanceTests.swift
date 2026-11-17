@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 
+@testable import InnerTubeKit
 @testable import SmartTubeIOSCore
 
 @Suite("AppSettings accent color and grid columns")

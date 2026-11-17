@@ -894,16 +894,16 @@ extension InnerTubeAPI {
 
     /// Account-bound session params YouTube mints into the `playbackTracking` URLs.
     /// Without all three the stats server silently drops the ping (Android bails out too).
-    struct TrackingSession: Sendable {
-        let eventId: String
-        let visitorMonitoring: String
-        let ofParam: String
-        let playlistId: String?
+    package struct TrackingSession: Sendable {
+        package let eventId: String
+        package let visitorMonitoring: String
+        package let ofParam: String
+        package let playlistId: String?
     }
 
     /// Extracts `ei`/`vm`/`of`/`plid` from the watchtime tracking URL.
     /// Mirrors Android's `VideoInfo.parseTrackingParams`.
-    static func trackingSession(from urls: PlaybackTrackingURLs?) -> TrackingSession? {
+    package static func trackingSession(from urls: PlaybackTrackingURLs?) -> TrackingSession? {
         guard let urls,
             let items = URLComponents(url: urls.watchtimeURL, resolvingAgainstBaseURL: false)?.queryItems
         else { return nil }

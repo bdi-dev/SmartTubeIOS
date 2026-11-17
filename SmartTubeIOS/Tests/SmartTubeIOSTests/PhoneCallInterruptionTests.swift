@@ -2,6 +2,7 @@ import AVFoundation
 import Foundation
 import Testing
 
+@testable import InnerTubeKit
 @testable import SmartTubeIOS
 @testable import SmartTubeIOSCore
 

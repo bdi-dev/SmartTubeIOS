@@ -30,8 +30,8 @@ across 192 files**, all captured in `.swiftlint.baseline`. Largest contributors:
 |---|---|
 | 2,935 | `SmartTubeIOS/Sources/SmartTubeIOS/ViewModels/PlaybackViewModel+Fallback.swift` |
 | 1,486 | `SmartTubeIOS/Sources/SmartTubeIOS/ViewModels/PlaybackViewModel+Loading.swift` |
-| 1,303 | `SmartTubeIOS/Sources/SmartTubeIOSCore/BotGuardClient.swift` |
-| 1,233 | `SmartTubeIOS/Sources/SmartTubeIOSCore/InnerTubeAPI+VideoRenderers.swift` |
+| 1,303 | `SmartTubeIOS/Sources/InnerTubeKit/BotGuardClient.swift` |
+| 1,233 | `SmartTubeIOS/Sources/InnerTubeKit/InnerTubeAPI+VideoRenderers.swift` |
 | 1,001 | `SmartTubeIOS/Sources/SmartTubeIOS/Views/Player/TOSPlayerViewModel.swift` |
 
 **Other metrics:**
