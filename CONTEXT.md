@@ -23,13 +23,19 @@ Naming a new module after a concept not listed here requires adding the term in 
   default on iOS since ADR-0006. "TOS" = terms-of-service-compliant (YouTube's own player, not a
   stream-extraction pipeline).
 - **AVPlayer path** — the non-TOS playback path: resolve a raw stream URL, hand it to AVPlayer.
-  Still used on tvOS and for some iOS Shorts cases.
+  Still the default on tvOS and used for some iOS Shorts cases.
 - **Shorts embed player** — the WKWebView/iframe pipeline specifically for Shorts
   (`ShortsEmbedPlayerViewModel`), distinct from the TOS player though architecturally similar.
 - **Playback session** — planned (WS5, not yet implemented): one interface shared by AVPlayer,
   TOS, and Shorts players so SponsorBlock/watch-history/Now-Playing wiring isn't tripled.
-- **Player engine** — the underlying playback technology (AVPlayer vs. WKWebView/IFrame) as
+- **Player engine** — the underlying playback technology (AVPlayer, WKWebView/IFrame, or mpv) as
   distinct from the view model that drives it.
+- **mpv engine** — the opt-in libmpv-based player engine on tvOS (`MPVEngine`,
+  `MPVPlayerViewModel`, ADR-0011). Opens adaptive, WebM/VP9 and HLS-variant streams directly.
+- **Stream plan** — one concrete thing the mpv engine can open for a video (`MPVStreamPlan`): a
+  video + audio URL pair, an HLS master, or a muxed stream. `MPVStreamSelector` ranks them.
+- **Stream extractor** — everything that talks to YouTube to turn a video ID into metadata and
+  stream URLs; lives in the `InnerTubeKit` target (ADR-0010). *Rejected*: "API layer", "core".
 - **Queue** — the ordered list of upcoming videos (`CurrentQueueStore`), independent of any one
   feed.
 - **Watch state / Watch history / Watchtime reporting** — *watch state* is per-video playback

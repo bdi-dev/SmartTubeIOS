@@ -1,8 +1,10 @@
 # SmartTube — agent guide
 
 Native Swift/SwiftUI YouTube client for iOS/iPadOS (17+), macOS Catalyst (14+) and tvOS (17+).
-Package `SmartTubeIOS/` (targets `SmartTubeIOSCore` = Foundation-only models/API/stores,
-`SmartTubeIOS` = SwiftUI views, view models, services) + Xcode project `SmartTubeApp/`
+Package `SmartTubeIOS/` (targets `InnerTubeKit` = the stream extractor: InnerTube API, client
+profiles, PoToken, HLS parsing, wire models — no app state; `SmartTubeIOSCore` = Foundation-only
+view models/stores/settings, re-exports `InnerTubeKit`; `SmartTubeIOS` = SwiftUI views, view
+models, services) + Xcode project `SmartTubeApp/`
 (iOS+Catalyst app, tvOS app, Share/Safari extensions, Download widget, UI-test targets).
 Architecture map: docs/architecture.md · Glossary: CONTEXT.md · Decisions: docs/adr/ · Plan: docs/modernization/
 
@@ -29,6 +31,8 @@ Architecture map: docs/architecture.md · Glossary: CONTEXT.md · Decisions: doc
 - Authenticated InnerTube calls use the TVHTML5 client on youtubei.googleapis.com with a Bearer token and no API key; the WEB client rejects Bearer tokens. Never call `/oauth2/v3/userinfo` for account info (the TV OAuth client isn't Data-API-v3-enabled) — use `account/accounts` with the TVHTML5 context instead.
 - The 16 GB build Mac stalls with > 3 parallel simulator clones; `just` hardcodes 3.
 - Playback fallback code (`PlaybackViewModel+Fallback.swift`) is under active decomposition (WS4). Do not add branches there; add a `StreamSource`.
+- YouTube-side fixes go in `Sources/InnerTubeKit/` (ADR-0010). It must not import `SmartTubeIOSCore`; expose what Core needs as `package`. Tests touching its internals need `@testable import InnerTubeKit`.
+- tvOS has a second, opt-in player engine: mpv (`Views/Player/MPV/`, ADR-0011), routed by `PlayerScreen`. It is tvOS-only (`#if os(tvOS)`, MPVKit links only there) and does not use `PlaybackViewModel`. Launch with `--uitesting-enable-mpv-player --uitesting-deeplink-video=<id>` to open a video straight in it.
 - `swift test` (and `just test-unit`) currently fails to build: `TOSPlayerView.swift`/`TOSPlayerViewModel+WebBridge.swift` have a native-macOS-only compile break (missing `onWindowReady` param, `NSImage.pngData()` doesn't exist) — pre-existing, tracked in `docs/modernization/workstreams/WS1-entry-point-and-gates.md` Discovered. Fix is WS4/WS5 scope.
 
 ## Where things are

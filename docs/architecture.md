@@ -17,7 +17,8 @@ graph TD
     end
     subgraph Pkg["SmartTubeIOS/ (Swift Package)"]
         UI["SmartTubeIOS<br/>Views, ViewModels, Services"]
-        Core["SmartTubeIOSCore<br/>Models, InnerTube API, Stores, Decision engines"]
+        Core["SmartTubeIOSCore<br/>View models, Stores, Settings, Decision engines"]
+        Kit["InnerTubeKit<br/>InnerTube API, client profiles, PoToken, HLS parsing, wire models"]
     end
     subgraph Ext["External systems"]
         InnerTube["InnerTube endpoints<br/>(youtubei.googleapis.com, www.youtube.com)"]
@@ -33,7 +34,8 @@ graph TD
     Safari -.->|"re-implements YouTubeLinkHandler.videoID in JS"| Core
     Widget --> Core
     UI --> Core
-    Core --> InnerTube
+    Core --> Kit
+    Kit --> InnerTube
     Core --> SponsorBlock
     UI --> Firebase
     Core --> iCloudKVS
@@ -41,17 +43,20 @@ graph TD
     WebPlayer --> InnerTube
 ```
 
-Dependency direction: `SmartTubeIOSCore` must never import `SmartTubeIOS`, SwiftUI, UIKit, AVFoundation, or WebKit (declared in `Package.swift`, **not currently enforced** — see `docs/modernization/AUDIT.md` §2.1). App targets depend on the package; the package never depends on an app target.
+Dependency direction: `InnerTubeKit` depends on nothing and must never import `SmartTubeIOSCore`
+(enforced — it is a separate target, ADR-0010). `SmartTubeIOSCore` must never import `SmartTubeIOS`, SwiftUI, UIKit, AVFoundation, or WebKit (declared in `Package.swift`, **not currently enforced** — see `docs/modernization/AUDIT.md` §2.1). App targets depend on the package; the package never depends on an app target.
 
 ## Modules
 
 | Module / area | Directory | Owner workstream | Notes |
 |---|---|---|---|
-| `SmartTubeIOSCore` | `SmartTubeIOS/Sources/SmartTubeIOSCore/` | WS6 (core hardening), WS3 (tests) | Should be Foundation-only; currently imports SwiftUI/AVFoundation/JavaScriptCore/ActivityKit/Network too |
+| `InnerTubeKit` (stream extractor) | `SmartTubeIOS/Sources/InnerTubeKit/` | WS6, WS8 | InnerTube API, client profiles, PoToken/BotGuard, HLS parsers, wire models. No app state. ADR-0010 |
+| `SmartTubeIOSCore` | `SmartTubeIOS/Sources/SmartTubeIOSCore/` | WS6 (core hardening), WS3 (tests) | Re-exports `InnerTubeKit`. Should be Foundation-only; currently imports SwiftUI/AVFoundation/ActivityKit too |
 | `SmartTubeIOS` (views/view models/services) | `SmartTubeIOS/Sources/SmartTubeIOS/` | WS7 (UI/composition), WS4/WS5 (player) | |
 | Playback (`PlaybackViewModel` + AVPlayer path) | `SmartTubeIOS/Sources/SmartTubeIOS/ViewModels/PlaybackViewModel*.swift` | WS4 (seams/pipeline), WS5 (session) | The critical path — see below |
 | TOS player (WKWebView embed) | `SmartTubeIOS/Sources/SmartTubeIOS/Views/Player/TOSPlayer*.swift` | WS5 | Default player on iOS (ADR pending, WS2-T2.3) |
 | Shorts embed player | `SmartTubeIOS/Sources/SmartTubeIOS/Views/Player/ShortsEmbed*.swift` | WS5 | |
+| mpv engine (tvOS, opt-in) | `SmartTubeIOS/Sources/SmartTubeIOS/Views/Player/MPV/`, `SmartTubeIOSCore/MPVStreamSelector.swift` | WS5 | libmpv via MPVKit, tvOS slice only. Routed by `PlayerScreen`. ADR-0011 |
 | Stream resolution (JS extractors, descramblers) | `SmartTubeIOS/Sources/SmartTubeIOS/Services/YouTube*.swift`, `BotGuardWebViewRunner.swift` | WS4 | New `StreamResolver` target planned (WS8) |
 | App targets, composition roots | `SmartTubeApp/Sources/`, `SmartTubeApp/Smart Tube/` | WS7, WS1 | |
 | Tests | `SmartTubeIOS/Tests/`, `SmartTubeApp/UITests/` | WS3 | |
@@ -70,6 +75,13 @@ The pipeline as it exists today (**legacy cascade** — pre-WS4; WS4 replaces th
    - **AVPlayer branch**: `PlayerStateStore` → `PlayerView.onAppear` → `PlaybackViewModel.load` → `loadAsync` → a primary iOS-client HLS attempt → `exhaustiveRetry` if that fails.
 3. `exhaustiveRetry` (`PlaybackViewModel+Fallback.swift:88-528`, ~440 lines) tries stream methods in a hand-written, ordered cascade — roughly 20 branches across 13 named stream methods (`StreamMethodProbeSupport.knownMethods`) plus 6 unnamed ones (proxy-HLS, DASH composition, muxed itag-18, yt-dlp-style, n-descrambled, embed). One race of three paths runs concurrently; the 7-InnerTube-client list is written twice in different shapes (a `TaskGroup` and a serial loop) that must be kept in sync by hand.
 4. Whichever path succeeds calls into the repeated-six-times `.readyToPlay` bookkeeping ritual (duration refresh, seek restore, load audio tracks, clear loading state, record timing) — one of the concrete duplication problems WS4 targets first.
+
+On tvOS and macOS the player is presented straight from a view through `PlayerScreen`, the
+counterpart of `PlayerRouter`. On tvOS it also picks the engine: with
+`AppSettings.useMPVPlayerOnTV` on, `MPVPlayerView` asks a short list of client profiles for a
+`PlayerInfo`, lets `MPVStreamSelector` rank every direct stream and HLS variant by what the device
+decodes smoothly, and hands the best `MPVStreamPlan` to libmpv — none of the cascade above is
+involved (ADR-0011).
 
 Three players — AVPlayer, TOS, Shorts embed — each independently wire SponsorBlock, watch-history and Now Playing rather than sharing one interface; WS5 introduces `PlaybackSession` to unify them once WS4's seams exist.
 
