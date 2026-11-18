@@ -183,7 +183,8 @@ final class MPVEngine: @unchecked Sendable {
     ///   - startAt: Position to start from (resume point or quality-switch position).
     ///   - userAgent: Sent on every media request so it matches the client profile that
     ///     signed the stream URLs.
-    func load(_ plan: MPVStreamPlan, startAt: TimeInterval?, userAgent: String?) {
+    ///   - audioOverride: Audio stream to use instead of the plan's own.
+    func load(_ plan: MPVStreamPlan, startAt: TimeInterval?, userAgent: String?, audioOverride: URL? = nil) {
         guard isAlive else { return }
         if let userAgent {
             setString("user-agent", userAgent)
@@ -199,6 +200,9 @@ final class MPVEngine: @unchecked Sendable {
         let primary: URL
         switch plan.source {
         case .adaptive(let video, let audio):
+            // A chosen language replaces the plan's audio only for direct files; an HLS
+            // variant's audio is the rendition its master playlist paired with it.
+            let audio = (plan.isHLS ? nil : audioOverride) ?? audio
             command(["change-list", "audio-files", "append", audio.absoluteString])
             primary = video
         case .hls(let url), .muxed(let url):

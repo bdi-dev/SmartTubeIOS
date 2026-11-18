@@ -1,4 +1,6 @@
 #if os(tvOS)
+import AVKit
+import CoreMedia
 import Foundation
 import Observation
 import SmartTubeIOSCore
@@ -63,6 +65,27 @@ final class MPVPlayerViewModel {
 
     private(set) var captionTracks: [CaptionTrack] = []
     private(set) var selectedCaption: CaptionTrack?
+
+    // Chapters, up-next and audio languages
+    private(set) var chapters: [Chapter] = []
+    private(set) var relatedVideos: [Video] = []
+    /// Audio languages of a multi-audio upload; empty when there is only one track.
+    private(set) var audioOptions: [MPVStreamSelector.AudioOption] = []
+    /// The language the viewer chose; nil plays the original.
+    private(set) var selectedAudio: MPVStreamSelector.AudioOption?
+    private(set) var hasQueueNext = false
+    var canPlayNext: Bool { hasQueueNext || !relatedVideos.isEmpty }
+    var canPlayPrevious: Bool { (queueIndex ?? 0) > 0 }
+    /// The chapter containing the playhead (or the scrub position while scrubbing).
+    var currentChapter: Chapter? {
+        let time = (isScrubbing ? scrubTime : currentTime) + 0.5
+        return chapters.last { $0.startTime <= time }
+    }
+    /// Set by the view: switch the player to another video (new view model, new engine).
+    var onPlayVideo: ((Video) -> Void)?
+    /// Position in the Current Queue when this video was started from it. Captured at
+    /// init because `video` is later replaced by the player response's copy, which has none.
+    private let queueIndex: Int?
     private(set) var playbackSpeed: Double
 
     private(set) var controlsVisible = false
@@ -115,6 +138,7 @@ final class MPVPlayerViewModel {
 
     init(video: Video, api: InnerTubeAPI, settings: AppSettings, isSignedIn: Bool) {
         self.video = video
+        self.queueIndex = video.playlistId == CurrentQueueStore.playlistID ? video.playlistIndex : nil
         self.api = api
         self.settings = settings
         self.isSignedIn = isSignedIn
@@ -160,6 +184,7 @@ final class MPVPlayerViewModel {
             await self.openNextCandidate()
         }
         Task { [weak self] in await self?.loadSponsorSegments() }
+        Task { [weak self] in await self?.loadNextInfo() }
     }
 
     /// Retries from the first client profile after a total failure.
@@ -215,7 +240,7 @@ final class MPVPlayerViewModel {
         mpvPlayerLog.notice(
             "open \(self.video.id) via \(self.activeClient?.rawValue ?? "?"): \(plan.label) startAt=\(Int(startAt ?? 0))s"
         )
-        engine.load(plan, startAt: startAt, userAgent: activeClient?.userAgent)
+        engine.load(plan, startAt: startAt, userAgent: activeClient?.userAgent, audioOverride: selectedAudio?.url)
         engine.setSpeed(playbackSpeed)
     }
 
@@ -252,6 +277,7 @@ final class MPVPlayerViewModel {
         if !info.video.title.isEmpty { video = info.video }
         if duration <= 0, let known = info.video.duration { duration = known }
         if captionTracks.isEmpty { captionTracks = info.captionTracks }
+        if audioOptions.isEmpty { audioOptions = MPVStreamSelector.audioOptions(in: info.formats) }
         if !tracker.hasTrackingSession { tracker.setTrackingURLs(info.trackingURLs) }
     }
 
@@ -293,6 +319,7 @@ final class MPVPlayerViewModel {
             if !decoderVerified, hasStartedPlayback, !isLoading, let decoder = engine?.currentHardwareDecoder() {
                 decoderVerified = true
                 hardwareDecoder = decoder
+                applyDisplayCriteria()
                 reconsiderPlanIfSoftwareDecoding(decoder: decoder)
             }
 
@@ -385,6 +412,133 @@ final class MPVPlayerViewModel {
         engine?.setPaused(true)
         showControls(autoHide: false)
         saveProgress()
+        Task { [weak self] in
+            guard let self, let next = await self.nextVideo(automatic: true) else { return }
+            mpvPlayerLog.notice("autoplay → \(next.id)")
+            self.play(next)
+        }
+    }
+
+    // MARK: - Up next, chapters, audio
+
+    private func loadNextInfo() async {
+        do {
+            let info = try await api.fetchNextInfo(videoId: video.id)
+            chapters = info.chapters
+            relatedVideos = info.relatedVideos.filter { $0.id != video.id }
+            mpvPlayerLog.notice("next info: \(self.relatedVideos.count) related, \(self.chapters.count) chapters")
+        } catch {
+            mpvPlayerLog.notice("next info failed: \(error.localizedDescription)")
+        }
+        if let index = queueIndex {
+            hasQueueNext = await CurrentQueueStore.shared.videoAt(index: index + 1) != nil
+        }
+    }
+
+    /// The video that follows this one: the Current Queue when it is playing, else the
+    /// first (or, with shuffle, a random) suggestion. Automatic advance also honours the
+    /// autoplay setting; an explicit "next" press does not.
+    private func nextVideo(automatic: Bool) async -> Video? {
+        if let index = queueIndex {
+            if automatic, settings.queueShuffleEnabled {
+                if let pick = await CurrentQueueStore.shared.remainingVideos(after: index).randomElement() {
+                    return pick
+                }
+            } else if let next = await CurrentQueueStore.shared.videoAt(index: index + 1) {
+                return next
+            }
+            await CurrentQueueStore.shared.clear()
+        }
+        if automatic {
+            if settings.shuffleEnabled { return relatedVideos.randomElement() }
+            return settings.autoplayEnabled ? relatedVideos.first : nil
+        }
+        return relatedVideos.first
+    }
+
+    private func play(_ next: Video) {
+        CrashlyticsLogger.setIntendedVideo(id: next.id, title: next.title)
+        onPlayVideo?(next)
+    }
+
+    func playNext() {
+        Task { [weak self] in
+            guard let self, let next = await self.nextVideo(automatic: false) else { return }
+            self.play(next)
+        }
+    }
+
+    /// Restarts the video when it has played a while, else steps back in the queue.
+    func playPrevious() {
+        if currentTime > 5 || !canPlayPrevious {
+            seek(to: 0, resume: videoEnded)
+            return
+        }
+        guard let index = queueIndex else { return }
+        Task { [weak self] in
+            guard let self, let previous = await CurrentQueueStore.shared.videoAt(index: index - 1) else { return }
+            self.play(previous)
+        }
+    }
+
+    func play(related video: Video) {
+        play(video)
+    }
+
+    func jump(to chapter: Chapter) {
+        guard hasStartedPlayback else { return }
+        seek(to: chapter.startTime, resume: videoEnded)
+        showControls()
+    }
+
+    /// Switches the audio language, keeping the picture and position.
+    func selectAudio(_ option: MPVStreamSelector.AudioOption?) {
+        guard let engine, let plan = activePlan, option != selectedAudio else { return }
+        selectedAudio = option
+        isLoading = true
+        mpvPlayerLog.notice("audio → \(option?.id ?? "original") at \(Int(self.currentTime))s")
+        engine.load(plan, startAt: currentTime, userAgent: activeClient?.userAgent, audioOverride: option?.url)
+        engine.setSpeed(playbackSpeed)
+        if !isPlaying { engine.setPaused(true) }
+    }
+
+    // MARK: - Display criteria
+
+    /// Asks the Apple TV to switch its output to the stream's frame rate and dynamic range,
+    /// so 24/25/50 fps video is not judder-converted. Effective only when the viewer has
+    /// "Match Content" turned on in the system settings.
+    private func applyDisplayCriteria() {
+        guard let plan = activePlan, let fps = plan.fps, fps > 0,
+            let window = Self.keyWindow
+        else { return }
+        // The criteria API takes a format description; only the frame rate and the colour
+        // transfer function in it influence the display mode, so build a minimal one.
+        let height = Int32(plan.height ?? videoSize?.height ?? 1080)
+        let width = Int32(videoSize?.width ?? Int(height) * 16 / 9)
+        var extensions: [CFString: Any] = [:]
+        if plan.isHDR {
+            extensions[kCMFormatDescriptionExtension_ColorPrimaries] = kCMFormatDescriptionColorPrimaries_ITU_R_2020
+            extensions[kCMFormatDescriptionExtension_TransferFunction] =
+                kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ
+        }
+        var description: CMVideoFormatDescription?
+        let status = CMVideoFormatDescriptionCreate(
+            allocator: nil, codecType: plan.isHDR ? kCMVideoCodecType_HEVC : kCMVideoCodecType_H264,
+            width: width, height: height, extensions: extensions as CFDictionary, formatDescriptionOut: &description)
+        guard status == noErr, let description else { return }
+        window.avDisplayManager.preferredDisplayCriteria = AVDisplayCriteria(
+            refreshRate: Float(fps), formatDescription: description)
+    }
+
+    private func resetDisplayCriteria() {
+        Self.keyWindow?.avDisplayManager.preferredDisplayCriteria = nil
+    }
+
+    private static var keyWindow: UIWindow? {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first { $0.isKeyWindow }
     }
 
     // MARK: - SponsorBlock
@@ -537,7 +691,7 @@ final class MPVPlayerViewModel {
         }
         isLoading = true
         mpvPlayerLog.notice("quality → \(plan.label) at \(Int(self.currentTime))s")
-        engine.load(plan, startAt: currentTime, userAgent: activeClient?.userAgent)
+        engine.load(plan, startAt: currentTime, userAgent: activeClient?.userAgent, audioOverride: selectedAudio?.url)
         engine.setSpeed(playbackSpeed)
         if !isPlaying { engine.setPaused(true) }
     }
@@ -556,10 +710,13 @@ final class MPVPlayerViewModel {
 
     // MARK: - Controls visibility
 
+    /// `--uitesting-keep-controls`: never auto-hide, so a test can inspect the overlay at leisure.
+    private static let keepControlsForTesting = ProcessInfo.processInfo.arguments.contains("--uitesting-keep-controls")
+
     func showControls(autoHide: Bool = true) {
         controlsVisible = true
         controlsHideTask?.cancel()
-        guard autoHide, isPlaying else { return }
+        guard autoHide, isPlaying, !Self.keepControlsForTesting else { return }
         let timeout = max(settings.controlsHideTimeout, 2)
         controlsHideTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(timeout))
@@ -613,6 +770,7 @@ final class MPVPlayerViewModel {
         eventTask = nil
         isPlaying = false
         UIApplication.shared.isIdleTimerDisabled = false
+        resetDisplayCriteria()
         engine?.shutdown()
     }
 }

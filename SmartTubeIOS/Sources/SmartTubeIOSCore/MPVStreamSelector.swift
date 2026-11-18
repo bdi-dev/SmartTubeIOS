@@ -342,6 +342,57 @@ public enum MPVStreamSelector {
             .url
     }
 
+    /// One selectable audio language of a multi-audio upload.
+    public struct AudioOption: Identifiable, Equatable, Sendable {
+        public let id: String
+        public let name: String
+        public let isOriginal: Bool
+        public let url: URL
+    }
+
+    /// The audio languages of a multi-audio upload, original first. Each URL carries its
+    /// language in `xtags` (`lang=es-US`); one stream per language is kept (non-DRC,
+    /// highest bitrate). Empty for single-track uploads — there is nothing to choose.
+    public static func audioOptions(in formats: [VideoFormat], locale: Locale = .current) -> [AudioOption] {
+        var best: [String: (format: VideoFormat, original: Bool, rank: Int)] = [:]
+        for format in formats where format.mimeType.lowercased().hasPrefix("audio/") {
+            guard let url = format.url else { continue }
+            let tags = xtags(of: url)
+            guard
+                let language = tags.split(separator: ":").compactMap({ pair -> String? in
+                    pair.hasPrefix("lang=") ? normalizedLanguage(String(pair.dropFirst(5))) : nil
+                }).first
+            else { continue }
+            let rank = tags.contains("drc=1") ? 0 : 1
+            let original = tags.contains("acont=original")
+            if let current = best[language],
+                (current.rank, current.format.bitrate ?? 0) >= (rank, format.bitrate ?? 0)
+            {
+                continue
+            }
+            best[language] = (format, original, rank)
+        }
+        guard best.count > 1 else { return [] }
+        return
+            best
+            .map { language, entry in
+                AudioOption(
+                    id: language,
+                    name: locale.localizedString(forIdentifier: language) ?? language,
+                    isOriginal: entry.original,
+                    url: entry.format.url!
+                )
+            }
+            .sorted { ($0.isOriginal ? 0 : 1, $0.name) < ($1.isOriginal ? 0 : 1, $1.name) }
+    }
+
+    /// `xtags` is lower-cased for matching; restore BCP 47 casing (`en-us` → `en-US`).
+    private static func normalizedLanguage(_ tag: String) -> String {
+        tag.split(separator: "-").enumerated().map { index, part in
+            index == 0 ? part.lowercased() : (part.count == 2 ? part.uppercased() : String(part))
+        }.joined(separator: "-")
+    }
+
     // MARK: - Helpers
 
     static func isVideoOnly(_ format: VideoFormat) -> Bool {

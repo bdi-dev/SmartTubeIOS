@@ -31,13 +31,17 @@ struct MPVPlayerView: View {
     /// Created in `.task`, not `init`: the view struct is re-created on every parent
     /// update and each view model owns a live mpv core.
     @State private var vm: MPVPlayerViewModel?
+    /// The video being played; differs from `video` after up-next / autoplay moved on.
+    @State private var playing: Video?
     @FocusState private var focus: FocusTarget?
 
     enum FocusTarget: Hashable {
         case surface
         case scrubber
         case seekBack, playPause, seekForward
-        case captions, speed, quality
+        case previous, next
+        case captions, speed, quality, audio, chapters
+        case related(String)
         case skipSegment
         case errorRetry, errorFallback, errorClose
     }
@@ -49,6 +53,11 @@ struct MPVPlayerView: View {
         static let seekBack = "mpvPlayer.seekBackButton"
         static let seekForward = "mpvPlayer.seekForwardButton"
         static let quality = "mpvPlayer.qualityMenu"
+        static let previous = "mpvPlayer.previousButton"
+        static let next = "mpvPlayer.nextButton"
+        static let audio = "mpvPlayer.audioMenu"
+        static let chapters = "mpvPlayer.chaptersMenu"
+        static let related = "mpvPlayer.relatedVideoButton"
         static let speed = "mpvPlayer.speedMenu"
         static let captions = "mpvPlayer.captionsMenu"
         static let skipSegment = "mpvPlayer.skipSegmentButton"
@@ -66,10 +75,12 @@ struct MPVPlayerView: View {
         }
         .toolbar(.hidden, for: .tabBar)
         .toolbar(.hidden, for: .navigationBar)
-        .task {
-            guard vm == nil else { return }
+        .task(id: (playing ?? video).id) {
+            // Moving to another video replaces the whole view model — one engine per video.
+            vm?.stop()
             let model = MPVPlayerViewModel(
-                video: video, api: api, settings: store.settings, isSignedIn: auth.isSignedIn)
+                video: playing ?? video, api: api, settings: store.settings, isSignedIn: auth.isSignedIn)
+            model.onPlayVideo = { next in playing = next }
             vm = model
             model.start()
         }
@@ -149,7 +160,7 @@ struct MPVPlayerView: View {
                 "[focus] \(String(describing: oldFocus)) → \(String(describing: newFocus)) controls=\(vm.controlsVisible)"
             )
             // Focus leaving a menu button for "nothing" means its menu just opened.
-            let menuButtons: [FocusTarget?] = [.captions, .speed, .quality]
+            let menuButtons: [FocusTarget?] = [.captions, .speed, .quality, .audio, .chapters]
             vm.holdControls = newFocus == nil && menuButtons.contains(oldFocus) && vm.controlsVisible
             if newFocus != nil, newFocus != .surface, vm.controlsVisible { vm.showControls() }
         }
@@ -203,6 +214,11 @@ struct MPVPlayerView: View {
         VStack(alignment: .leading, spacing: 0) {
             header(vm)
             Spacer()
+            if vm.videoEnded, !vm.relatedVideos.isEmpty {
+                upNextRow(vm)
+                    .focusSection()
+                    .padding(.bottom, 32)
+            }
             scrubber(vm)
                 .focusSection()
             transportRow(vm)
@@ -301,6 +317,12 @@ struct MPVPlayerView: View {
                     Capsule().fill(.white.opacity(0.35)).frame(width: width * buffered)
                     Capsule().fill(Color.accentColor).frame(width: width * fraction)
                     if duration > 0 {
+                        ForEach(vm.chapters.dropFirst()) { chapter in
+                            Rectangle()
+                                .fill(.black.opacity(0.7))
+                                .frame(width: 3)
+                                .offset(x: width * min(max(chapter.startTime / duration, 0), 1))
+                        }
                         ForEach(vm.sponsorSegments) { segment in
                             let start = min(max(segment.start / duration, 0), 1)
                             let end = min(max(segment.end / duration, 0), 1)
@@ -331,6 +353,12 @@ struct MPVPlayerView: View {
                 Text(formatDuration(time))
                     .fontWeight(vm.isScrubbing ? .bold : .regular)
                 Spacer()
+                if let chapter = vm.currentChapter {
+                    Text(chapter.title)
+                        .lineLimit(1)
+                        .font(.callout.weight(.medium))
+                    Spacer()
+                }
                 Text(duration > 0 ? formatDuration(duration) : "--:--")
             }
             .font(.callout.monospacedDigit())
@@ -343,6 +371,17 @@ struct MPVPlayerView: View {
 
     private func transportRow(_ vm: MPVPlayerViewModel) -> some View {
         HStack(spacing: 28) {
+            if vm.canPlayPrevious {
+                Button {
+                    vm.playPrevious()
+                } label: {
+                    Image(systemName: AppSymbol.previousTrack)
+                }
+                .focused($focus, equals: .previous)
+                .accessibilityLabel(Text("Previous", bundle: .module))
+                .accessibilityIdentifier(ID.previous)
+            }
+
             Button {
                 vm.seekRelative(seconds: -Double(store.settings.seekBackSeconds))
             } label: {
@@ -373,8 +412,25 @@ struct MPVPlayerView: View {
             .accessibilityLabel(Text("Skip Forward", bundle: .module))
             .accessibilityIdentifier(ID.seekForward)
 
+            if vm.canPlayNext {
+                Button {
+                    vm.playNext()
+                } label: {
+                    Image(systemName: AppSymbol.nextTrack)
+                }
+                .focused($focus, equals: .next)
+                .accessibilityLabel(Text("Next", bundle: .module))
+                .accessibilityIdentifier(ID.next)
+            }
+
             Spacer()
 
+            if !vm.chapters.isEmpty {
+                chaptersMenu(vm)
+            }
+            if vm.audioOptions.count > 1 {
+                audioMenu(vm)
+            }
             if !vm.captionTracks.isEmpty {
                 captionsMenu(vm)
             }
@@ -384,6 +440,79 @@ struct MPVPlayerView: View {
             }
         }
         .font(.title3)
+    }
+
+    private func chaptersMenu(_ vm: MPVPlayerViewModel) -> some View {
+        Menu {
+            ForEach(vm.chapters) { chapter in
+                Button {
+                    vm.jump(to: chapter)
+                } label: {
+                    menuRow(
+                        "\(formatDuration(chapter.startTime))  \(chapter.title)",
+                        selected: vm.currentChapter?.id == chapter.id)
+                }
+            }
+        } label: {
+            Label(String(localized: "Chapters", bundle: .module), systemImage: AppSymbol.chapterList)
+                .labelStyle(.iconOnly)
+        }
+        .focused($focus, equals: .chapters)
+        .accessibilityIdentifier(ID.chapters)
+    }
+
+    private func audioMenu(_ vm: MPVPlayerViewModel) -> some View {
+        let current = vm.selectedAudio ?? vm.audioOptions.first { $0.isOriginal }
+        return Menu {
+            ForEach(vm.audioOptions) { option in
+                Button {
+                    vm.selectAudio(option.isOriginal ? nil : option)
+                } label: {
+                    menuRow(option.name, selected: current == option)
+                }
+            }
+        } label: {
+            Label(String(localized: "Audio", bundle: .module), systemImage: AppSymbol.audioTrack)
+                .labelStyle(.iconOnly)
+        }
+        .focused($focus, equals: .audio)
+        .accessibilityIdentifier(ID.audio)
+    }
+
+    /// Suggestions offered once the video has ended (and autoplay did not take over).
+    private func upNextRow(_ vm: MPVPlayerViewModel) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Up Next", bundle: .module)
+                .font(.headline)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 28) {
+                    ForEach(vm.relatedVideos.prefix(8)) { related in
+                        Button {
+                            vm.play(related: related)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 10) {
+                                AsyncImage(url: related.thumbnailURL) { image in
+                                    image.resizable().aspectRatio(16 / 9, contentMode: .fill)
+                                } placeholder: {
+                                    Color.white.opacity(0.1)
+                                }
+                                .frame(width: 320, height: 180)
+                                .clipped()
+                                Text(related.title)
+                                    .font(.caption)
+                                    .lineLimit(2)
+                                    .frame(width: 320, alignment: .leading)
+                            }
+                        }
+                        .buttonStyle(.card)
+                        .focused($focus, equals: .related(related.id))
+                        .accessibilityIdentifier(ID.related)
+                    }
+                }
+                .padding(.vertical, 20)
+            }
+        }
+        .foregroundStyle(.white)
     }
 
     private func captionsMenu(_ vm: MPVPlayerViewModel) -> some View {

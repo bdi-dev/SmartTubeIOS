@@ -322,4 +322,28 @@ struct MPVStreamSelectorTests {
         let lastVariant = ranked.lastIndex { $0.isHLS && $0.height != nil }
         if let masterIndex, let lastVariant { #expect(masterIndex > lastVariant) }
     }
+
+    // MARK: - Audio options
+
+    @Test("multi-audio uploads list one option per language, original first, non-DRC preferred")
+    func audioOptions_onePerLanguage() {
+        let formats = [
+            audio(bitrate: 130_000, xtags: "acont=dubbed-auto:lang=es-US"),
+            audio(bitrate: 128_000, xtags: "acont=original:lang=en-US"),
+            audio(bitrate: 250_000, xtags: "acont=original:drc=1:lang=en-US"),
+            audio(bitrate: 120_000, xtags: "acont=dubbed-auto:lang=fr-FR"),
+        ]
+        let options = MPVStreamSelector.audioOptions(in: formats, locale: Locale(identifier: "en_US"))
+        #expect(options.map(\.id) == ["en-US", "fr-FR", "es-US"])
+        #expect(options.first?.isOriginal == true)
+        #expect(options.first?.url.lastPathComponent == "128000")
+        #expect(options.first?.name == "English (United States)")
+    }
+
+    @Test("a single-track upload has nothing to choose")
+    func audioOptions_singleTrackIsEmpty() {
+        #expect(MPVStreamSelector.audioOptions(in: [audio(bitrate: 128_000)]).isEmpty)
+        #expect(
+            MPVStreamSelector.audioOptions(in: [audio(bitrate: 128_000, xtags: "acont=original:lang=en-US")]).isEmpty)
+    }
 }

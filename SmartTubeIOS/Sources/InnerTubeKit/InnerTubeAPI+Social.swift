@@ -289,10 +289,45 @@ extension InnerTubeAPI {
             }
         }
         walk(json)
+        if videos.isEmpty { videos = parseEndScreenVideos(from: json) }
         tubeLog.notice(
             "[parseRelatedVideos] found=\(videos.count, privacy: .public) rendererKeys=\(rendererKeysFound.sorted().joined(separator: ","), privacy: .public)"
         )
         return Array(videos.prefix(25))
+    }
+
+    /// Fallback for responses that carry no `compactVideoRenderer` (YouTube's newer watch
+    /// layouts): the end-screen suggestions (`endScreenVideoRenderer`) are still present and
+    /// are the videos YouTube itself offers next.
+    private func parseEndScreenVideos(from json: [String: Any]) -> [Video] {
+        var videos: [Video] = []
+        var seen = Set<String>()
+        func text(_ value: Any?) -> String {
+            guard let dict = value as? [String: Any] else { return "" }
+            if let simple = dict["simpleText"] as? String { return simple }
+            return (dict["runs"] as? [[String: Any]])?.compactMap { $0["text"] as? String }.joined() ?? ""
+        }
+        func walk(_ obj: Any, depth: Int = 0) {
+            guard depth < 50 else { return }
+            if let dict = obj as? [String: Any] {
+                if let r = dict["endScreenVideoRenderer"] as? [String: Any],
+                    let id = r["videoId"] as? String, seen.insert(id).inserted
+                {
+                    let thumbs = (r["thumbnail"] as? [String: Any])?["thumbnails"] as? [[String: Any]]
+                    let thumb = (thumbs?.last?["url"] as? String).flatMap(URL.init(string:))
+                    videos.append(
+                        Video(
+                            id: id, title: text(r["title"]), channelTitle: text(r["shortBylineText"]),
+                            thumbnailURL: thumb, duration: parseDuration(text(r["lengthText"]))))
+                } else {
+                    for value in dict.values { walk(value, depth: depth + 1) }
+                }
+            } else if let arr = obj as? [Any] {
+                for item in arr { walk(item, depth: depth + 1) }
+            }
+        }
+        walk(json)
+        return videos.filter { !$0.title.isEmpty }
     }
 
     /// Parses video chapters from a `/next` response.

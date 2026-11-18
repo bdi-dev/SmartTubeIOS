@@ -1,4 +1,4 @@
-> status: plan (2026-11-16) — nothing below is implemented yet
+> status: in progress (2026-11-18) — §2–§4 partly implemented; items marked **done** need a real Apple TV to confirm
 
 # tvOS mpv player — next steps
 
@@ -17,24 +17,33 @@ Ordered by what unblocks the most.
 
 ## 2. Picture quality on a TV
 
-- **Match content**: set `AVDisplayManager.preferredDisplayCriteria` from the stream's frame rate
-  and dynamic range, so 24/25/50 fps video is not judder-converted to 60 Hz.
-- **HDR**: HDR variants are ranked last today (`allowHDR: false`). Enable once output is confirmed
+- **Match content — done, unverified:** `applyDisplayCriteria()` sets
+  `AVDisplayManager.preferredDisplayCriteria` from the stream's frame rate and dynamic range at
+  first frame, and clears it on exit. It only takes effect with "Match Content" on in tvOS
+  settings; the Simulator cannot show it.
+- **HDR:** HDR variants are ranked last today (`allowHDR: false`). Enable once output is confirmed
   correct through libplacebo/MoltenVK, then add a setting.
 
 ## 3. Parity with the standard player
 
-- Autoplay / queue / next-previous (reuse `CurrentQueueStore`).
-- Audio-track picker (HLS audio renditions are already parsed in `HLSMasterPlaylist`).
-- Chapters on the scrubber; related videos at end-of-video.
-- Sleep timer, stats-for-nerds, like/dislike — each small once `PlaybackSession` (WS5) exists.
+- **Done:** previous/next buttons and autoplay (Current Queue, shuffle, suggestions; honours the
+  autoplay setting); up-next row at end of video; chapter ticks, title and menu (no chaptered video
+  was available to test with); audio-language menu for multi-audio uploads (unit-tested, not seen
+  on screen).
+- **Extractor fix:** the signed-out `/next` response now carries no `compactVideoRenderer`, so
+  suggestions came back empty; `InnerTubeAPI+Social` falls back to the end-screen videos.
+- Still open: sleep timer, stats-for-nerds, like/dislike — each small once `PlaybackSession` (WS5)
+  exists; audio languages for HLS-only videos (renditions are parsed in `HLSMasterPlaylist`).
 
 ## 4. tvOS polish
 
-- A UI test target file for the mpv player (`--uitesting-enable-mpv-player` +
-  `--uitesting-deeplink-video=<id>` already exist; the file must be added in Xcode).
-- Scrub preview thumbnails (storyboards are in the player response).
-- Top Shelf "Continue Watching" from `VideoStateStore`.
+- **UI test file** for the mpv player — must be added in Xcode. `--uitesting-enable-mpv-player`,
+  `--uitesting-deeplink-video=<id>` and `--uitesting-keep-controls` (no auto-hide) exist for it.
+- **Scrub preview thumbnails:** storyboards are in the player response but `PlayerInfo` does not
+  carry them yet — parse `storyboards.playerStoryboardSpecRenderer`, then draw the tile above the
+  thumb.
+- **Top Shelf "Continue Watching"** from `VideoStateStore` — needs a new extension target, which
+  means an Xcode project change.
 
 ## 5. Extractor (`InnerTubeKit`)
 

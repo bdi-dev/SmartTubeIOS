@@ -138,6 +138,8 @@ enum AppSymbol {
     // MARK: - Playback controls
     static let previousTrack = "backward.end.fill"
     static let nextTrack = "forward.end.fill"
+    static let chapterList = "list.bullet"
+    static let audioTrack = "waveform"
     static let previousChapter = "backward.end.alt.fill"
     static let nextChapter = "forward.end.alt.fill"
     static let play = "play.fill"
