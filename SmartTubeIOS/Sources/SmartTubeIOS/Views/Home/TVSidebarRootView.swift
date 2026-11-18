@@ -82,8 +82,11 @@ struct TVSidebarRootView: View {
                 .opacity(playerPresented ? 0 : 1)
                 .disabled(playerPresented)
                 .zIndex(1)
+            // The gap is a scroll content margin, not outside padding: padding outside the scroll
+            // view would make the scroll view start right at the card edge and clip the focused
+            // card's enlargement and glow, leaving an empty strip beside the rail.
             content
-                .padding(.leading, TVSidebarLayout.contentLeadingGap)
+                .contentMargins(.leading, TVSidebarLayout.contentLeadingGap, for: .scrollContent)
                 .offset(x: isExpanded ? TVSidebarLayout.expandedWidth - TVSidebarLayout.railWidth : 0)
                 .opacity(isExpanded ? 0.5 : 1)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
