@@ -23,15 +23,21 @@ enum TVSidebarItem: Hashable {
 }
 
 private enum TVSidebarLayout {
-    /// Total width of the collapsed rail, from the screen edge: leading margin, a 72 pt row
-    /// (40 pt icon plus its padding) and trailing padding. This is both the width the sidebar
-    /// draws and the slot reserved for it, so nothing is ever drawn under the rail.
-    static let railWidth: CGFloat = 128
-    static let expandedWidth: CGFloat = 440
+    /// Width of a row's highlight pill when collapsed: a 40 pt icon with 16 pt of padding on
+    /// each side, so the icon sits in the middle of the pill.
+    static let pillWidth: CGFloat = 72
+    /// Equal gap on both sides of the rail's pill (screen edge to pill, pill to the rail's
+    /// edge). The sidebar sits inside the 80 pt tvOS safe area on purpose; its icons are still
+    /// 40 pt from the screen edge.
+    static let edgeInset: CGFloat = 24
+    /// Total width of the collapsed rail. This is both the width the sidebar draws and the slot
+    /// reserved for it, so nothing is ever drawn under the rail.
+    static let railWidth: CGFloat = edgeInset + pillWidth + edgeInset
+    /// Expanded width: sized to the longest section label ("Subscriptions") plus the row's
+    /// icon and padding, not a round number, so no empty space is left after the labels.
+    static let expandedWidth: CGFloat = 380
     /// Gap between the rail's edge and the content. Grids add no padding of their own on tvOS.
     static let contentLeadingGap: CGFloat = 56
-    /// Margin to the screen edge. The sidebar sits inside the 80 pt tvOS safe area on purpose.
-    static let leadingMargin: CGFloat = 40
 }
 
 // MARK: - Player visibility
@@ -164,8 +170,7 @@ struct TVSidebarRootView: View {
             accountRow
         }
         .padding(.vertical, 40)
-        .padding(.leading, TVSidebarLayout.leadingMargin)
-        .padding(.trailing, 16)
+        .padding(.horizontal, TVSidebarLayout.edgeInset)
         .frame(width: isExpanded ? TVSidebarLayout.expandedWidth : TVSidebarLayout.railWidth, alignment: .leading)
         .frame(maxHeight: .infinity, alignment: .top)
         .background(.ultraThinMaterial)
@@ -174,12 +179,18 @@ struct TVSidebarRootView: View {
         .accessibilityIdentifier("tv.sidebar")
     }
 
+    /// Width of every row's highlight: just the icon pill when collapsed, the full inner width
+    /// of the sidebar when expanded.
+    private var rowWidth: CGFloat {
+        isExpanded ? TVSidebarLayout.expandedWidth - 2 * TVSidebarLayout.edgeInset : TVSidebarLayout.pillWidth
+    }
+
     private func row(_ item: TVSidebarItem, title: String, symbol: String) -> some View {
         let isSelected = selection == item
         return Button {
             selection = item
         } label: {
-            TVSidebarRowLabel(title: title, showsTitle: isExpanded) {
+            TVSidebarRowLabel(title: title, showsTitle: isExpanded, width: rowWidth) {
                 Image(systemName: symbol)
             }
         }
@@ -203,7 +214,7 @@ struct TVSidebarRootView: View {
                 showSignIn = true
             }
         } label: {
-            TVSidebarRowLabel(title: title, showsTitle: isExpanded) {
+            TVSidebarRowLabel(title: title, showsTitle: isExpanded, width: rowWidth) {
                 AsyncImage(url: auth.accountAvatarURL) { phase in
                     if let image = phase.image {
                         image.resizable().scaledToFill()
@@ -231,6 +242,7 @@ struct TVSidebarRootView: View {
 private struct TVSidebarRowLabel<Icon: View>: View {
     let title: String
     let showsTitle: Bool
+    let width: CGFloat
     @ViewBuilder let icon: () -> Icon
 
     var body: some View {
@@ -246,6 +258,7 @@ private struct TVSidebarRowLabel<Icon: View>: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
+        .frame(width: width, alignment: .leading)
         .contentShape(Rectangle())
     }
 }
