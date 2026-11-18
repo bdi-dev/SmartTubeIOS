@@ -22,7 +22,10 @@ extension InnerTubeAPI {
         tubeLog.notice("fetchChannel browseId=\(resolvedId, privacy: .public)")
         let data = try await post(endpoint: "browse", body: body, useWebSession: true)
         let (parsedChannel, parsedVideos) = try parseChannel(from: data, channelId: resolvedId)
-        return (parsedChannel, await applyingHistoryFallback(to: parsedVideos))
+        // WATCHDIAG-BEGIN (temporary)
+        Self.watchDiagLockups(label: "fetchChannel", json: data, videos: parsedVideos.videos)
+        // WATCHDIAG-END
+        return (parsedChannel, await applyingHistoryFallback(to: parsedVideos, label: "fetchChannel"))
     }
 
     /// Lightweight channel thumbnail fetch.
@@ -57,25 +60,83 @@ extension InnerTubeAPI {
         )
         let data = try await post(endpoint: "browse", body: body, useWebSession: true)
         let group = try parseVideoGroup(from: data, title: nil)
-        return await applyingHistoryFallback(to: group)
+        // WATCHDIAG-BEGIN (temporary)
+        Self.watchDiagLockups(label: "fetchChannelVideos", json: data, videos: group.videos)
+        // WATCHDIAG-END
+        return await applyingHistoryFallback(to: group, label: "fetchChannelVideos")
     }
 
     /// Channel responses carry resume progress only when the WEB request is signed with a
     /// SAPISID session. For OAuth-only (TV) sessions they never do, so videos the viewer
     /// already watched look unplayed. Fill the gap from the account's History feed
     /// (session-cached, capped); progress the response itself carried always wins.
-    func applyingHistoryFallback(to group: VideoGroup) async -> VideoGroup {
-        guard let token = authToken, group.videos.contains(where: { $0.watchProgress == nil }) else {
+    func applyingHistoryFallback(to group: VideoGroup, label: String = "") async -> VideoGroup {
+        // WATCHDIAG-BEGIN (temporary)
+        let diagBefore = group.videos.filter { $0.watchProgress != nil }.count
+        guard let token = authToken else {
+            print("[WATCHDIAG] \(label) history fallback: SKIPPED oauthToken=absent videos=\(group.videos.count)")
             return group
         }
+        guard group.videos.contains(where: { $0.watchProgress == nil }) else {
+            print("[WATCHDIAG] \(label) history fallback: SKIPPED all \(group.videos.count) videos already have progress")
+            return group
+        }
+        // WATCHDIAG-END
         let owner = "\(token.hashValue)|\(ActiveChannel.shared.pageId ?? "")"
         let index = await WatchedHistoryIndex.shared.index(ownerKey: owner) { [self] in
-            try await loadHistoryProgress(pages: 3)
+            // WATCHDIAG-BEGIN (temporary)
+            do {
+                let loaded = try await loadHistoryProgress(pages: 3)
+                print("[WATCHDIAG] history index LOADED ids=\(loaded.count)")
+                return loaded
+            } catch {
+                print("[WATCHDIAG] history index LOAD FAILED error=\(type(of: error)) \((error as? APIError).map { String(describing: $0) } ?? "")")
+                throw error
+            }
+            // WATCHDIAG-END
         }
         var merged = group
         merged.videos = WatchedHistoryIndex.merge(group.videos, index: index)
+        // WATCHDIAG-BEGIN (temporary)
+        let diagAfter = merged.videos.filter { $0.watchProgress != nil }.count
+        print(
+            "[WATCHDIAG] \(label) history fallback: RAN oauthToken=present indexIds=\(index.count) channelVideos=\(group.videos.count) matchedFilled=\(diagAfter - diagBefore) progressBefore=\(diagBefore) progressAfter=\(diagAfter)"
+        )
+        // WATCHDIAG-END
         return merged
     }
+
+    // WATCHDIAG-BEGIN (temporary)
+    /// Prints how many parsed videos carry watchProgress and which overlay KEY NAMES the
+    /// first two raw lockupViewModel items have (names only, never values).
+    static func watchDiagLockups(label: String, json: [String: Any], videos: [Video]) {
+        var lockups: [[String: Any]] = []
+        func walk(_ v: Any, _ depth: Int) {
+            guard depth < 40, lockups.count < 2 else { return }
+            if let d = v as? [String: Any] {
+                if let l = d["lockupViewModel"] as? [String: Any] { lockups.append(l); return }
+                for c in d.values { walk(c, depth + 1) }
+            } else if let a = v as? [Any] {
+                for c in a { walk(c, depth + 1) }
+            }
+        }
+        walk(json, 0)
+        let overlayKeys: [String] = lockups.map { l in
+            let thumb = (l["contentImage"] as? [String: Any])?["thumbnailViewModel"] as? [String: Any]
+            let overlays = thumb?["overlays"] as? [[String: Any]] ?? []
+            return overlays.map { o in
+                o.keys.sorted().map { k -> String in
+                    if let inner = o[k] as? [String: Any] { return "\(k){\(inner.keys.sorted().joined(separator: ","))}" }
+                    return k
+                }.joined(separator: "+")
+            }.joined(separator: " | ")
+        }
+        let withProgress = videos.filter { $0.watchProgress != nil }.count
+        print(
+            "[WATCHDIAG] \(label) parsed videos=\(videos.count) withLockupProgress=\(withProgress) lockupItemsSampled=\(lockups.count) overlayKeys=\(overlayKeys)"
+        )
+    }
+    // WATCHDIAG-END
 
     /// First `pages` pages of FEhistory as id -> progress. History tiles without a resume
     /// overlay get `WatchedHistoryIndex.playedFallbackProgress`.
