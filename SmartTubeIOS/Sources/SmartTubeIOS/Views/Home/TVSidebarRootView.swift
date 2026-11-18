@@ -9,9 +9,10 @@ import SwiftUI
 // every enabled browse section (History and Playlists are separate items), Settings and
 // Account. The chosen item fills the content column on the right.
 //
-// The sidebar is 300 pt wide while focus is inside it and an icon rail (100 pt) otherwise.
-// The content column always keeps the rail width and the expanded sidebar overlays it, so
-// the grid does not reflow while focus moves.
+// The sidebar is an icon rail while focus is in the content and expands to show labels when
+// focus enters it. The content column keeps one layout size and slides (and dims) to make
+// room, so the grid does not reflow while the sidebar animates. While a player is on screen
+// the sidebar is hidden and the content fills the screen.
 
 /// One row of the tvOS sidebar. `.account` is an action, never a selected destination.
 enum TVSidebarItem: Hashable {
@@ -22,8 +23,25 @@ enum TVSidebarItem: Hashable {
 }
 
 private enum TVSidebarLayout {
-    static let railWidth: CGFloat = 100
-    static let expandedWidth: CGFloat = 300
+    static let railWidth: CGFloat = 120
+    static let expandedWidth: CGFloat = 420
+}
+
+// MARK: - Player visibility
+//
+// Players are pushed inside the content column's NavigationStack (HomeView, SearchView,
+// playlists, channels). `PlayerScreen` reports through this binding so the sidebar can get
+// out of the way and the player fills the whole screen.
+
+private struct TVPlayerPresentedKey: EnvironmentKey {
+    static let defaultValue: Binding<Bool>? = nil
+}
+
+extension EnvironmentValues {
+    var tvPlayerPresented: Binding<Bool>? {
+        get { self[TVPlayerPresentedKey.self] }
+        set { self[TVPlayerPresentedKey.self] = newValue }
+    }
 }
 
 struct TVSidebarRootView: View {
@@ -34,32 +52,40 @@ struct TVSidebarRootView: View {
     @State private var searchVM = SearchViewModel()
     @State private var selection: TVSidebarItem = .section(BrowseSection(type: .home))
     @State private var showSignIn = false
+    @State private var playerPresented = false
     @FocusState private var focusedItem: TVSidebarItem?
 
     /// Browse sections in the order the settings list them (same list as the old chip bar).
     private var sections: [BrowseSection] { HomeView.visibleSections(for: store.settings) }
 
-    private var items: [TVSidebarItem] {
-        [.search] + sections.map { .section($0) } + [.settings, .account]
-    }
-
-    private var isExpanded: Bool { focusedItem != nil }
+    private var isExpanded: Bool { focusedItem != nil && !playerPresented }
 
     var body: some View {
         @Bindable var browseVM = browseVM
-        ZStack(alignment: .leading) {
-            content
-                .padding(.leading, TVSidebarLayout.railWidth)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // The sidebar and the content are siblings. The sidebar's layout width is always the
+        // rail; when expanded it draws wider than that and the content slides right by the
+        // difference. The content keeps one layout size, so the grid reflows once (when the
+        // sidebar appears or disappears for the player), never while the sidebar animates.
+        HStack(spacing: 0) {
             sidebar
+                .frame(width: playerPresented ? 0 : TVSidebarLayout.railWidth, alignment: .leading)
+                .opacity(playerPresented ? 0 : 1)
+                .disabled(playerPresented)
+                .zIndex(1)
+            content
+                .offset(x: isExpanded ? TVSidebarLayout.expandedWidth - TVSidebarLayout.railWidth : 0)
+                .opacity(isExpanded ? 0.5 : 1)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .focusSection()
         }
-        .animation(.easeInOut(duration: 0.2), value: isExpanded)
+        .animation(.easeInOut(duration: 0.25), value: isExpanded)
         .environment(searchVM)
+        .environment(\.tvPlayerPresented, $playerPresented)
         .sheet(isPresented: $showSignIn) { SignInView() }
-        .onChange(of: items) { _, newItems in
+        .onChange(of: sections) { _, newSections in
             // A section hidden in Settings can no longer be selected; fall back to the first one.
-            if !newItems.contains(selection) {
-                selection = sections.first.map { .section($0) } ?? .search
+            if case .section(let current) = selection, !newSections.contains(current) {
+                selection = newSections.first.map { .section($0) } ?? .search
             }
         }
         .task {
@@ -73,6 +99,7 @@ struct TVSidebarRootView: View {
             }
         }
         // Deep link: a video named from outside the browse UI opens straight in the player.
+        // A root-level cover sits above the sidebar.
         .fullScreenCover(item: $browseVM.deepLinkedVideo) { video in
             PlayerScreen(video: video, api: api)
         }
@@ -82,28 +109,33 @@ struct TVSidebarRootView: View {
 
     private var content: some View {
         NavigationStack {
-            switch selection {
-            case .section(let section):
-                HomeView(api: api, initialSection: section)
-                    // A new section gets a fresh view (and feed) rather than swapping state inside
-                    // one HomeView, which keeps pagination and load triggers per section.
-                    .id(section.id)
-            case .search:
-                SearchView()
-            case .settings:
-                SettingsView()
-            case .account:
-                EmptyView()
+            Group {
+                switch selection {
+                case .section(let section):
+                    HomeView(api: api, initialSection: section)
+                case .search:
+                    SearchView()
+                case .settings:
+                    SettingsView()
+                case .account:
+                    EmptyView()
+                }
             }
+            // On the stack's root view (not the stack) so it only fires while a root screen has
+            // focus: pushed screens and the player handle Back themselves and pop normally.
+            // Back at the top of the content moves focus to the selected sidebar row; Back
+            // there is not handled and exits the app.
+            .onExitCommand { focusedItem = selection }
         }
-        // Menu/Back from the content column returns focus to the selected sidebar item.
-        .onExitCommand { focusedItem = selection }
+        // A different destination gets a fresh stack (and feed) so pushes and pagination state
+        // never leak between sections.
+        .id(selection)
     }
 
     // MARK: - Sidebar
 
     private var sidebar: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             row(.search, title: String(localized: "Search", bundle: .module), symbol: AppSymbol.search)
             ForEach(sections) { section in
                 row(.section(section), title: section.title, symbol: section.type.sidebarSymbol)
@@ -113,12 +145,11 @@ struct TVSidebarRootView: View {
             accountRow
         }
         .padding(.vertical, 40)
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 16)
         .frame(width: isExpanded ? TVSidebarLayout.expandedWidth : TVSidebarLayout.railWidth, alignment: .leading)
         .frame(maxHeight: .infinity, alignment: .top)
         .background(.ultraThinMaterial)
         .focusSection()
-        .defaultFocus($focusedItem, selection)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("tv.sidebar")
     }
@@ -128,25 +159,11 @@ struct TVSidebarRootView: View {
         return Button {
             selection = item
         } label: {
-            HStack(spacing: 16) {
+            TVSidebarRowLabel(title: title, showsTitle: isExpanded) {
                 Image(systemName: symbol)
-                    .font(.title3)
-                    .frame(width: 36)
-                if isExpanded {
-                    Text(verbatim: title)
-                        .font(.headline)
-                        .lineLimit(1)
-                }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
-            .background(
-                isSelected ? Color.primary.opacity(0.15) : Color.clear,
-                in: RoundedRectangle(cornerRadius: 12)
-            )
         }
-        .buttonStyle(.borderless)
+        .buttonStyle(TVSidebarRowStyle(isSelected: isSelected))
         .focused($focusedItem, equals: item)
         .accessibilityLabel(Text(verbatim: title))
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
@@ -156,14 +173,17 @@ struct TVSidebarRootView: View {
     /// Signed out: opens the sign-in sheet. Signed in: opens Settings, where the account
     /// details and sign-out live.
     private var accountRow: some View {
-        Button {
+        let title = auth.isSignedIn
+            ? (auth.accountName ?? String(localized: "Account", bundle: .module))
+            : String(localized: "Sign In", bundle: .module)
+        return Button {
             if auth.isSignedIn {
                 selection = .settings
             } else {
                 showSignIn = true
             }
         } label: {
-            HStack(spacing: 16) {
+            TVSidebarRowLabel(title: title, showsTitle: isExpanded) {
                 AsyncImage(url: auth.accountAvatarURL) { phase in
                     if let image = phase.image {
                         image.resizable().scaledToFill()
@@ -171,35 +191,60 @@ struct TVSidebarRootView: View {
                         Image(systemName: AppSymbol.personCircle)
                             .resizable()
                             .scaledToFit()
-                            .foregroundStyle(.secondary)
                     }
                 }
-                .frame(width: 36, height: 36)
+                .frame(width: 34, height: 34)
                 .clipShape(Circle())
-                if isExpanded {
-                    if auth.isSignedIn {
-                        Text(verbatim: auth.accountName ?? String(localized: "Account", bundle: .module))
-                            .font(.headline)
-                            .lineLimit(1)
-                    } else {
-                        Text("Sign In", bundle: .module)
-                            .font(.headline)
-                            .lineLimit(1)
-                    }
-                }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
         }
-        .buttonStyle(.borderless)
+        .buttonStyle(TVSidebarRowStyle(isSelected: false))
         .focused($focusedItem, equals: .account)
-        .accessibilityLabel(
-            auth.isSignedIn
-                ? Text(verbatim: auth.accountName ?? String(localized: "Account", bundle: .module))
-                : Text("Sign In", bundle: .module)
-        )
+        .accessibilityLabel(Text(verbatim: title))
         .accessibilityIdentifier("tv.sidebar.account")
+    }
+}
+
+// MARK: - Row appearance
+
+/// Icon and label of a sidebar row. Both inherit the colour and weight set by
+/// `TVSidebarRowStyle`, so they always look the same.
+private struct TVSidebarRowLabel<Icon: View>: View {
+    let title: String
+    let showsTitle: Bool
+    @ViewBuilder let icon: () -> Icon
+
+    var body: some View {
+        HStack(spacing: 18) {
+            icon()
+                .frame(width: 40, height: 40)
+            if showsTitle {
+                Text(verbatim: title)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .contentShape(Rectangle())
+    }
+}
+
+/// One focus treatment for the whole row: a rounded highlight behind icon and label, both
+/// switching to the same colour. The selected row that is not focused gets a quiet tint.
+private struct TVSidebarRowStyle: ButtonStyle {
+    let isSelected: Bool
+    @Environment(\.isFocused) private var isFocused
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 30, weight: .semibold))
+            .foregroundStyle(isFocused ? Color.black : Color.primary)
+            .background(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(isFocused ? Color.white.opacity(0.92) : (isSelected ? Color.primary.opacity(0.16) : Color.clear))
+            )
+            .animation(.easeOut(duration: 0.15), value: isFocused)
     }
 }
 

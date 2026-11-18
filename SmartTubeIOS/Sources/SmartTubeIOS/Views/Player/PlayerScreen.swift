@@ -21,17 +21,23 @@ struct PlayerScreen: View {
     @Environment(SettingsStore.self) private var store
     /// Set when mpv failed on this video and the user chose the standard player.
     @State private var fellBackToStandardPlayer = false
+    /// Lets the sidebar layout hide itself while a player is on screen.
+    @Environment(\.tvPlayerPresented) private var playerPresented
     #endif
 
     var body: some View {
         #if os(tvOS)
-        if store.settings.useMPVPlayerOnTV && !fellBackToStandardPlayer {
-            MPVPlayerView(video: video, api: api) {
-                fellBackToStandardPlayer = true
+        Group {
+            if store.settings.useMPVPlayerOnTV && !fellBackToStandardPlayer {
+                MPVPlayerView(video: video, api: api) {
+                    fellBackToStandardPlayer = true
+                }
+            } else {
+                PlayerView(video: video, api: api)
             }
-        } else {
-            PlayerView(video: video, api: api)
         }
+        .onAppear { playerPresented?.wrappedValue = true }
+        .onDisappear { playerPresented?.wrappedValue = false }
         #else
         PlayerView(video: video, api: api)
         #endif
