@@ -146,6 +146,7 @@ enum AppSymbol {
     static let pause = "pause.fill"
     static let replay = "arrow.counterclockwise"
     static let captions = "captions.bubble"
+    static let comments = "text.bubble"
     /// `gobackward.N` / `goforward.N` exist only for these step sizes; others get the plain arrow.
     private static let seekSymbolSteps: Set<Int> = [5, 10, 15, 30, 45, 60, 75, 90]
     static func seekBackward(_ seconds: Int) -> String {

@@ -36,6 +36,10 @@ Checked on an Apple TV 4K (3rd generation), 2026-11-18:
   suggestions came back empty; `InnerTubeAPI+Social` falls back to the end-screen videos.
 - **Related shelf — done, unverified:** Down on the bare video (or from the bottom transport row) raises
   the related videos over the bottom third while playback continues; Select plays, Back/Up closes, 12 s idle timeout.
+- **Comments panel — done, unverified:** the Comments button opens a right-hand panel; the video shrinks to the
+  left 62% and keeps playing. Page one loads on first open, later pages as focus nears the end (cap 200). Back
+  closes the panel. Live `/next` shape checked against the captured fixtures; comment counts come from the panel
+  header (`5.4M`), not `commentsHeaderRenderer`.
 - Still open: sleep timer, stats-for-nerds, like/dislike — each small once `PlaybackSession` (WS5)
   exists; audio languages for HLS-only videos (renditions are parsed in `HLSMasterPlaylist`).
 

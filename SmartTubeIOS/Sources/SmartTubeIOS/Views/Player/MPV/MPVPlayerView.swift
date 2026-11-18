@@ -43,8 +43,11 @@ struct MPVPlayerView: View {
         case scrubber
         case seekBack, playPause, seekForward
         case previous, next
-        case captions, speed, quality, audio, chapters
+        case captions, speed, quality, audio, chapters, comments
         case related(String)
+        /// The comments panel when it has no comment rows to focus (loading, off, failed).
+        case commentsPanel
+        case comment(String)
         case skipSegment
         case errorRetry, errorFallback, errorNext, errorClose
 
@@ -52,7 +55,7 @@ struct MPVPlayerView: View {
         var isTransport: Bool {
             switch self {
             case .seekBack, .playPause, .seekForward, .previous, .next,
-                .captions, .speed, .quality, .audio, .chapters:
+                .captions, .speed, .quality, .audio, .chapters, .comments:
                 return true
             default:
                 return false
@@ -73,6 +76,8 @@ struct MPVPlayerView: View {
         static let chapters = "mpvPlayer.chaptersMenu"
         static let related = "mpvPlayer.relatedVideoButton"
         static let relatedShelf = "mpvPlayer.relatedShelf"
+        static let comments = "mpvPlayer.commentsButton"
+        static let commentsPanel = "mpvPlayer.commentsPanel"
         static let speed = "mpvPlayer.speedMenu"
         static let captions = "mpvPlayer.captionsMenu"
         static let skipSegment = "mpvPlayer.skipSegmentButton"
@@ -122,10 +127,15 @@ struct MPVPlayerView: View {
                 MPVVideoSurface(layer: engine.layer)
                     .id(ObjectIdentifier(engine))
                     .ignoresSafeArea()
+                    // Shrinks toward the left edge, vertically centred, while the panel is open.
+                    .scaleEffect(vm.commentsVisible ? MPVCommentsPanel.videoScale : 1, anchor: .leading)
             }
 
             if vm.errorMessage == nil {
-                if vm.relatedShelfVisible {
+                if vm.commentsVisible {
+                    MPVCommentsPanel(vm: vm, focus: $focus)
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                } else if vm.relatedShelfVisible {
                     relatedShelf(vm)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 } else if vm.controlsVisible {
@@ -158,7 +168,7 @@ struct MPVPlayerView: View {
                 loadingIndicator(vm)
             }
 
-            if let segment = vm.toastSegment, vm.errorMessage == nil, !vm.relatedShelfVisible {
+            if let segment = vm.toastSegment, vm.errorMessage == nil, !vm.relatedShelfVisible, !vm.commentsVisible {
                 skipSegmentButton(segment, vm)
             }
 
@@ -169,10 +179,13 @@ struct MPVPlayerView: View {
         .animation(.easeInOut(duration: 0.2), value: vm.controlsVisible)
         .animation(.easeInOut(duration: 0.2), value: vm.progressFlashVisible)
         .animation(.easeOut(duration: 0.25), value: vm.relatedShelfVisible)
+        .animation(.easeInOut(duration: MPVCommentsPanel.transitionDuration), value: vm.commentsVisible)
         .onPlayPauseCommand { vm.togglePlayPause() }
-        // Back peels one layer at a time: shelf, then controls, then the player.
+        // Back peels one layer at a time: comments panel, shelf, controls, then the player.
         .onExitCommand {
-            if vm.relatedShelfVisible {
+            if vm.commentsVisible {
+                vm.closeComments()
+            } else if vm.relatedShelfVisible {
                 vm.closeRelatedShelf()
             } else if vm.controlsVisible, vm.errorMessage == nil, !vm.videoEnded {
                 vm.hideControls()
@@ -192,6 +205,15 @@ struct MPVPlayerView: View {
             if newFocus != nil, newFocus != .surface, vm.controlsVisible { vm.showControls() }
             if let newFocus, newFocus.isTransport { lastTransportFocus = newFocus }
             if case .related(let id)? = newFocus { vm.relatedCardFocused(id) }
+            if case .comment(let id)? = newFocus { vm.commentFocused(id) }
+        }
+        // Comments load after the panel opens: when they arrive, focus moves from the panel's
+        // placeholder (or nothing, once it is gone) onto the first comment.
+        .onChange(of: vm.commentsState) { _, state in
+            guard vm.commentsVisible, state == .loaded, focus == nil || focus == .commentsPanel,
+                let first = vm.comments.first
+            else { return }
+            focus = .comment(first.id)
         }
         // Every fresh show of the overlay starts on Play, as it always has.
         .onChange(of: vm.controlsVisible) { _, visible in
@@ -201,7 +223,9 @@ struct MPVPlayerView: View {
         // the controls up. Hand focus to the skip button when it appears so one press of
         // Select skips the segment; when it goes away focus falls back to the surface.
         .onChange(of: vm.toastSegment?.id) { _, segmentID in
-            if segmentID != nil, !vm.controlsVisible, !vm.relatedShelfVisible { focus = .skipSegment }
+            if segmentID != nil, !vm.controlsVisible, !vm.relatedShelfVisible, !vm.commentsVisible {
+                focus = .skipSegment
+            }
         }
         // Safety net: the focused control can leave the hierarchy in the same update that
         // shows or hides the overlay (e.g. the skip button at the end of the video), and
@@ -210,7 +234,7 @@ struct MPVPlayerView: View {
         .task(id: vm.controlsVisible) {
             try? await Task.sleep(for: .milliseconds(600))
             guard !Task.isCancelled, focus == nil, vm.errorMessage == nil, !vm.holdControls,
-                !vm.relatedShelfVisible
+                !vm.relatedShelfVisible, !vm.commentsVisible
             else { return }
             focus = vm.controlsVisible ? restoredTransportFocus(vm) : (vm.toastSegment != nil ? .skipSegment : .surface)
         }
@@ -222,9 +246,28 @@ struct MPVPlayerView: View {
             guard !Task.isCancelled, vm.errorMessage == nil else { return }
             if vm.relatedShelfVisible {
                 focus = relatedShelfFocus(vm)
-            } else if !vm.controlsVisible, focus == nil || isRelatedCard(focus) {
+            } else if !vm.controlsVisible, !vm.commentsVisible, focus == nil || isRelatedCard(focus) {
                 focus = vm.toastSegment != nil ? .skipSegment : .surface
             }
+        }
+        // The panel takes focus when it opens (first comment, else its placeholder). Closing
+        // returns focus to the surface, as the controls are hidden while the panel is open.
+        .task(id: vm.commentsVisible) {
+            try? await Task.sleep(for: .milliseconds(150))
+            guard !Task.isCancelled, vm.errorMessage == nil else { return }
+            if vm.commentsVisible {
+                let first: FocusTarget? = vm.comments.first.map { FocusTarget.comment($0.id) }
+                focus = first ?? .commentsPanel
+            } else if !vm.controlsVisible, !vm.relatedShelfVisible, focus == nil || isCommentsFocus(focus) {
+                focus = vm.toastSegment != nil ? .skipSegment : .surface
+            }
+        }
+    }
+
+    private func isCommentsFocus(_ target: FocusTarget?) -> Bool {
+        switch target {
+        case .comment?, .commentsPanel?: return true
+        default: return false
         }
     }
 
@@ -254,6 +297,7 @@ struct MPVPlayerView: View {
         case .audio: return vm.audioOptions.count > 1 ? .audio : .playPause
         case .captions: return vm.captionTracks.isEmpty ? .playPause : .captions
         case .quality: return vm.selectablePlans.count > 1 ? .quality : .playPause
+        case .comments: return vm.canShowComments ? .comments : .playPause
         default: return lastTransportFocus
         }
     }
@@ -512,6 +556,9 @@ struct MPVPlayerView: View {
             if vm.audioOptions.count > 1 {
                 audioMenu(vm)
             }
+            if vm.canShowComments {
+                commentsButton(vm)
+            }
             if !vm.captionTracks.isEmpty {
                 captionsMenu(vm)
             }
@@ -526,6 +573,17 @@ struct MPVPlayerView: View {
         .onMoveCommand { direction in
             if direction == .down, !vm.relatedVideos.isEmpty { vm.openRelatedShelf() }
         }
+    }
+
+    private func commentsButton(_ vm: MPVPlayerViewModel) -> some View {
+        Button {
+            vm.openComments()
+        } label: {
+            Image(systemName: AppSymbol.comments)
+        }
+        .focused($focus, equals: .comments)
+        .accessibilityLabel(Text("Comments", bundle: .module))
+        .accessibilityIdentifier(ID.comments)
     }
 
     private func chaptersMenu(_ vm: MPVPlayerViewModel) -> some View {

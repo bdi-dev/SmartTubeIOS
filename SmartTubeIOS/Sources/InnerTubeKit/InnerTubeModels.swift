@@ -40,6 +40,21 @@ public struct Comment: Sendable, Identifiable {
     public let isLiked: Bool
 }
 
+/// One page of top-level comments and the token for the page after it.
+public struct CommentPage: Sendable {
+    public let comments: [Comment]
+    /// Token for the following page; `nil` on the last page.
+    public let nextToken: String?
+    /// The count as YouTube shows it (for example "5.4M"). Only the first page carries it.
+    public let totalCountText: String?
+
+    public init(comments: [Comment], nextToken: String?, totalCountText: String?) {
+        self.comments = comments
+        self.nextToken = nextToken
+        self.totalCountText = totalCountText
+    }
+}
+
 // MARK: - EndCard
 
 /// A YouTube end-screen card shown in the final seconds of a video.

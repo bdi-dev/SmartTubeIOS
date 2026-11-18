@@ -7,7 +7,7 @@ private let tubeLog = Logger(subsystem: appSubsystem, category: "InnerTube")
 
 extension InnerTubeAPI {
 
-    func extractText(_ dict: [String: Any]) -> String? {
+    nonisolated func extractText(_ dict: [String: Any]) -> String? {
         if let simple = dict["simpleText"] as? String { return simple }
         if let runs = dict["runs"] as? [[String: Any]] {
             return runs.compactMap { $0["text"] as? String }.joined()

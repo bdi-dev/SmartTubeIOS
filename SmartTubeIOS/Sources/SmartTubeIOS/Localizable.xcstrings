@@ -4920,6 +4920,15 @@
         }
       }
     },
+    "Comments are turned off." : {
+      "comment" : "Comments panel: the video has comments turned off"
+    },
+    "Could not load comments." : {
+      "comment" : "Comments panel: the comments request failed; offers Retry"
+    },
+    "Loading comments" : {
+      "comment" : "Comments panel: loading indicator label"
+    },
     "Comments" : {
       "comment" : "Player more-menu label and comments sheet header",
       "extractionState" : "manual",

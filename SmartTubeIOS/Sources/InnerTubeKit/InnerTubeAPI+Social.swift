@@ -203,23 +203,41 @@ extension InnerTubeAPI {
     // MARK: - Comments
 
     /// Fetches the first page of top-level comments for a video.
-    /// Uses the WEB client: calls `/next` with the videoId to extract the
-    /// comments continuation token from `engagementPanels`, then fetches comments.
     /// Returns an empty array when comments are disabled or the token is absent.
     public func fetchComments(videoId: String) async throws -> [Comment] {
-        var body = makeBody(client: webClientContext)
-        body["videoId"] = videoId
-        let nextData = try await post(endpoint: "next", body: body)
-        guard let token = parseCommentsContinuationToken(from: nextData) else {
-            tubeLog.notice("fetchComments: no comments token for videoId=\(videoId, privacy: .public)")
-            return []
+        try await fetchCommentPage(videoId: videoId).comments
+    }
+
+    /// Fetches one page of top-level comments.
+    ///
+    /// - Parameters:
+    ///   - videoId: The video whose comments to load.
+    ///   - continuation: The `nextToken` of the previous page. `nil` loads the first page:
+    ///     that takes an extra `/next` call to find the comments token and the count.
+    /// - Returns: The page's comments in display order, the token for the following page
+    ///   (`nil` on the last page), and the count text on the first page.
+    ///   Empty with a `nil` token when comments are disabled.
+    public func fetchCommentPage(videoId: String, continuation: String? = nil) async throws -> CommentPage {
+        var token = continuation
+        var totalCountText: String? = nil
+        if token == nil {
+            var body = makeBody(client: webClientContext)
+            body["videoId"] = videoId
+            let nextData = try await post(endpoint: "next", body: body)
+            totalCountText = parseCommentsCountText(from: nextData)
+            guard let first = parseCommentsContinuationToken(from: nextData) else {
+                tubeLog.notice("fetchCommentPage: no comments token for videoId=\(videoId, privacy: .public)")
+                return CommentPage(comments: [], nextToken: nil, totalCountText: totalCountText)
+            }
+            token = first
         }
         let commentsBody = makeBody(client: webClientContext, continuationToken: token)
         let commentsData = try await post(endpoint: "next", body: commentsBody)
-        let comments = parseComments(from: commentsData)
+        let page = parseCommentPage(from: commentsData)
         tubeLog.notice(
-            "fetchComments videoId=\(videoId, privacy: .public) → \(comments.count, privacy: .public) comments")
-        return comments
+            "fetchCommentPage videoId=\(videoId, privacy: .public) → \(page.comments.count, privacy: .public) comments, more=\(page.nextToken != nil, privacy: .public)"
+        )
+        return CommentPage(comments: page.comments, nextToken: page.nextToken, totalCountText: totalCountText)
     }
 
     // MARK: - Private social parsers
@@ -374,13 +392,12 @@ extension InnerTubeAPI {
         return chapters.sorted { $0.startTime < $1.startTime }
     }
 
-    /// Finds the comments continuation token inside the `engagementPanels` of a
-    /// `/next` response — looks for the panel whose `panelIdentifier` or header title
-    /// contains "comment".
-    private func parseCommentsContinuationToken(from json: [String: Any]) -> String? {
-        guard let panels = json["engagementPanels"] as? [[String: Any]] else { return nil }
-        for panel in panels {
-            guard let pslr = panel["engagementPanelSectionListRenderer"] as? [String: Any] else { continue }
+    /// The comments panels of a `/next` response: the `engagementPanelSectionListRenderer`
+    /// whose `panelIdentifier` or header title contains "comment".
+    private nonisolated func commentsPanels(in json: [String: Any]) -> [[String: Any]] {
+        guard let panels = json["engagementPanels"] as? [[String: Any]] else { return [] }
+        return panels.compactMap { panel -> [String: Any]? in
+            guard let pslr = panel["engagementPanelSectionListRenderer"] as? [String: Any] else { return nil }
             let panelId = pslr["panelIdentifier"] as? String ?? ""
             let headerTitle: String = {
                 let header = pslr["header"] as? [String: Any]
@@ -388,8 +405,30 @@ extension InnerTubeAPI {
                 return (thr?["title"] as? [String: Any]).flatMap { extractText($0) } ?? ""
             }()
             guard panelId.lowercased().contains("comment") || headerTitle.lowercased().contains("comment") else {
-                continue
+                return nil
             }
+            return pslr
+        }
+    }
+
+    /// The comment count as YouTube shows it, from the comments panel's title header
+    /// (`contextualInfo`, e.g. "5.4M"). `nil` when the response does not carry one.
+    nonisolated func parseCommentsCountText(from json: [String: Any]) -> String? {
+        for pslr in commentsPanels(in: json) {
+            let header = pslr["header"] as? [String: Any]
+            let thr = header?["engagementPanelTitleHeaderRenderer"] as? [String: Any]
+            if let text = (thr?["contextualInfo"] as? [String: Any]).flatMap({ extractText($0) }), !text.isEmpty {
+                return text
+            }
+        }
+        return nil
+    }
+
+    /// Finds the comments continuation token inside the `engagementPanels` of a
+    /// `/next` response — looks for the panel whose `panelIdentifier` or header title
+    /// contains "comment".
+    nonisolated func parseCommentsContinuationToken(from json: [String: Any]) -> String? {
+        for pslr in commentsPanels(in: json) {
             var found: String? = nil
             func findToken(_ obj: Any, depth: Int = 0) {
                 guard found == nil else { return }
@@ -414,8 +453,107 @@ extension InnerTubeAPI {
         return nil
     }
 
+    /// Converts a `commentEntityPayload` (InnerTube v2 entity format) into a `Comment`.
+    /// Like counts live in `toolbar` (`likeCountNotliked`); older responses kept them in
+    /// `properties.toolbarState`, which is still read as a fallback.
+    private nonisolated func comment(fromEntityPayload cep: [String: Any]) -> Comment {
+        let properties = cep["properties"] as? [String: Any]
+        let author = cep["author"] as? [String: Any]
+        let toolbar = cep["toolbar"] as? [String: Any]
+        let toolbarState = properties?["toolbarState"] as? [String: Any]
+        return Comment(
+            id: properties?["commentId"] as? String ?? UUID().uuidString,
+            author: author?["displayName"] as? String ?? "",
+            authorAvatarURL: (author?["avatarThumbnailUrl"] as? String).flatMap { URL(string: $0) },
+            text: (properties?["content"] as? [String: Any])?["content"] as? String ?? "",
+            likeCount: toolbar?["likeCountNotliked"] as? String ?? toolbarState?["likeCountNotliked"] as? String ?? "",
+            publishedTime: properties?["publishedTime"] as? String ?? "",
+            isLiked: (toolbarState?["likeState"] as? String) == "LIKE_STATE_LIKED"
+        )
+    }
+
+    /// Every comment entity in a response, keyed by its `entityKey`.
+    private nonisolated func commentEntities(in json: [String: Any]) -> [String: Comment] {
+        guard let frameworkUpdates = json["frameworkUpdates"] as? [String: Any],
+            let entityBatch = frameworkUpdates["entityBatchUpdate"] as? [String: Any],
+            let mutations = entityBatch["mutations"] as? [[String: Any]]
+        else { return [:] }
+        var entities: [String: Comment] = [:]
+        for mutation in mutations {
+            guard let key = mutation["entityKey"] as? String,
+                let payload = mutation["payload"] as? [String: Any],
+                let cep = payload["commentEntityPayload"] as? [String: Any]
+            else { continue }
+            entities[key] = comment(fromEntityPayload: cep)
+        }
+        return entities
+    }
+
+    /// Parses one page of top-level comments from a comments continuation `/next` response.
+    ///
+    /// Display order comes from the `onResponseReceivedEndpoints` item list, which
+    /// references each comment by `commentKey`; the entity mutations only hold the data.
+    /// Replies are not top-level and are skipped, including the reply continuation tokens
+    /// nested inside each thread. The next-page token is the continuation item that sits
+    /// directly in that item list.
+    nonisolated func parseCommentPage(from json: [String: Any]) -> CommentPage {
+        let entities = commentEntities(in: json)
+        var ordered: [Comment] = []
+        var sawCommentItems = false
+        var nextToken: String? = nil
+
+        for endpoint in json["onResponseReceivedEndpoints"] as? [[String: Any]] ?? [] {
+            for commandKey in ["reloadContinuationItemsCommand", "appendContinuationItemsAction"] {
+                guard let command = endpoint[commandKey] as? [String: Any],
+                    let items = command["continuationItems"] as? [[String: Any]]
+                else { continue }
+                for item in items {
+                    let commentKey: String? =
+                        ((item["commentThreadRenderer"] as? [String: Any])?["commentViewModel"] as? [String: Any])
+                        .flatMap { $0["commentViewModel"] as? [String: Any] }
+                        .flatMap { $0["commentKey"] as? String }
+                        ?? (item["commentViewModel"] as? [String: Any])?["commentKey"] as? String
+                    if let commentKey {
+                        sawCommentItems = true
+                        if let comment = entities[commentKey] { ordered.append(comment) }
+                    } else if let renderer = item["continuationItemRenderer"] as? [String: Any] {
+                        nextToken = Self.firstContinuationToken(in: renderer) ?? nextToken
+                    }
+                }
+            }
+        }
+
+        // Responses without the item list (older shapes): fall back to the entity order.
+        if !sawCommentItems, ordered.isEmpty {
+            let comments = parseComments(from: json)
+            return CommentPage(comments: comments, nextToken: nextToken, totalCountText: nil)
+        }
+        return CommentPage(comments: ordered, nextToken: nextToken, totalCountText: nil)
+    }
+
+    /// The first `continuationCommand.token` under a `continuationItemRenderer`. Searches only
+    /// inside that renderer, so tokens of reply streams elsewhere in the response are not used.
+    private static func firstContinuationToken(in node: Any, depth: Int = 0) -> String? {
+        guard depth < 20 else { return nil }
+        if let dict = node as? [String: Any] {
+            if let command = dict["continuationCommand"] as? [String: Any],
+                let token = command["token"] as? String
+            {
+                return token
+            }
+            for value in dict.values {
+                if let token = firstContinuationToken(in: value, depth: depth + 1) { return token }
+            }
+        } else if let array = node as? [Any] {
+            for value in array {
+                if let token = firstContinuationToken(in: value, depth: depth + 1) { return token }
+            }
+        }
+        return nil
+    }
+
     /// Parses `commentRenderer` objects from a comments continuation `/next` response.
-    private func parseComments(from json: [String: Any]) -> [Comment] {
+    private nonisolated func parseComments(from json: [String: Any]) -> [Comment] {
         var comments: [Comment] = []
 
         // New entity-based format (YouTube InnerTube v2):
@@ -430,27 +568,7 @@ extension InnerTubeAPI {
                 guard let payload = mutation["payload"] as? [String: Any],
                     let cep = payload["commentEntityPayload"] as? [String: Any]
                 else { continue }
-                let properties = cep["properties"] as? [String: Any]
-                let author = cep["author"] as? [String: Any]
-
-                let id = properties?["commentId"] as? String ?? UUID().uuidString
-                let authorName = author?["displayName"] as? String ?? ""
-                let avatarURL = (author?["avatarThumbnailUrl"] as? String).flatMap { URL(string: $0) }
-                let text = (properties?["content"] as? [String: Any])?["content"] as? String ?? ""
-                let publishedTime = properties?["publishedTime"] as? String ?? ""
-                let toolbarState = properties?["toolbarState"] as? [String: Any]
-                let likeCount = toolbarState?["likeCountNotliked"] as? String ?? ""
-                let isLiked = (toolbarState?["likeState"] as? String) == "LIKE_STATE_LIKED"
-                comments.append(
-                    Comment(
-                        id: id,
-                        author: authorName,
-                        authorAvatarURL: avatarURL,
-                        text: text,
-                        likeCount: likeCount,
-                        publishedTime: publishedTime,
-                        isLiked: isLiked
-                    ))
+                comments.append(comment(fromEntityPayload: cep))
             }
             if !comments.isEmpty {
                 tubeLog.notice("parseComments: entity format → \(comments.count, privacy: .public) comments")

@@ -129,6 +129,22 @@ final class MPVPlayerViewModel {
     /// The shelf closes after this long with no focus movement across its cards.
     static let relatedShelfIdleTimeout: Duration = .seconds(12)
     private var relatedShelfIdleTask: Task<Void, Never>?
+    /// The comments panel beside the playing video (the video shrinks to the left). Like the
+    /// shelf it replaces the controls while open; playback carries on.
+    private(set) var commentsVisible = false
+    private(set) var comments: [Comment] = []
+    /// The count YouTube shows for the video (e.g. "5.4M"), once the first page has loaded.
+    private(set) var commentsCountText: String?
+    private(set) var commentsState: MPVCommentsState = .idle
+    /// True while a page after the first is being fetched.
+    private(set) var isLoadingMoreComments = false
+    /// Token for the page after the last one loaded; nil when there is none.
+    private var commentsNextToken: String?
+    private var commentsTask: Task<Void, Never>?
+    /// Comments kept in memory per video; paging stops here.
+    static let maxLoadedComments = 200
+    /// Focus within this many rows of the end of the loaded list fetches the next page.
+    static let commentsPrefetchDistance = 5
     private(set) var isScrubbing = false
     private(set) var scrubTime: TimeInterval = 0
 
@@ -763,6 +779,7 @@ final class MPVPlayerViewModel {
     private static let keepControlsForTesting = ProcessInfo.processInfo.arguments.contains("--uitesting-keep-controls")
 
     func showControls(autoHide: Bool = true) {
+        guard !commentsVisible else { return }
         if relatedShelfVisible { closeRelatedShelf() }
         controlsVisible = true
         controlsHideTask?.cancel()
@@ -790,7 +807,7 @@ final class MPVPlayerViewModel {
     /// nothing without suggestions, or once the video has ended (the end-of-video row covers
     /// that case).
     func openRelatedShelf() {
-        guard !relatedVideos.isEmpty, !videoEnded, errorMessage == nil else { return }
+        guard !relatedVideos.isEmpty, !videoEnded, errorMessage == nil, !commentsVisible else { return }
         controlsHideTask?.cancel()
         controlsVisible = false
         relatedShelfVisible = true
@@ -815,6 +832,99 @@ final class MPVPlayerViewModel {
             try? await Task.sleep(for: Self.relatedShelfIdleTimeout)
             guard !Task.isCancelled, let self, self.relatedShelfVisible else { return }
             self.closeRelatedShelf()
+        }
+    }
+
+    // MARK: - Comments panel
+
+    /// The Comments button shows unless the video has ended, failed, or has comments turned off.
+    /// Before the first page loads the button is shown.
+    var canShowComments: Bool {
+        errorMessage == nil && !videoEnded && commentsState != .disabled
+    }
+
+    /// Raises the comments panel beside the video and hides the controls and shelf. The first
+    /// open loads page one; later opens reuse what is loaded.
+    func openComments() {
+        guard canShowComments else { return }
+        relatedShelfIdleTask?.cancel()
+        relatedShelfVisible = false
+        controlsHideTask?.cancel()
+        controlsVisible = false
+        commentsVisible = true
+        if commentsState == .idle || commentsState == .failed {
+            loadFirstCommentsPage()
+        }
+    }
+
+    /// Closes the panel. The video is still playing (or ended); the controls come back only
+    /// when the video has ended, where they carry the next-up row.
+    func closeComments() {
+        guard commentsVisible else { return }
+        commentsVisible = false
+        if videoEnded { showControls(autoHide: false) }
+    }
+
+    /// Retries after a failed first page.
+    func retryComments() {
+        guard commentsState == .failed else { return }
+        loadFirstCommentsPage()
+    }
+
+    /// Focus moved to a comment row: fetch the next page when it is close to the end.
+    func commentFocused(_ id: String) {
+        guard let index = comments.firstIndex(where: { $0.id == id }) else { return }
+        if index >= comments.count - Self.commentsPrefetchDistance {
+            loadMoreComments()
+        }
+    }
+
+    private func loadFirstCommentsPage() {
+        commentsTask?.cancel()
+        commentsState = .loading
+        let videoId = video.id
+        commentsTask = Task { [weak self] in
+            guard let self else { return }
+            defer { self.commentsTask = nil }
+            do {
+                let page = try await self.api.fetchCommentPage(videoId: videoId)
+                guard !Task.isCancelled else { return }
+                self.commentsCountText = page.totalCountText
+                self.comments = Array(page.comments.prefix(Self.maxLoadedComments))
+                self.commentsNextToken = page.nextToken
+                // No comments and no way to page on: comments are off for this video.
+                self.commentsState = self.comments.isEmpty && page.nextToken == nil ? .disabled : .loaded
+            } catch {
+                guard !Task.isCancelled else { return }
+                mpvPlayerLog.notice("comments failed: \(error.localizedDescription)")
+                self.commentsState = .failed
+            }
+        }
+    }
+
+    private func loadMoreComments() {
+        guard commentsState == .loaded, let token = commentsNextToken,
+            comments.count < Self.maxLoadedComments, commentsTask == nil
+        else { return }
+        isLoadingMoreComments = true
+        let videoId = video.id
+        commentsTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                self.isLoadingMoreComments = false
+                self.commentsTask = nil
+            }
+            do {
+                let page = try await self.api.fetchCommentPage(videoId: videoId, continuation: token)
+                guard !Task.isCancelled else { return }
+                let seen = Set(self.comments.map(\.id))
+                let fresh = page.comments.filter { !seen.contains($0.id) }
+                self.comments.append(contentsOf: fresh.prefix(Self.maxLoadedComments - self.comments.count))
+                self.commentsNextToken = page.nextToken
+            } catch {
+                // Keep what is loaded; the next focus near the end retries this token.
+                mpvPlayerLog.notice("more comments failed: \(error.localizedDescription)")
+            }
         }
     }
 
@@ -851,6 +961,7 @@ final class MPVPlayerViewModel {
         progressFlashTask?.cancel()
         scrubCommitTask?.cancel()
         relatedShelfIdleTask?.cancel()
+        commentsTask?.cancel()
         eventTask?.cancel()
         eventTask = nil
         isPlaying = false
@@ -858,6 +969,14 @@ final class MPVPlayerViewModel {
         resetDisplayCriteria()
         engine?.shutdown()
     }
+}
+
+// MARK: - MPVCommentsState
+
+/// Where the comments panel is: nothing requested yet, loading the first page, showing comments,
+/// turned off for this video (no comments and nothing to page), or failed.
+enum MPVCommentsState: Equatable {
+    case idle, loading, loaded, disabled, failed
 }
 
 // MARK: - MPVClientProfile
