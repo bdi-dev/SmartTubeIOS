@@ -30,6 +30,10 @@ public actor InnerTubeAPI {
     var sapisid: String?
     /// Selected Brand Account, sent as `X-Goog-Pageid` on authenticated requests.
     let activeChannel: ActiveChannel
+    /// True for instances made by the public initializer: they seed from, and publish to,
+    /// `SharedAuthSession`, so a view model's own `InnerTubeAPI()` (e.g. ChannelViewModel)
+    /// is signed in like the app's main instance. Test-only instances never share.
+    let sharesAuthSession: Bool
 
     // MARK: - signatureTimestamp (STS) cache
     //
@@ -284,7 +288,9 @@ public actor InnerTubeAPI {
         config.timeoutIntervalForResource = 60
         config.waitsForConnectivity = true
         self.session = URLSession(configuration: config)
-        self.authToken = authToken
+        self.authToken = authToken ?? SharedAuthSession.shared.token
+        self.sapisid = SharedAuthSession.shared.sapisid
+        self.sharesAuthSession = true
         self.poTokenProvider = poTokenProvider
         self.activeChannel = activeChannel
         // Start observing network path changes so visitorData is cleared on network transitions.
@@ -300,6 +306,7 @@ public actor InnerTubeAPI {
     init(authToken: String?, session: URLSession, activeChannel: ActiveChannel = ActiveChannel()) {
         self.session = session
         self.authToken = authToken
+        self.sharesAuthSession = false
         self.poTokenProvider = nil
         self.activeChannel = activeChannel
     }
@@ -323,6 +330,7 @@ public actor InnerTubeAPI {
         let msg = token != nil ? "token(\(token!.prefix(8))…)" : "nil"
         tubeLog.notice("setAuthToken: \(msg, privacy: .public)")
         self.authToken = token
+        if sharesAuthSession { SharedAuthSession.shared.setToken(token) }
     }
 
     /// Sets the YouTube.com SAPISID cookie value extracted via the OAuthLogin/MergeSession
@@ -331,6 +339,7 @@ public actor InnerTubeAPI {
         let msg = value != nil ? "present" : "nil"
         tubeLog.notice("setSAPISID: \(msg, privacy: .public)")
         self.sapisid = value
+        if sharesAuthSession, let value { SharedAuthSession.shared.setSAPISID(value) }
     }
 
     /// Returns whether the SAPISID cookie is currently set.

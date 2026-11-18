@@ -57,6 +57,11 @@ struct SmartTubeApp: App {
                         await browseViewModel.updateAuthToken(newToken)
                     }
                 }
+                // Publish the web-session SAPISID too (SharedAuthSession), so channel pages
+                // opened later are signed with SAPISIDHASH and carry resume progress.
+                .onChange(of: authService.sapisid, initial: true) { _, newSapisid in
+                    Task { await api.setSAPISID(newSapisid) }
+                }
                 .onChange(of: settingsStore.settings.enabledSections) { _, newSections in
                     browseViewModel.configureSections(newSections)
                 }
