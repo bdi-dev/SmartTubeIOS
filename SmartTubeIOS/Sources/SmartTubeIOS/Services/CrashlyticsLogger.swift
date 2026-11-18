@@ -17,6 +17,18 @@ public struct CrashlyticsLogger: Sendable {
     /// is a fatal error, not a silent no-op.
     public nonisolated(unsafe) static var isEnabled = true
 
+    /// Whether the app bundle carries a real `GoogleService-Info.plist`. Forks and local
+    /// device builds often have none (it is gitignored), or the `.example` placeholder copied
+    /// in so the Crashlytics build phase passes. `FirebaseApp.configure()` raises a fatal
+    /// exception in both cases, so the app entry points check this first.
+    public static var hasUsableFirebaseConfig: Bool {
+        guard let url = Bundle.main.url(forResource: "GoogleService-Info", withExtension: "plist"),
+            let plist = NSDictionary(contentsOf: url),
+            let appID = plist["GOOGLE_APP_ID"] as? String
+        else { return false }
+        return !appID.contains("YOUR_")
+    }
+
     /// Short identifier (8 hex chars) generated once per app session, independent of
     /// `isEnabled` — it's shown in the Stats for Nerds debug overlay purely as a local
     /// reference number even when analytics reporting is off.

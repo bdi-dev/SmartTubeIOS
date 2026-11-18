@@ -60,7 +60,8 @@ struct AppEntry: App {
         // methods know to skip Crashlytics.crashlytics() instead of hitting the fatal
         // "default app not configured" error.
         let settingsStore = SettingsStore()
-        CrashlyticsLogger.isEnabled = !settingsStore.settings.disableAnalytics
+        CrashlyticsLogger.isEnabled =
+            CrashlyticsLogger.hasUsableFirebaseConfig && !settingsStore.settings.disableAnalytics
         if CrashlyticsLogger.isEnabled {
             FirebaseApp.configure()
         }
