@@ -102,6 +102,10 @@ final class MPVPlayerViewModel {
         let time = (isScrubbing ? scrubTime : currentTime) + 0.5
         return chapters.last { $0.startTime <= time }
     }
+    /// True when this video was reached by autoplay / Next rather than picked by the viewer:
+    /// if it turns out to be unplayable, move on to the following suggestion instead of
+    /// stranding them on an error screen.
+    var autoSkipUnavailable = false
     /// Set by the view: switch the player to another video (new view model, new engine).
     var onPlayVideo: ((Video) -> Void)?
     /// Position in the Current Queue when this video was started from it. Captured at
@@ -231,6 +235,7 @@ final class MPVPlayerViewModel {
                     lastLoadError
                     ?? String(localized: "No playable stream was found for this video.", bundle: .module)
                 mpvPlayerLog.error("all client profiles exhausted for \(self.video.id): \(self.errorMessage ?? "")")
+                if autoSkipUnavailable { skipUnavailableVideo() }
                 return
             }
             let client = remainingClients.removeFirst()
@@ -500,6 +505,19 @@ final class MPVPlayerViewModel {
         Task { [weak self] in
             guard let self, let previous = await CurrentQueueStore.shared.videoAt(index: index - 1) else { return }
             self.play(previous)
+        }
+    }
+
+    /// Waits briefly for this video's own suggestions to arrive, then moves on.
+    private func skipUnavailableVideo() {
+        Task { [weak self] in
+            for _ in 0..<10 {
+                if let self, self.canPlayNext { break }
+                try? await Task.sleep(for: .milliseconds(300))
+            }
+            guard let self, self.errorMessage != nil, self.canPlayNext else { return }
+            mpvPlayerLog.notice("skipping unavailable \(self.video.id)")
+            self.playNext()
         }
     }
 

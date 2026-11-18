@@ -43,7 +43,7 @@ struct MPVPlayerView: View {
         case captions, speed, quality, audio, chapters
         case related(String)
         case skipSegment
-        case errorRetry, errorFallback, errorClose
+        case errorRetry, errorFallback, errorNext, errorClose
     }
 
     enum ID {
@@ -70,7 +70,9 @@ struct MPVPlayerView: View {
         ZStack {
             Color.black.ignoresSafeArea()
             if let vm {
+                // A fresh identity per video: no focus, scrub or overlay state carries over.
                 playerBody(vm)
+                    .id(ObjectIdentifier(vm))
             }
         }
         .toolbar(.hidden, for: .tabBar)
@@ -78,8 +80,10 @@ struct MPVPlayerView: View {
         .task(id: (playing ?? video).id) {
             // Moving to another video replaces the whole view model — one engine per video.
             vm?.stop()
+            vm = nil
             let model = MPVPlayerViewModel(
                 video: playing ?? video, api: api, settings: store.settings, isSignedIn: auth.isSignedIn)
+            model.autoSkipUnavailable = playing != nil
             model.onPlayVideo = { next in playing = next }
             vm = model
             model.start()
@@ -101,6 +105,7 @@ struct MPVPlayerView: View {
         ZStack {
             if let engine = vm.engine {
                 MPVVideoSurface(layer: engine.layer)
+                    .id(ObjectIdentifier(engine))
                     .ignoresSafeArea()
             }
 
@@ -648,6 +653,13 @@ struct MPVPlayerView: View {
                 }
                 .focused($focus, equals: .errorRetry)
 
+                if vm.canPlayNext {
+                    Button(String(localized: "Play Next", bundle: .module)) {
+                        vm.playNext()
+                    }
+                    .focused($focus, equals: .errorNext)
+                }
+
                 Button(String(localized: "Close", bundle: .module)) {
                     close(vm)
                 }
@@ -685,12 +697,18 @@ private struct MPVVideoSurface: UIViewRepresentable {
         return view
     }
 
-    func updateUIView(_ uiView: SurfaceView, context: Context) {}
+    func updateUIView(_ uiView: SurfaceView, context: Context) {
+        // The view is reused when the player moves to the next video, but each video has its
+        // own engine and layer — show the current one.
+        uiView.attach(layer)
+    }
 
     final class SurfaceView: UIView {
         private var videoLayer: CAMetalLayer?
 
         func attach(_ layer: CAMetalLayer) {
+            guard videoLayer !== layer else { return }
+            videoLayer?.removeFromSuperlayer()
             videoLayer = layer
             self.layer.addSublayer(layer)
             setNeedsLayout()
