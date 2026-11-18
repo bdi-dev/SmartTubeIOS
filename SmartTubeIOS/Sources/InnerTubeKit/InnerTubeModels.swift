@@ -38,6 +38,37 @@ public struct Comment: Sendable, Identifiable {
     public let likeCount: String
     public let publishedTime: String
     public let isLiked: Bool
+    /// The reply count as YouTube shows it ("12 replies"); `nil` for a comment without replies
+    /// and for replies themselves.
+    public let replyCountText: String?
+    /// Token that loads the first page of this comment's replies; `nil` when it has none.
+    public let replyContinuationToken: String?
+
+    public init(
+        id: String, author: String, authorAvatarURL: URL?, text: String, likeCount: String,
+        publishedTime: String, isLiked: Bool, replyCountText: String? = nil,
+        replyContinuationToken: String? = nil
+    ) {
+        self.id = id
+        self.author = author
+        self.authorAvatarURL = authorAvatarURL
+        self.text = text
+        self.likeCount = likeCount
+        self.publishedTime = publishedTime
+        self.isLiked = isLiked
+        self.replyCountText = replyCountText
+        self.replyContinuationToken = replyContinuationToken
+    }
+
+    /// This comment with its reply thread attached.
+    func withReplies(countText: String?, continuationToken: String?) -> Comment {
+        Comment(
+            id: id, author: author, authorAvatarURL: authorAvatarURL, text: text, likeCount: likeCount,
+            publishedTime: publishedTime, isLiked: isLiked, replyCountText: countText,
+            replyContinuationToken: continuationToken)
+    }
+
+    public var hasReplies: Bool { replyContinuationToken != nil }
 }
 
 /// One page of top-level comments and the token for the page after it.

@@ -240,6 +240,21 @@ extension InnerTubeAPI {
         return CommentPage(comments: page.comments, nextToken: page.nextToken, totalCountText: totalCountText)
     }
 
+    /// Fetches one page of replies to a comment.
+    ///
+    /// - Parameter continuation: `Comment.replyContinuationToken` for the first page, then the
+    ///   previous page's `nextToken`.
+    /// - Returns: The replies in display order and the token for the next page (`nil` on the last).
+    public func fetchCommentReplies(continuation: String) async throws -> CommentPage {
+        let body = makeBody(client: webClientContext, continuationToken: continuation)
+        let data = try await post(endpoint: "next", body: body)
+        let page = parseCommentPage(from: data)
+        tubeLog.notice(
+            "fetchCommentReplies → \(page.comments.count, privacy: .public) replies, more=\(page.nextToken != nil, privacy: .public)"
+        )
+        return page
+    }
+
     // MARK: - Private social parsers
 
     /// Parses the user's current like/dislike state from a `/next` response.
@@ -493,9 +508,10 @@ extension InnerTubeAPI {
     ///
     /// Display order comes from the `onResponseReceivedEndpoints` item list, which
     /// references each comment by `commentKey`; the entity mutations only hold the data.
-    /// Replies are not top-level and are skipped, including the reply continuation tokens
-    /// nested inside each thread. The next-page token is the continuation item that sits
-    /// directly in that item list.
+    /// Replies are not part of the list; a thread's reply count text and first reply token
+    /// are attached to its top-level comment instead. The next-page token is the continuation
+    /// item that sits directly in that item list. The same parser reads a reply page
+    /// (items are bare `commentViewModel`s; the "Show more replies" button holds the token).
     nonisolated func parseCommentPage(from json: [String: Any]) -> CommentPage {
         let entities = commentEntities(in: json)
         var ordered: [Comment] = []
@@ -508,14 +524,21 @@ extension InnerTubeAPI {
                     let items = command["continuationItems"] as? [[String: Any]]
                 else { continue }
                 for item in items {
+                    let thread = item["commentThreadRenderer"] as? [String: Any]
                     let commentKey: String? =
-                        ((item["commentThreadRenderer"] as? [String: Any])?["commentViewModel"] as? [String: Any])
+                        (thread?["commentViewModel"] as? [String: Any])
                         .flatMap { $0["commentViewModel"] as? [String: Any] }
                         .flatMap { $0["commentKey"] as? String }
                         ?? (item["commentViewModel"] as? [String: Any])?["commentKey"] as? String
                     if let commentKey {
                         sawCommentItems = true
-                        if let comment = entities[commentKey] { ordered.append(comment) }
+                        if var comment = entities[commentKey] {
+                            if let thread, let replies = Self.replyThread(in: thread) {
+                                comment = comment.withReplies(
+                                    countText: replies.countText, continuationToken: replies.token)
+                            }
+                            ordered.append(comment)
+                        }
                     } else if let renderer = item["continuationItemRenderer"] as? [String: Any] {
                         nextToken = Self.firstContinuationToken(in: renderer) ?? nextToken
                     }
@@ -529,6 +552,21 @@ extension InnerTubeAPI {
             return CommentPage(comments: comments, nextToken: nextToken, totalCountText: nil)
         }
         return CommentPage(comments: ordered, nextToken: nextToken, totalCountText: nil)
+    }
+
+    /// The reply count text ("727 replies") and first reply-page token of a comment thread,
+    /// from `replies.commentRepliesRenderer`. The text falls back to the accessibility label
+    /// and then to "Replies"; `nil` when the thread has no replies stream.
+    private static func replyThread(in thread: [String: Any]) -> (countText: String, token: String)? {
+        guard let renderer = (thread["replies"] as? [String: Any])?["commentRepliesRenderer"] as? [String: Any],
+            let token = firstContinuationToken(in: renderer["contents"] as Any)
+        else { return nil }
+        let button = ((renderer["viewReplies"] as? [String: Any])?["buttonRenderer"] as? [String: Any])
+        let runs = ((button?["text"] as? [String: Any])?["runs"] as? [[String: Any]])?
+            .compactMap { $0["text"] as? String }.joined()
+        let simple = (button?["text"] as? [String: Any])?["simpleText"] as? String
+        let text = [runs, simple].compactMap { $0 }.first { !$0.isEmpty } ?? "Replies"
+        return (text, token)
     }
 
     /// The first `continuationCommand.token` under a `continuationItemRenderer`. Searches only

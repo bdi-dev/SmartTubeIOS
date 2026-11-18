@@ -89,7 +89,13 @@ struct MPVCommentsPanel: View {
             ScrollView(.vertical, showsIndicators: false) {
                 LazyVStack(alignment: .leading, spacing: 20) {
                     ForEach(vm.comments) { comment in
-                        commentRow(comment)
+                        commentRow(comment, target: .comment(comment.id))
+                        if comment.hasReplies {
+                            repliesToggleRow(comment)
+                            if vm.expandedThreadID == comment.id {
+                                threadRows(comment)
+                            }
+                        }
                     }
                     if vm.isLoadingMoreComments {
                         ProgressView()
@@ -113,8 +119,12 @@ struct MPVCommentsPanel: View {
         .focused(focus, equals: .commentsPanel)
     }
 
-    private func commentRow(_ comment: Comment) -> some View {
-        let isFocused = focus.wrappedValue == .comment(comment.id)
+    /// One comment. Replies (`isReply`) are indented and use a smaller avatar.
+    private func commentRow(
+        _ comment: Comment, target: MPVPlayerView.FocusTarget, isReply: Bool = false
+    ) -> some View {
+        let isFocused = focus.wrappedValue == target
+        let avatar: CGFloat = isReply ? 40 : 56
         return VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .center, spacing: 16) {
                 AsyncImage(url: comment.authorAvatarURL) { image in
@@ -122,7 +132,7 @@ struct MPVCommentsPanel: View {
                 } placeholder: {
                     Circle().fill(.white.opacity(0.15))
                 }
-                .frame(width: 56, height: 56)
+                .frame(width: avatar, height: avatar)
                 .clipShape(Circle())
 
                 VStack(alignment: .leading, spacing: 4) {
@@ -156,8 +166,90 @@ struct MPVCommentsPanel: View {
         )
         .animation(.easeOut(duration: 0.15), value: isFocused)
         .focusable()
-        .focused(focus, equals: .comment(comment.id))
+        .focused(focus, equals: target)
         .accessibilityElement(children: .combine)
+        .padding(.leading, isReply ? Self.replyIndent : 0)
+    }
+
+    static let replyIndent: CGFloat = 48
+
+    // MARK: Reply threads
+
+    /// "12 replies" under a comment: Select opens the thread under it, Select again closes it.
+    private func repliesToggleRow(_ comment: Comment) -> some View {
+        let target = MPVPlayerView.FocusTarget.repliesToggle(comment.id)
+        let expanded = vm.expandedThreadID == comment.id
+        let label = comment.replyCountText ?? String(localized: "Replies", bundle: .module)
+        return actionRow(label, systemImage: expanded ? "chevron.up" : "chevron.down", target: target) {
+            vm.toggleReplies(for: comment)
+        }
+        .accessibilityIdentifier(MPVPlayerView.ID.repliesToggle)
+        .padding(.leading, Self.replyIndent)
+    }
+
+    /// The rows of the open thread under `comment`: replies, a spinner or Retry, "Show more".
+    @ViewBuilder
+    private func threadRows(_ comment: Comment) -> some View {
+        switch vm.repliesState {
+        case .loading:
+            ProgressView()
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 16)
+        case .failed:
+            actionRow(
+                String(localized: "Could not load replies. Retry", bundle: .module),
+                systemImage: "arrow.clockwise", target: .repliesRetry(comment.id)
+            ) {
+                vm.retryReplies()
+            }
+            .padding(.leading, Self.replyIndent)
+        case .loaded:
+            ForEach(vm.replies) { reply in
+                commentRow(reply, target: .reply(reply.id), isReply: true)
+            }
+            if vm.isLoadingMoreReplies {
+                ProgressView()
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+            } else if vm.canLoadMoreReplies {
+                actionRow(
+                    String(localized: "Show more replies", bundle: .module),
+                    systemImage: "chevron.down", target: .repliesMore(comment.id)
+                ) {
+                    vm.loadMoreReplies()
+                }
+                .padding(.leading, Self.replyIndent)
+            }
+        }
+    }
+
+    /// A compact focusable row with an action, drawn like the comment rows.
+    private func actionRow(
+        _ title: String, systemImage: String, target: MPVPlayerView.FocusTarget,
+        action: @escaping () -> Void
+    ) -> some View {
+        let isFocused = focus.wrappedValue == target
+        return Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .font(.callout.weight(.medium))
+                .padding(.horizontal, 20)
+                .padding(.vertical, 14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(.white.opacity(isFocused ? 0.2 : 0.06))
+                )
+        }
+        .buttonStyle(PanelRowButtonStyle())
+        .focused(focus, equals: target)
+        .animation(.easeOut(duration: 0.15), value: isFocused)
+    }
+}
+
+/// No system focus platter: the panel draws its own row highlight.
+private struct PanelRowButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
     }
 }
 #endif

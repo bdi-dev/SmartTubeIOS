@@ -36,7 +36,7 @@ struct CommentsPagingTests {
         #expect(first.authorAvatarURL != nil)
     }
 
-    @Test("reply entities and reply continuation tokens are not top-level comments")
+    @Test("reply entities are not top-level comments and reply tokens are not the next page")
     func repliesAreSkipped() async throws {
         let page = api.parseCommentPage(from: try json(CommentsPageFixtures.page1))
 

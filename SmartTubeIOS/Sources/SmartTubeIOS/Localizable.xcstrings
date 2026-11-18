@@ -4929,6 +4929,15 @@
     "Loading comments" : {
       "comment" : "Comments panel: loading indicator label"
     },
+    "Replies" : {
+      "comment" : "Comments panel: replies row label when the reply count is unknown"
+    },
+    "Could not load replies. Retry" : {
+      "comment" : "Comments panel: row shown when a comment's replies failed to load; Select retries"
+    },
+    "Show more replies" : {
+      "comment" : "Comments panel: row that loads the next page of replies"
+    },
     "Comments" : {
       "comment" : "Player more-menu label and comments sheet header",
       "extractionState" : "manual",

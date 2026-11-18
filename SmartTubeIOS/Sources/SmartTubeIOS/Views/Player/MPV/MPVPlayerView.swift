@@ -48,6 +48,11 @@ struct MPVPlayerView: View {
         /// The comments panel when it has no comment rows to focus (loading, off, failed).
         case commentsPanel
         case comment(String)
+        /// Rows of an open reply thread; the id is the parent comment's.
+        case repliesToggle(String)
+        case reply(String)
+        case repliesMore(String)
+        case repliesRetry(String)
         case skipSegment
         case errorRetry, errorFallback, errorNext, errorClose
 
@@ -78,6 +83,7 @@ struct MPVPlayerView: View {
         static let relatedShelf = "mpvPlayer.relatedShelf"
         static let comments = "mpvPlayer.commentsButton"
         static let commentsPanel = "mpvPlayer.commentsPanel"
+        static let repliesToggle = "mpvPlayer.repliesToggle"
         static let speed = "mpvPlayer.speedMenu"
         static let captions = "mpvPlayer.captionsMenu"
         static let skipSegment = "mpvPlayer.skipSegmentButton"
@@ -184,7 +190,13 @@ struct MPVPlayerView: View {
         // Back peels one layer at a time: comments panel, shelf, controls, then the player.
         .onExitCommand {
             if vm.commentsVisible {
-                vm.closeComments()
+                // Inside an open thread the first Back returns to its parent comment.
+                if let parent = vm.expandedThreadID, isThreadFocus(focus, parent: parent) {
+                    focus = .comment(parent)
+                    vm.collapseReplies()
+                } else {
+                    vm.closeComments()
+                }
             } else if vm.relatedShelfVisible {
                 vm.closeRelatedShelf()
             } else if vm.controlsVisible, vm.errorMessage == nil, !vm.videoEnded {
@@ -264,9 +276,18 @@ struct MPVPlayerView: View {
         }
     }
 
+    /// Focus on the replies row or any row of the thread opened under `parent`.
+    private func isThreadFocus(_ target: FocusTarget?, parent: String) -> Bool {
+        switch target {
+        case .repliesToggle(let id)?, .repliesMore(let id)?, .repliesRetry(let id)?: return id == parent
+        case .reply?: return true  // only the open thread's replies are on screen
+        default: return false
+        }
+    }
+
     private func isCommentsFocus(_ target: FocusTarget?) -> Bool {
         switch target {
-        case .comment?, .commentsPanel?: return true
+        case .comment?, .commentsPanel?, .repliesToggle?, .reply?, .repliesMore?, .repliesRetry?: return true
         default: return false
         }
     }

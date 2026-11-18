@@ -141,6 +141,18 @@ final class MPVPlayerViewModel {
     /// Token for the page after the last one loaded; nil when there is none.
     private var commentsNextToken: String?
     private var commentsTask: Task<Void, Never>?
+    /// The one comment whose reply thread is open (at most one at a time: opening another
+    /// collapses this one, which keeps the state and the focus handling simple).
+    private(set) var expandedThreadID: String?
+    private(set) var replies: [Comment] = []
+    private(set) var repliesState: MPVRepliesState = .loading
+    /// True while a page after the first reply page is being fetched.
+    private(set) var isLoadingMoreReplies = false
+    /// Token for the reply page after the last one loaded; nil when there is none.
+    private(set) var repliesNextToken: String?
+    private var repliesTask: Task<Void, Never>?
+    /// Replies kept in memory per thread; paging stops here.
+    static let maxLoadedReplies = 50
     /// Comments kept in memory per video; paging stops here.
     static let maxLoadedComments = 200
     /// Focus within this many rows of the end of the loaded list fetches the next page.
@@ -986,6 +998,83 @@ final class MPVPlayerViewModel {
         }
     }
 
+    /// Select on a comment's replies row: opens that thread under it (replies load on the
+    /// first open), or collapses it when it is already open.
+    func toggleReplies(for comment: Comment) {
+        if expandedThreadID == comment.id {
+            collapseReplies()
+            return
+        }
+        guard let token = comment.replyContinuationToken else { return }
+        repliesTask?.cancel()
+        expandedThreadID = comment.id
+        replies = []
+        repliesNextToken = nil
+        isLoadingMoreReplies = false
+        repliesState = .loading
+        loadReplies(token: token, threadID: comment.id)
+    }
+
+    func collapseReplies() {
+        repliesTask?.cancel()
+        repliesTask = nil
+        expandedThreadID = nil
+        replies = []
+        repliesNextToken = nil
+        isLoadingMoreReplies = false
+    }
+
+    /// Retry after the first reply page failed.
+    func retryReplies() {
+        guard repliesState == .failed, let id = expandedThreadID,
+            let token = comments.first(where: { $0.id == id })?.replyContinuationToken
+        else { return }
+        repliesState = .loading
+        loadReplies(token: token, threadID: id)
+    }
+
+    /// "Show more replies": the next page of the open thread.
+    func loadMoreReplies() {
+        guard repliesState == .loaded, let token = repliesNextToken, let id = expandedThreadID,
+            replies.count < Self.maxLoadedReplies, repliesTask == nil
+        else { return }
+        isLoadingMoreReplies = true
+        loadReplies(token: token, threadID: id)
+    }
+
+    /// Whether "Show more replies" should be offered for the open thread.
+    var canLoadMoreReplies: Bool {
+        repliesNextToken != nil && replies.count < Self.maxLoadedReplies
+    }
+
+    private func loadReplies(token: String, threadID: String) {
+        let isFirstPage = repliesState == .loading
+        repliesTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.expandedThreadID == threadID {
+                    self.isLoadingMoreReplies = false
+                    self.repliesTask = nil
+                }
+            }
+            do {
+                let page = try await self.api.fetchCommentReplies(continuation: token)
+                guard !Task.isCancelled, self.expandedThreadID == threadID else { return }
+                let seen = Set(self.replies.map(\.id))
+                let fresh = page.comments.filter { !seen.contains($0.id) }
+                self.replies.append(contentsOf: fresh.prefix(Self.maxLoadedReplies - self.replies.count))
+                self.repliesNextToken = page.nextToken
+                self.repliesState = .loaded
+            } catch {
+                guard !Task.isCancelled, self.expandedThreadID == threadID else { return }
+                mpvPlayerLog.notice("replies failed: \(error.localizedDescription)")
+                // A failed first page offers Retry; a failed later page keeps what is shown and
+                // leaves "Show more replies" to try the same token again.
+                if isFirstPage { self.repliesState = .failed }
+            }
+        }
+    }
+
     private func loadFirstCommentsPage() {
         commentsTask?.cancel()
         commentsState = .loading
@@ -1069,6 +1158,7 @@ final class MPVPlayerViewModel {
         scrubCommitTask?.cancel()
         relatedShelfIdleTask?.cancel()
         commentsTask?.cancel()
+        repliesTask?.cancel()
         eventTask?.cancel()
         eventTask = nil
         isPlaying = false
@@ -1076,6 +1166,13 @@ final class MPVPlayerViewModel {
         resetDisplayCriteria()
         engine?.shutdown()
     }
+}
+
+// MARK: - MPVRepliesState
+
+/// The open reply thread: loading its first page, showing replies, or the first page failed.
+enum MPVRepliesState: Equatable {
+    case loading, loaded, failed
 }
 
 // MARK: - MPVCommentsState
