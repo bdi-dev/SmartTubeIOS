@@ -139,7 +139,7 @@ public struct SettingsView: View {
         return Section("Player") {
             SettingsPicker("Playback Speed", selection: $store.settings.playbackSpeed,
                            options: AppSettings.availableSpeeds.map {
-                               .init(title: $0 == 1.0 ? "Normal" : String(format: "%.2g×", $0), value: $0)
+                               .init(title: $0 == 1.0 ? "Normal" : String(format: "%g×", $0), value: $0)
                            })
 
             #if !os(iOS)
