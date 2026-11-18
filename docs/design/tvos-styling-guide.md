@@ -47,6 +47,26 @@ temporary channel gallery harness that was not committed). Before/after images a
   items so the scaled card does not cover a neighbour; 16:9 thumbnails, text below.
 - App: 4 columns, `videoGridRowSpacing` = 40 pt on tvOS, thumbnail corner radius 8, scale 1.08.
 
+### Channel page
+- Apple: a detail page has one title. Use either the navigation title or an in-page header, not
+  both; a header shows the artwork and name once, with secondary text in semantic secondary
+  styles, and actions are standard buttons (system platter focus). Tab-like filters use the
+  system segmented control at its natural width, not stretched across the screen. Content below
+  is the same grid as the parent screen.
+- App (`ChannelView`, tvOS branch `tvContent`): navigation bar hidden (the header carries the
+  name; the SponsorBlock action moved from an unlabeled toolbar button into the header as a
+  labeled button). Header: 160 pt circular avatar, name `.title2` semibold, subscriber count and
+  description `.callout` secondary (description 3 lines), then Follow (signed out only) and
+  SponsorBlock buttons in the default tvOS button style, 24 pt apart. 40 pt vertical spacing
+  between header, tabs and grid. Tabs: `Picker` with `.segmented` and `.fixedSize()` (same as the
+  Browse chip bar). Videos: `VideoGridSection`, so columns, 40 pt spacing, card, focus behaviour
+  and the sidebar's leading content margin are identical to Home. Shorts: 5 portrait (9:16)
+  columns, 40 pt spacing, `.plain` button (poster focus, artwork only). The loading placeholder is
+  `.focusable()` so focus is not handed to the sidebar while the channel loads (it would stay
+  there once the page appears). Custom values: 160 pt avatar (tvOS has no standard avatar size; big enough to read at
+  viewing distance while keeping the header short so the first grid row stays on screen) and 5 Shorts columns (portrait
+  cards at 4 columns would be taller than the screen).
+
 ### Typography
 - Apple: use semantic Dynamic Type styles. tvOS sizes: body 29, callout 31, subheadline 29,
   headline 38, title3 38, caption/caption2/footnote 23. Do not go below 23 pt.
@@ -72,7 +92,7 @@ temporary channel gallery harness that was not committed). Before/after images a
 | `Views/Channel/ChannelListView.swift` (tvOS body) | Channel rows were `.plain` Buttons in a ScrollView with an extra grey background: poster focus (scale and lift) on a full-width row, platter taller than the row and overlapping neighbours | High | Fixed (5a8e443) |
 | `Views/Home/TVSidebarRootView.swift` `TVSidebarLayout`, `row` | Collapsed pill 90 pt wide (icon not centred), 40 pt left vs 16 pt right gap; expanded sidebar 440 pt with large empty space after labels | High | Fixed (8c7bee5) |
 | `Views/Browse/VideoCardView.swift:377-378` | Custom white glow (0.9 opacity, radius 18) plus 1.08 scale instead of the system effect; very bright on a dark UI | Medium | Recommend |
-| `Views/Channel/ChannelView.swift:186-189` | tvOS grid uses 12 pt spacing; focus scale 1.08 overlaps neighbours (rest of the app uses 40) | Medium | Recommend: use `videoGridRowSpacing` |
+| `Views/Channel/ChannelView.swift` (tvOS body) | Channel name shown twice (navigation title plus black banner), unlabeled round toolbar button, full-width segmented control, 12 pt grid spacing with tiles running up to the sidebar rail | High | Fixed (tvOS branch rewritten, see Channel page rules) |
 | `Views/Common/LibraryView.swift:105-106` | `.borderless` style plus manual `scaleEffect(1.12)` and an own fill: mixes system and custom focus, scale above 1.1 | Medium | Recommend |
 | `Views/Search/SearchView.swift:104,116,240,246,282,286` | `.buttonStyle(.plain)` on small icons and on List rows: poster effect on rows, no clear focus on icons | Medium | Recommend: drop `.plain` on rows, use default/borderless |
 | `Views/Search/SearchView.swift` `FilterChip` | `.caption`/`.caption2` capsule with a nested Button, small focus target | Medium | Recommend |
@@ -89,7 +109,7 @@ temporary channel gallery harness that was not committed). Before/after images a
 
 1. Replace the custom card glow with the system effect: either `.buttonStyle(.card)` on the card
    (needs its tap/long-press handling re-verified) or at least lower the glow and keep 1.05 scale.
-2. Give `ChannelView`'s tvOS grid the same spacing constant as `VideoGridSection`.
+2. (Done) `ChannelView`'s tvOS grid now is `VideoGridSection`.
 3. Rebuild the Library chip bar and Search filter chips with one chip style (system
    `.bordered`/`.borderedProminent` capsule), no manual scale.
 4. Move the sidebar row font to a semantic style and, if desired, a shared `TVStyle` constants
@@ -103,5 +123,12 @@ temporary channel gallery harness that was not committed). Before/after images a
 
 - Verified in the Apple TV simulator: collapsed and expanded sidebar (frame widths 120 and 380),
   channel list focus before and after, channel switcher row (system platter, unchanged).
+- Channel page (Apple TV 4K simulator, signed out, public channel opened with
+  `--uitesting-deeplink-channel=<id>`): `channel-page-before.jpg` and `channel-page-after.jpg`
+  (different channels: the before shot is the first channel the tool reached; layout rules are
+  the same), `channel-page-shorts-after.jpg`, `channel-page-scrolled-after.jpg` (focused card
+  enlarged, no clipping or overlap; pagination 26 to 50 cards). `TVChannelPageUITests` asserts at
+  least 40 pt between cards in a row, a gap between the sidebar rail and the grid, and no navigation
+  bar title.
 - Not verified: real Apple TV (overscan, brightness), Light appearance, a signed-in account row
   with an avatar, long channel names in the expanded sidebar.
