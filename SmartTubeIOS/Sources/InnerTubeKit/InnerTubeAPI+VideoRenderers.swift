@@ -787,14 +787,36 @@ extension InnerTubeAPI {
         let metaContentVM = (lockupMeta?["metadata"] as? [String: Any])?["contentMetadataViewModel"] as? [String: Any]
         let metaRows = metaContentVM?["metadataRows"] as? [[String: Any]] ?? []
 
+        // The "channel row" carries the uploader (Home / search / watch-next shape: row 0 =
+        // channel with a browse command run, row 1 = [views, age]). The channel Videos tab has
+        // a SINGLE row [views, age] with no channel at all (live capture, MKBHD): treating that
+        // row as the channel row hid the age and views. A row is the channel row if any part
+        // links to a channel; otherwise, with several rows, the first row (legacy behaviour).
+        func hasBrowseRun(_ row: [String: Any]) -> Bool {
+            guard let parts = row["metadataParts"] as? [[String: Any]] else { return false }
+            return parts.contains { part in
+                let runs = (part["text"] as? [String: Any])?["commandRuns"] as? [[String: Any]] ?? []
+                return runs.contains {
+                    (((($0["onTap"] as? [String: Any])?["innertubeCommand"] as? [String: Any])?["browseEndpoint"]
+                        as? [String: Any])?["browseId"] as? String) != nil
+                }
+            }
+        }
+        let channelRowIndex: Int? = metaRows.firstIndex(where: hasBrowseRun) ?? (metaRows.count > 1 ? 0 : nil)
         let channelTitle: String = {
-            guard let firstRow = metaRows.first,
-                let parts = firstRow["metadataParts"] as? [[String: Any]],
+            guard let idx = channelRowIndex,
+                let parts = metaRows[idx]["metadataParts"] as? [[String: Any]],
                 let firstPart = parts.first,
                 let text = firstPart["text"] as? [String: Any]
             else { return "" }
             return text["content"] as? String ?? extractText(text) ?? ""
         }()
+        // Every non-channel metadata part in order: [views, age] for videos.
+        let dataParts: [String] = metaRows.enumerated().filter { $0.offset != channelRowIndex }.flatMap {
+            ($0.element["metadataParts"] as? [[String: Any]] ?? []).compactMap { part in
+                (part["text"] as? [String: Any]).flatMap { $0["content"] as? String ?? extractText($0) }
+            }
+        }
 
         // channelId: watchEndpoint.channelId (primary) or reelWatchEndpoint.channelId or
         // lockupMetadataViewModel.metadata.contentMetadataViewModel.metadataRows[].metadataParts[]
@@ -823,7 +845,9 @@ extension InnerTubeAPI {
 
         // thumbnail: contentImage.thumbnailViewModel.image.thumbnails
         let thumbVM = (lockup["contentImage"] as? [String: Any])?["thumbnailViewModel"] as? [String: Any]
-        let thumbnails = (thumbVM?["image"] as? [String: Any])?["thumbnails"] as? [[String: Any]]
+        // Live captures use `image.sources`; older responses used `image.thumbnails`.
+        let thumbImage = thumbVM?["image"] as? [String: Any]
+        let thumbnails = (thumbImage?["thumbnails"] as? [[String: Any]]) ?? (thumbImage?["sources"] as? [[String: Any]])
         let thumbURL = thumbnails?.last.flatMap { $0["url"] as? String }.flatMap { URL(string: $0) }
 
         // isShort: only one signal currently (reelWatchEndpoint) — unlike parseVideoRenderer's
@@ -857,15 +881,38 @@ extension InnerTubeAPI {
             }
         }
 
+        // Published time: prefer a part that parses as a relative ("2 months ago", "Streamed 3
+        // days ago") or scheduled date; otherwise keep the second data part verbatim (position
+        // = age, after views) so non-English text is at least preserved. Live "watching"
+        // counts are never an age.
+        var publishedTimeText: String?
+        var isUpcoming = false
+        var agePartIndex: Int?
         let publishedAt: Date? = {
-            for row in metaRows.dropFirst() {
-                guard let parts = row["metadataParts"] as? [[String: Any]] else { continue }
-                for part in parts {
-                    guard let text = part["text"] as? [String: Any],
-                        let str = text["content"] as? String ?? extractText(text)
-                    else { continue }
-                    if let date = parseRelativeDate(str) { return date }
+            for (i, str) in dataParts.enumerated() {
+                if let date = parseRelativeDate(str) {
+                    publishedTimeText = str
+                    agePartIndex = i
+                    return date
                 }
+                if let date = parseScheduledDate(str) {
+                    publishedTimeText = str
+                    isUpcoming = true
+                    agePartIndex = i
+                    return date
+                }
+            }
+            if dataParts.count >= 2, !dataParts[1].lowercased().contains("watching") {
+                publishedTimeText = dataParts[1]
+                agePartIndex = 1
+            }
+            return nil
+        }()
+        // Views: the first data part that is not the age part (digits in "2 months ago" must
+        // not be read as a view count).
+        let viewCount: Int? = {
+            for (i, str) in dataParts.enumerated() where i != agePartIndex {
+                if let count = extractNumber(str) { return count }
             }
             return nil
         }()
@@ -873,22 +920,10 @@ extension InnerTubeAPI {
         return Video(
             id: videoId, title: title, channelTitle: channelTitle, channelId: channelId,
             thumbnailURL: thumbURL, duration: nil,
-            viewCount: {
-                // BUG-011 fix: extract viewCount from contentMetadataViewModel metadataRows.
-                // Row index 1 (second row) often contains "N views" or compact count.
-                for row in metaRows.dropFirst() {
-                    guard let parts = row["metadataParts"] as? [[String: Any]] else { continue }
-                    for part in parts {
-                        guard let text = part["text"] as? [String: Any],
-                            let str = text["content"] as? String ?? extractText(text)
-                        else { continue }
-                        if let count = extractNumber(str) { return count }
-                    }
-                }
-                return nil
-            }(),
+            viewCount: viewCount,
             publishedAt: publishedAt,
-            isLive: false, isShort: isShort,
+            publishedTimeText: publishedTimeText,
+            isLive: false, isUpcoming: isUpcoming, isShort: isShort,
             watchProgress: Self.lockupWatchProgress(thumbnailViewModel: thumbVM),
             badges: []
         )
