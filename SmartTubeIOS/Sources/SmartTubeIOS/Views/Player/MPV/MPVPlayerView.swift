@@ -34,6 +34,9 @@ struct MPVPlayerView: View {
     /// The video being played; differs from `video` after up-next / autoplay moved on.
     @State private var playing: Video?
     @FocusState private var focus: FocusTarget?
+    /// The transport-row button focus last rested on. Down from the scrubber returns here,
+    /// so the focus engine re-enters the row at the button the user left.
+    @State private var lastTransportFocus: FocusTarget = .playPause
 
     enum FocusTarget: Hashable {
         case surface
@@ -44,6 +47,17 @@ struct MPVPlayerView: View {
         case related(String)
         case skipSegment
         case errorRetry, errorFallback, errorNext, errorClose
+
+        /// Buttons in the transport row (including the menus on its right).
+        var isTransport: Bool {
+            switch self {
+            case .seekBack, .playPause, .seekForward, .previous, .next,
+                .captions, .speed, .quality, .audio, .chapters:
+                return true
+            default:
+                return false
+            }
+        }
     }
 
     enum ID {
@@ -168,6 +182,11 @@ struct MPVPlayerView: View {
             let menuButtons: [FocusTarget?] = [.captions, .speed, .quality, .audio, .chapters]
             vm.holdControls = newFocus == nil && menuButtons.contains(oldFocus) && vm.controlsVisible
             if newFocus != nil, newFocus != .surface, vm.controlsVisible { vm.showControls() }
+            if let newFocus, newFocus.isTransport { lastTransportFocus = newFocus }
+        }
+        // Every fresh show of the overlay starts on Play, as it always has.
+        .onChange(of: vm.controlsVisible) { _, visible in
+            if visible { lastTransportFocus = .playPause }
         }
         // With the controls hidden, focus sits on the video surface, whose Select brings
         // the controls up. Hand focus to the skip button when it appears so one press of
@@ -182,7 +201,22 @@ struct MPVPlayerView: View {
         .task(id: vm.controlsVisible) {
             try? await Task.sleep(for: .milliseconds(600))
             guard !Task.isCancelled, focus == nil, vm.errorMessage == nil, !vm.holdControls else { return }
-            focus = vm.controlsVisible ? .playPause : (vm.toastSegment != nil ? .skipSegment : .surface)
+            focus = vm.controlsVisible ? restoredTransportFocus(vm) : (vm.toastSegment != nil ? .skipSegment : .surface)
+        }
+    }
+
+    /// The remembered transport button, or Play when that button is no longer rendered
+    /// (Previous/Next, chapters, audio, captions and quality depend on the video).
+    /// Mirrors the conditions used by `transportRow`.
+    private func restoredTransportFocus(_ vm: MPVPlayerViewModel) -> FocusTarget {
+        switch lastTransportFocus {
+        case .previous: return vm.canPlayPrevious ? .previous : .playPause
+        case .next: return vm.canPlayNext ? .next : .playPause
+        case .chapters: return vm.chapters.isEmpty ? .playPause : .chapters
+        case .audio: return vm.audioOptions.count > 1 ? .audio : .playPause
+        case .captions: return vm.captionTracks.isEmpty ? .playPause : .captions
+        case .quality: return vm.selectablePlans.count > 1 ? .quality : .playPause
+        default: return lastTransportFocus
         }
     }
 
@@ -291,8 +325,9 @@ struct MPVPlayerView: View {
                 case .left: vm.scrub(by: -scrubStep(vm))
                 case .right: vm.scrub(by: scrubStep(vm))
                 case .down:
+                    // Commit only: the focus engine moves to the transport row, and its
+                    // `defaultFocus` there picks `lastTransportFocus`.
                     vm.commitScrub()
-                    focus = .playPause
                 default: break
                 }
             }
@@ -445,6 +480,7 @@ struct MPVPlayerView: View {
             }
         }
         .font(.title3)
+        .defaultFocus($focus, restoredTransportFocus(vm))
     }
 
     private func chaptersMenu(_ vm: MPVPlayerViewModel) -> some View {
