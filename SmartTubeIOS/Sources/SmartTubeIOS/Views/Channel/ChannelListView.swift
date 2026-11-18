@@ -10,39 +10,36 @@ import SwiftUI
 struct ChannelListView: View {
     let channels: [Channel]
     let onSelect: (Channel) -> Void
-    #if os(tvOS)
-    @FocusState private var focusedChannelId: String?
-    #endif
 
     var body: some View {
+        #if os(tvOS)
+        // A List with Button rows gets the standard tvOS row focus platter, sized to the row and
+        // clipped inside it. A `.plain` Button in a ScrollView is the poster-style effect (about
+        // 1.1x scale plus lift) and is meant for artwork, not for full-width rows; on a row it
+        // produced a platter far larger than the content that overlapped its neighbours.
+        List {
+            ForEach(channels) { channel in
+                Button {
+                    onSelect(channel)
+                } label: {
+                    ChannelListRow(channel: channel)
+                }
+            }
+        }
+        .listStyle(.plain)
+        .focusSection()
+        #else
         ScrollView {
             LazyVStack(spacing: 0) {
                 ForEach(channels) { channel in
-                    #if os(tvOS)
-                    Button {
-                        onSelect(channel)
-                    } label: {
-                        ChannelListRow(channel: channel)
-                            .background(
-                                focusedChannelId == channel.id
-                                    ? Color.primary.opacity(0.12)
-                                    : Color.clear
-                            )
-                    }
-                    .buttonStyle(.plain)
-                    .focused($focusedChannelId, equals: channel.id)
-                    #else
                     ChannelListRow(channel: channel)
                         .contentShape(Rectangle())
                         .onTapGesture { onSelect(channel) }
-                    #endif
                     Divider()
                         .padding(.leading, 72)
                 }
             }
         }
-        #if os(tvOS)
-        .focusSection()
         #endif
     }
 }
