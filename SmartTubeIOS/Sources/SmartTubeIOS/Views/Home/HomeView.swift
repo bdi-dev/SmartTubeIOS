@@ -46,11 +46,12 @@ public struct HomeView: View {
     @State private var shortsCountAtTrigger = 0
     @State private var needsMoreNonShorts = false
     @State private var nonShortsCountAtTrigger = 0
-    #if os(tvOS)
-    @FocusState private var focusedSection: BrowseSection?
-    #endif
-    private var visibleSections: [BrowseSection] {
-        let types = store.settings.enabledSections
+    private var visibleSections: [BrowseSection] { Self.visibleSections(for: store.settings) }
+
+    /// The sections offered for these settings, in display order. Shared by the chip bar
+    /// (iOS, macOS) and the tvOS sidebar so both list the same sections.
+    static func visibleSections(for settings: AppSettings) -> [BrowseSection] {
+        let types = settings.enabledSections
         var all: [BrowseSection] =
             types.isEmpty
             ? BrowseSection.defaultSections
@@ -62,7 +63,7 @@ public struct HomeView: View {
         {
             all.insert(BrowseSection(type: .recommended), at: homeIdx + 1)
         }
-        if store.settings.hideShorts {
+        if settings.hideShorts {
             return all.filter { $0.type != .shorts }
         }
         return all
@@ -73,12 +74,24 @@ public struct HomeView: View {
         _sectionVM = State(initialValue: BrowseViewModel(api: api))
     }
 
+    #if os(tvOS)
+    /// tvOS sidebar layout: the sidebar owns section selection, so this view starts on
+    /// `initialSection` and shows no chip bar. The sidebar recreates the view (`.id`)
+    /// when another section is picked.
+    public init(api: InnerTubeAPI, initialSection: BrowseSection) {
+        _homeVM = State(initialValue: HomeViewModel(api: api))
+        _sectionVM = State(initialValue: BrowseViewModel(api: api))
+        _selectedSection = State(initialValue: initialSection)
+    }
+    #endif
+
     // MARK: - Body
 
     public var body: some View {
         VStack(spacing: 0) {
-            chipBar
             #if !os(tvOS)
+            // tvOS selects sections from the sidebar instead (TVSidebarRootView).
+            chipBar
             Divider()
             #endif
             contentArea
@@ -166,22 +179,10 @@ public struct HomeView: View {
     }
 
     // MARK: - Chip bar
+    // Not used on tvOS: the sidebar selects sections there.
 
+    #if !os(tvOS)
     private var chipBar: some View {
-        #if os(tvOS)
-        HStack(spacing: 8) {
-            ForEach(visibleSections) { section in
-                chipButton(section: section)
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(.ultraThinMaterial)
-        .focusSection()
-        .defaultFocus($focusedSection, selectedSection)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("home.chipBar")
-        #else
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
@@ -199,7 +200,6 @@ public struct HomeView: View {
             }
         }
         .accessibilityIdentifier("home.chipBar")
-        #endif
     }
 
     private func chipButton(section: BrowseSection) -> some View {
@@ -215,33 +215,6 @@ public struct HomeView: View {
                 sectionVM.reload(section: section)
             }
         }
-        #if os(tvOS)
-        let isFocused = focusedSection == section
-        return Button(action: action) {
-            Text(section.title)
-                .font(.headline)
-                .padding(.horizontal, 24)
-                .padding(.vertical, 12)
-                .background(
-                    (isSelected || isFocused) ? Color.primary : Color.secondary.opacity(0.15),
-                    in: Capsule()
-                )
-                .foregroundStyle(
-                    (isSelected || isFocused)
-                        ? Color(white: colorScheme == .dark ? 0 : 1)
-                        : Color.primary
-                )
-                .focusEffectDisabled()
-        }
-        .buttonStyle(.borderless)
-        .scaleEffect(isFocused ? 1.12 : 1.0)
-        .animation(.easeInOut(duration: 0.15), value: focusedSection)
-        .animation(.easeInOut(duration: 0.15), value: selectedSection)
-        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
-        .accessibilityLabel(section.title)
-        .accessibilityIdentifier("chip.\(section.title)")
-        .focused($focusedSection, equals: section)
-        #else
         return Button(action: action) {
             Text(section.title)
                 .font(.subheadline.weight(.medium))
@@ -260,8 +233,8 @@ public struct HomeView: View {
         .buttonStyle(.plain)
         .animation(.easeInOut(duration: 0.15), value: selectedSection)
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
-        #endif
     }
+    #endif
 
     private func select(_ section: BrowseSection) {
         selectedSection = section
