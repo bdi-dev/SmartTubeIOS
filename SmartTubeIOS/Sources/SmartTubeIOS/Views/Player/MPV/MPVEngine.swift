@@ -296,6 +296,15 @@ final class MPVEngine: @unchecked Sendable {
         return String(cString: cString)
     }
 
+    /// Whether an audio track is selected for the current file. False when the file has no
+    /// audio, or when its external audio file failed to open (`aid` is `"no"`). Nil before
+    /// a file is loaded or after shutdown.
+    func hasAudioTrack() -> Bool? {
+        guard isAlive, let cString = mpv_get_property_string(handle, "aid") else { return nil }
+        defer { mpv_free(cString) }
+        return String(cString: cString) != "no"
+    }
+
     // MARK: - Private: commands & properties
 
     private var isAlive: Bool { !isShutDown.withLock { $0 } }

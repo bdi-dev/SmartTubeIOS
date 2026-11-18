@@ -342,6 +342,94 @@ public enum MPVStreamSelector {
             .url
     }
 
+    /// Audio streams to try when the one a plan opened with turned out to be unplayable
+    /// (mpv reports "Can not open external file" and plays the video silently).
+    ///
+    /// Direct audio files and HLS audio renditions fail independently — on some videos every
+    /// `hls_playlist` URL 404s while the plain `videoplayback` audio is fine — so both kinds
+    /// are offered, the kind that has not just failed first.
+    ///
+    /// - Parameters:
+    ///   - language: The language the viewer wants (a BCP 47 tag, as in `AudioOption.id`),
+    ///     or nil when there is no preference. Streams without a language tag (single-track
+    ///     uploads) match any language.
+    ///   - allowOtherLanguages: Append streams in other languages after the matching ones.
+    ///     Pass false when the viewer chose a language explicitly: silence is better than
+    ///     a surprise dub only if they asked for one; otherwise original audio beats none.
+    ///   - preferDirect: Put direct audio files ahead of HLS renditions.
+    ///   - failed: URLs already tried; never returned.
+    public static func audioFallbacks(
+        formats: [VideoFormat],
+        hlsMaster: HLSMasterPlaylist?,
+        language: String?,
+        allowOtherLanguages: Bool,
+        preferDirect: Bool,
+        excluding failed: Set<URL>
+    ) -> [URL] {
+        func matches(_ tag: String?) -> Bool {
+            guard let language else { return true }
+            guard let tag else { return true }
+            return languageCode(tag) == languageCode(language)
+        }
+        func keep(_ tag: String?) -> Bool { matches(tag) || allowOtherLanguages }
+
+        // Direct files: matching language first, then non-dubbed/non-DRC, then bitrate.
+        let direct: [URL] =
+            formats
+            .filter { $0.mimeType.lowercased().hasPrefix("audio/") && $0.url != nil }
+            .compactMap { format -> (URL, Bool, Int, Int)? in
+                guard let url = format.url, !failed.contains(url) else { return nil }
+                let tag = urlLanguage(url)
+                guard keep(tag) else { return nil }
+                let tags = xtags(of: url)
+                var rank = 2
+                if tags.contains("acont=dubbed") || tags.contains("acont=descriptive") { rank = 0 }
+                if tags.contains("drc=1") { rank = min(rank, 1) }
+                return (url, matches(tag), rank, format.bitrate ?? 0)
+            }
+            .sorted { a, b in
+                if a.1 != b.1 { return a.1 }
+                if a.2 != b.2 { return a.2 > b.2 }
+                return a.3 > b.3
+            }
+            .map(\.0)
+
+        // HLS renditions: every group, in manifest order. With no language preference only
+        // the default rendition of each group (the original track) is considered.
+        var hls: [URL] = []
+        if let hlsMaster {
+            var groupsWithDefault = Set<String>()
+            for rendition in hlsMaster.audioRenditions where rendition.isDefault {
+                groupsWithDefault.insert(rendition.groupID)
+            }
+            var seenGroups = Set<String>()
+            let candidates = hlsMaster.audioRenditions.filter { rendition in
+                guard !failed.contains(rendition.url) else { return false }
+                if language != nil {
+                    return keep(rendition.language)
+                }
+                if groupsWithDefault.contains(rendition.groupID) { return rendition.isDefault }
+                return seenGroups.insert(rendition.groupID).inserted
+            }
+            hls = (candidates.filter { matches($0.language) } + candidates.filter { !matches($0.language) })
+                .map(\.url)
+        }
+
+        var seen = Set<URL>()
+        return (preferDirect ? direct + hls : hls + direct).filter { seen.insert($0).inserted }
+    }
+
+    private static func languageCode(_ tag: String) -> String {
+        tag.split(whereSeparator: { $0 == "-" || $0 == "_" }).first.map { $0.lowercased() } ?? ""
+    }
+
+    /// The `lang=` entry of a URL's `xtags`, if any.
+    private static func urlLanguage(_ url: URL) -> String? {
+        xtags(of: url).split(separator: ":").compactMap { pair -> String? in
+            pair.hasPrefix("lang=") ? String(pair.dropFirst(5)) : nil
+        }.first
+    }
+
     /// One selectable audio language of a multi-audio upload.
     public struct AudioOption: Identifiable, Equatable, Sendable {
         public let id: String

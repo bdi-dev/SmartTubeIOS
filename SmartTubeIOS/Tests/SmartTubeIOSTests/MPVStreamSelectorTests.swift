@@ -375,4 +375,78 @@ struct MPVStreamSelectorTests {
         #expect(MPVStreamSelector.option(option, matches: "en"))
         #expect(!MPVStreamSelector.option(option, matches: "es-US"))
     }
+
+    // MARK: Audio fallbacks
+
+    private func fallbackMaster() throws -> HLSMasterPlaylist {
+        let manifest = """
+            #EXTM3U
+            #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a1",NAME="English",LANGUAGE="en-US",DEFAULT=YES,URI="https://cdn.example.com/hls/en1.m3u8"
+            #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a1",NAME="Spanish",LANGUAGE="es-US",DEFAULT=NO,URI="https://cdn.example.com/hls/es1.m3u8"
+            #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a2",NAME="English",LANGUAGE="en-US",DEFAULT=YES,URI="https://cdn.example.com/hls/en2.m3u8"
+            #EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720,FRAME-RATE=30,CODECS="avc1.640028,mp4a.40.2",AUDIO="a1"
+            https://cdn.example.com/v/720.m3u8
+            """
+        return try #require(HLSMasterPlaylist(manifest: manifest, baseURL: URL(string: "https://cdn.example.com/")!))
+    }
+
+    @Test("audio fallbacks exclude failed URLs and list the other kind first")
+    func audioFallbacks_excludesFailedAndOrdersByKind() throws {
+        let master = try fallbackMaster()
+        let formats = [
+            audio(bitrate: 128_000, xtags: "acont=original:lang=en-US"),
+            audio(bitrate: 48_000, xtags: "acont=original:lang=en-US"),
+            audio(bitrate: 128_000, xtags: "acont=dubbed-auto:lang=es-US"),
+        ]
+        let failedHLS = Set([URL(string: "https://cdn.example.com/hls/en1.m3u8")!])
+        let result = MPVStreamSelector.audioFallbacks(
+            formats: formats, hlsMaster: master, language: "en-US", allowOtherLanguages: false,
+            preferDirect: true, excluding: failedHLS)
+        // Direct English files (best bitrate first), then the other group's HLS rendition.
+        #expect(
+            result.map(\.absoluteString).map { $0.contains("/hls/") ? "hls:" + $0.suffix(8) : "direct" }
+                == ["direct", "direct", "hls:en2.m3u8"])
+        #expect(!result.contains(failedHLS.first!))
+        #expect(result.first?.absoluteString.contains("/a/128000") == true)
+
+        let hlsFirst = MPVStreamSelector.audioFallbacks(
+            formats: formats, hlsMaster: master, language: "en-US", allowOtherLanguages: false,
+            preferDirect: false, excluding: failedHLS)
+        #expect(hlsFirst.first?.lastPathComponent == "en2.m3u8")
+    }
+
+    @Test("a chosen language is never swapped for another; no choice allows the original")
+    func audioFallbacks_languageSemantics() throws {
+        let formats = [audio(bitrate: 128_000, xtags: "acont=dubbed-auto:lang=es-US")]
+        let strict = MPVStreamSelector.audioFallbacks(
+            formats: formats, hlsMaster: nil, language: "en-US", allowOtherLanguages: false,
+            preferDirect: true, excluding: [])
+        #expect(strict.isEmpty)
+        let lenient = MPVStreamSelector.audioFallbacks(
+            formats: formats, hlsMaster: nil, language: "en-US", allowOtherLanguages: true,
+            preferDirect: true, excluding: [])
+        #expect(lenient.count == 1)
+    }
+
+    @Test("untagged single-track audio matches any language, and an empty failure set keeps all")
+    func audioFallbacks_untaggedAndEmptyList() {
+        let formats = [audio(bitrate: 128_000), audio(bitrate: 48_000)]
+        let all = MPVStreamSelector.audioFallbacks(
+            formats: formats, hlsMaster: nil, language: "fr", allowOtherLanguages: false,
+            preferDirect: true, excluding: [])
+        #expect(all.count == 2)
+        let none = MPVStreamSelector.audioFallbacks(
+            formats: formats, hlsMaster: nil, language: nil, allowOtherLanguages: true,
+            preferDirect: true, excluding: Set(formats.compactMap(\.url)))
+        #expect(none.isEmpty)
+    }
+
+    @Test("without a language preference only the default HLS rendition of each group is offered")
+    func audioFallbacks_defaultRenditionsOnly() throws {
+        let master = try fallbackMaster()
+        let result = MPVStreamSelector.audioFallbacks(
+            formats: [], hlsMaster: master, language: nil, allowOtherLanguages: true,
+            preferDirect: false, excluding: [])
+        #expect(result.map(\.lastPathComponent) == ["en1.m3u8", "en2.m3u8"])
+    }
 }

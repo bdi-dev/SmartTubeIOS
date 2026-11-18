@@ -174,6 +174,19 @@ final class MPVPlayerViewModel {
     /// False from the moment a stream is opened until its first frame, when the decoder
     /// actually in use is read back and checked against what the plan assumed.
     private var decoderVerified = false
+    /// Same for audio: false from the moment a stream is opened until its first frame, when
+    /// the core is asked whether an audio track is actually playing.
+    private var audioVerified = false
+    /// Audio URLs of this client's streams that mpv could not open; never offered again.
+    private var failedAudioURLs: Set<URL> = []
+    /// A substitute audio stream that opened, kept for later quality switches.
+    private var recoveredAudio: URL?
+    /// Audio recoveries spent on this video; capped so a video with no usable audio ends up
+    /// playing silently instead of reloading forever.
+    private var audioRecoveryAttempts = 0
+    static let maxAudioRecoveryAttempts = 4
+    /// True while a reload is in flight whose only purpose is finding audio.
+    private var isRecoveringAudio = false
     /// mpv's own `pause` property, as last reported by the core.
     private var enginePaused = false
     private var lastLoadError: String?
@@ -254,6 +267,14 @@ final class MPVPlayerViewModel {
         guard let engine else { return }
         while untriedPlans.isEmpty {
             guard !remainingClients.isEmpty else {
+                if isRecoveringAudio {
+                    // The video is already playing; losing the hunt for audio is not an error.
+                    isRecoveringAudio = false
+                    isLoading = false
+                    statusMessage = nil
+                    mpvPlayerLog.notice("no working audio for \(self.video.id) — continuing video only")
+                    return
+                }
                 isLoading = false
                 statusMessage = nil
                 errorMessage =
@@ -287,11 +308,12 @@ final class MPVPlayerViewModel {
         activePlan = plan
         hardwareDecoder = nil
         decoderVerified = false
+        audioVerified = false
         let startAt = hasStartedPlayback ? currentTime : resumePosition
         mpvPlayerLog.notice(
             "open \(self.video.id) via \(self.activeClient?.rawValue ?? "?"): \(plan.label) startAt=\(Int(startAt ?? 0))s"
         )
-        engine.load(plan, startAt: startAt, userAgent: activeClient?.userAgent, audioOverride: effectiveAudio?.url)
+        engine.load(plan, startAt: startAt, userAgent: activeClient?.userAgent, audioOverride: audioOverride(for: plan))
         engine.setSpeed(playbackSpeed)
     }
 
@@ -310,6 +332,9 @@ final class MPVPlayerViewModel {
 
     private func apply(_ info: PlayerInfo, hlsMaster: HLSMasterPlaylist?, from client: MPVClientProfile) {
         activeClient = client
+        // Stream URLs are per client: what failed for the previous one says nothing here.
+        failedAudioURLs = []
+        recoveredAudio = nil
         let ranked = MPVStreamSelector.plans(
             for: info,
             hlsMaster: hlsMaster,
@@ -355,6 +380,7 @@ final class MPVPlayerViewModel {
             errorMessage = nil
             videoEnded = false
             hasStartedPlayback = true
+            isRecoveringAudio = false
             isPlaying = !enginePaused
             if let caption = selectedCaption { applyCaption(caption) }
             showControls()
@@ -373,6 +399,15 @@ final class MPVPlayerViewModel {
                 hardwareDecoder = decoder
                 applyDisplayCriteria()
                 reconsiderPlanIfSoftwareDecoding(decoder: decoder)
+            }
+            // …and whether any sound is coming out (skipped when that step reloaded the stream).
+            if !audioVerified, hasStartedPlayback, !isLoading, let hasAudio = engine?.hasAudioTrack() {
+                audioVerified = true
+                if hasAudio {
+                    mpvPlayerLog.notice("audio ok (\(self.activePlan?.label ?? "?"))")
+                } else if audioIsExpected {
+                    recoverMissingAudio()
+                }
             }
 
         case .loadFailed(let reason):
@@ -471,6 +506,76 @@ final class MPVPlayerViewModel {
         }
     }
 
+    // MARK: - Audio recovery
+
+    /// Audio stream to hand the engine with `plan`: a substitute found by an earlier
+    /// recovery, else the viewer's language, else (nil) the plan's own.
+    private func audioOverride(for plan: MPVStreamPlan) -> URL? {
+        if let recoveredAudio { return recoveredAudio }
+        if let wanted = effectiveAudio?.url, !failedAudioURLs.contains(wanted) { return wanted }
+        return nil
+    }
+
+    /// The audio URL the engine was (or would be) given for the active plan.
+    private func currentAudioURL(for plan: MPVStreamPlan) -> URL? {
+        guard case .adaptive(_, let audio) = plan.source else { return nil }
+        return audioOverride(for: plan) ?? audio
+    }
+
+    /// True when the active stream is supposed to carry sound: it names an audio stream, or
+    /// it is a muxed/HLS stream of a video that has audio formats or renditions at all.
+    private var audioIsExpected: Bool {
+        guard let plan = activePlan else { return false }
+        if case .adaptive = plan.source { return true }
+        let hasAudioFormats = sourceFormats.contains { $0.mimeType.lowercased().hasPrefix("audio/") }
+        return hasAudioFormats || !(sourceHLSMaster?.audioRenditions.isEmpty ?? true)
+    }
+
+    /// mpv opened the video but no audio track is playing (typically an external audio file
+    /// that 404ed). Try another audio stream in the viewer's language, then the next plan
+    /// and client; give up quietly — video only — once the attempt budget is spent.
+    private func recoverMissingAudio() {
+        guard let engine, let plan = activePlan else { return }
+        if let failed = currentAudioURL(for: plan) { failedAudioURLs.insert(failed) }
+        guard audioRecoveryAttempts < Self.maxAudioRecoveryAttempts else {
+            mpvPlayerLog.notice("no audio for \(video.id) after \(audioRecoveryAttempts) recoveries — continuing video only")
+            return
+        }
+        audioRecoveryAttempts += 1
+        let language = effectiveAudio?.id
+        let failedWasHLS = currentAudioURL(for: plan).map { $0.absoluteString.contains("/hls_playlist/") } ?? plan.isHLS
+        let candidates = MPVStreamSelector.audioFallbacks(
+            formats: sourceFormats, hlsMaster: sourceHLSMaster, language: language,
+            allowOtherLanguages: selectedAudio == nil, preferDirect: failedWasHLS, excluding: failedAudioURLs)
+        mpvPlayerLog.notice(
+            "no audio track (\(plan.label)); attempt \(audioRecoveryAttempts)/\(Self.maxAudioRecoveryAttempts), \(candidates.count) candidates, language=\(language ?? "any")"
+        )
+        if case .adaptive = plan.source, let next = candidates.first {
+            recoveredAudio = next
+            audioVerified = false
+            isLoading = true
+            mpvPlayerLog.notice("audio → \(next.host ?? "?")\(next.path.prefix(60))")
+            engine.load(plan, startAt: currentTime, userAgent: activeClient?.userAgent, audioOverride: next)
+            engine.setSpeed(playbackSpeed)
+            if !isPlaying { engine.setPaused(true) }
+            return
+        }
+        // This plan offers no way to swap audio (or nothing is left to swap in): another
+        // plan, then another client, may carry working audio.
+        untriedPlans.removeAll { plan in
+            if case .adaptive(_, let audio) = plan.source { return failedAudioURLs.contains(audio) }
+            return false
+        }
+        guard !untriedPlans.isEmpty || !remainingClients.isEmpty else {
+            mpvPlayerLog.notice("no working audio for \(video.id) — continuing video only")
+            return
+        }
+        isRecoveringAudio = true
+        isLoading = true
+        loadTask?.cancel()
+        loadTask = Task { [weak self] in await self?.openNextCandidate() }
+    }
+
     // MARK: - Up next, chapters, audio
 
     private func loadNextInfo() async {
@@ -562,6 +667,7 @@ final class MPVPlayerViewModel {
         selectedAudio = option
         isLoading = true
         mpvPlayerLog.notice("audio → \(option.id) at \(Int(self.currentTime))s")
+        audioVerified = false
         engine.load(plan, startAt: currentTime, userAgent: activeClient?.userAgent, audioOverride: option.url)
         engine.setSpeed(playbackSpeed)
         if !isPlaying { engine.setPaused(true) }
@@ -750,13 +856,14 @@ final class MPVPlayerViewModel {
         activePlan = plan
         hardwareDecoder = nil
         decoderVerified = false
+        audioVerified = false
         // If this one fails, continue with the plans ranked below it.
         if let index = plans.firstIndex(of: plan) {
             untriedPlans = Array(plans[(index + 1)...])
         }
         isLoading = true
         mpvPlayerLog.notice("quality → \(plan.label) at \(Int(self.currentTime))s")
-        engine.load(plan, startAt: currentTime, userAgent: activeClient?.userAgent, audioOverride: effectiveAudio?.url)
+        engine.load(plan, startAt: currentTime, userAgent: activeClient?.userAgent, audioOverride: audioOverride(for: plan))
         engine.setSpeed(playbackSpeed)
         if !isPlaying { engine.setPaused(true) }
     }
