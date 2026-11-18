@@ -181,6 +181,10 @@ public struct AppSettings: Codable {
     /// directly — including WebM/VP9 — so quality is not limited to what AVPlayer can
     /// compose. A video that fails to open in mpv falls back to the AVPlayer path.
     public var useMPVPlayerOnTV: Bool
+    /// tvOS only: Home uses a left sidebar (Search, sections, Settings, Account) with a content
+    /// column instead of the top tab bar. Defaults to `true` on tvOS; set `false` to restore the
+    /// previous top-tab UI. Not read on iOS or macOS.
+    public var useSidebarHome: Bool
 
     // Note: there is no `useTOSPlayerOnIOS` setting. The TOS-compliant player is
     // always used on iOS (PlayerRouter.open(), gated #if os(iOS)) — see
@@ -324,6 +328,11 @@ public struct AppSettings: Codable {
         useTOSPlayerOnMac = false
         #endif
         useMPVPlayerOnTV = false
+        #if os(tvOS)
+        useSidebarHome = true
+        #else
+        useSidebarHome = false
+        #endif
         settingsVersion = 1
     }
 }
@@ -398,6 +407,7 @@ extension AppSettings {
         case iCloudSyncEnabled
         case useTOSPlayerOnMac
         case useMPVPlayerOnTV
+        case useSidebarHome
     }
 
     public init(from decoder: Decoder) throws {
@@ -466,5 +476,6 @@ extension AppSettings {
         iCloudSyncEnabled = c.safeDecode(Bool.self, forKey: .iCloudSyncEnabled, default: d.iCloudSyncEnabled)
         useTOSPlayerOnMac = c.safeDecode(Bool.self, forKey: .useTOSPlayerOnMac, default: d.useTOSPlayerOnMac)
         useMPVPlayerOnTV = c.safeDecode(Bool.self, forKey: .useMPVPlayerOnTV, default: d.useMPVPlayerOnTV)
+        useSidebarHome = c.safeDecode(Bool.self, forKey: .useSidebarHome, default: d.useSidebarHome)
     }
 }

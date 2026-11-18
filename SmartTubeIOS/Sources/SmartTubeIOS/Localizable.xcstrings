@@ -7715,6 +7715,18 @@
         }
       }
     },
+    "Sidebar Home" : {
+      "comment" : "Settings toggle that shows the tvOS Home screen with a left sidebar instead of the top tab bar",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sidebar Home"
+          }
+        }
+      }
+    },
     "ended" : {
       "localizations" : {
         "ar" : {

@@ -275,6 +275,10 @@ public struct SettingsView: View {
     private var uiSection: some View {
         @Bindable var store = store
         return Section("Interface") {
+            #if os(tvOS)
+            Toggle("Sidebar Home", isOn: $store.settings.useSidebarHome)
+                .accessibilityIdentifier("settings.useSidebarHomeToggle")
+            #endif
             Picker("Theme", selection: $store.settings.themeName) {
                 ForEach(AppSettings.ThemeName.allCases, id: \.self) { t in
                     Text(t.rawValue).tag(t)
