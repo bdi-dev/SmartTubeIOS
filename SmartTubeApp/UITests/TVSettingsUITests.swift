@@ -140,4 +140,127 @@ final class TVSettingsUITests: XCTestCase {
         )
     }
 }
+// MARK: - TVSidebarSettingsUITests
+//
+// Reproduces the report that, with the sidebar Home layout (the tvOS default), opening a
+// Settings sub-menu blanks the screen and the sidebar stops responding afterwards.
+// Focus is driven with XCUIRemote; sidebar items are found by identifier and reached with
+// remote presses until they have focus.
+
+final class TVSidebarSettingsUITests: XCTestCase {
+
+    private var app: XCUIApplication!
+    private let remote = XCUIRemote.shared
+
+    override func setUpWithError() throws {
+        continueAfterFailure = false
+        app = XCUIApplication()
+        app.launch()
+    }
+
+    override func tearDownWithError() throws {
+        app = nil
+    }
+
+    private func element(_ identifier: String) -> XCUIElement {
+        app.descendants(matching: .any).matching(NSPredicate(format: "identifier == %@", identifier)).firstMatch
+    }
+
+    /// Presses `direction` until `target` has focus, up to `maxPresses` times.
+    @discardableResult
+    private func moveFocus(to target: XCUIElement, direction: XCUIRemote.Button, maxPresses: Int = 30) -> Bool {
+        for _ in 0..<maxPresses {
+            if target.exists && target.hasFocus { return true }
+            remote.press(direction)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        }
+        return target.exists && target.hasFocus
+    }
+
+    private func attach(_ name: String) {
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    func testSettingsSubMenuPushKeepsScreenAndSidebarUsable() throws {
+        let sidebarSettings = element("tv.sidebar.settings")
+        XCTAssertTrue(sidebarSettings.waitForExistence(timeout: 20), "sidebar must be visible on launch")
+        remote.press(.left)  // move focus from the content into the sidebar
+        XCTAssertTrue(moveFocus(to: sidebarSettings, direction: .down), "could not focus sidebar Settings")
+        remote.press(.select)
+
+        let visibleSectionsLink = app.descendants(matching: .any).matching(NSPredicate(format: "label == 'Visible Sections'")).firstMatch
+        XCTAssertTrue(visibleSectionsLink.waitForExistence(timeout: 12), "Settings did not render its rows")
+        attach("1-settings-root")
+
+        // Focus stays in the sidebar after select; press right until it leaves the sidebar.
+        let sidebarSearch = element("tv.sidebar.search")
+        for _ in 0..<6 where sidebarSettings.hasFocus || sidebarSearch.hasFocus {
+            remote.press(.right)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.4))
+        }
+        XCTAssertTrue(moveFocus(to: visibleSectionsLink, direction: .down, maxPresses: 40), "could not focus Visible Sections link")
+        remote.press(.select)
+        RunLoop.current.run(until: Date().addingTimeInterval(2))
+        attach("2-after-push-visible-sections")
+
+        let pushedHeader = app.staticTexts["Visible — drag to reorder"]
+        XCTAssertTrue(
+            pushedHeader.waitForExistence(timeout: 5),
+            "Visible Sections sub-page did not appear after select (screen blank or push failed)"
+        )
+
+        remote.press(.menu)  // Back from the pushed page should return to the Settings root
+        RunLoop.current.run(until: Date().addingTimeInterval(1))
+        attach("3-after-menu")
+        XCTAssertTrue(visibleSectionsLink.waitForExistence(timeout: 5), "Menu did not pop back to Settings root")
+
+        remote.press(.left)
+        XCTAssertTrue(
+            moveFocus(to: sidebarSettings, direction: .down) || moveFocus(to: element("tv.sidebar.search"), direction: .up),
+            "sidebar did not regain focus after a Settings push/pop"
+        )
+        attach("4-sidebar-after-pop")
+    }
+
+    /// A deep-linked video opens in a full-screen player with no sidebar, and Back leaves it.
+    func testDeepLinkedPlayerHasNoSidebarAndBackLeaves() throws {
+        app.terminate()
+        app = XCUIApplication()
+        app.launchArguments += ["--uitesting-deeplink-video=dQw4w9WgXcQ"]
+        app.launch()
+        RunLoop.current.run(until: Date().addingTimeInterval(12))
+        attach("player-deeplink")
+        XCTAssertFalse(element("tv.sidebar.search").isHittable, "sidebar must not be visible over the player")
+        remote.press(.menu)
+        remote.press(.menu)
+        RunLoop.current.run(until: Date().addingTimeInterval(2))
+        attach("player-deeplink-after-back")
+        XCTAssertTrue(element("tv.sidebar.search").waitForExistence(timeout: 10), "sidebar should return after leaving the player")
+    }
+
+    /// A video opened from Search (pushed player) is full screen without the sidebar; Back pops.
+    func testSearchResultOpensFullScreenPlayer() throws {
+        XCTAssertTrue(element("tv.sidebar.search").waitForExistence(timeout: 20))
+        remote.press(.select)  // Search is focused at launch; make sure it is the selection
+        remote.press(.right)
+        RunLoop.current.run(until: Date().addingTimeInterval(1))
+        remote.press(.down)  // from the search bar to the first suggestion
+        RunLoop.current.run(until: Date().addingTimeInterval(1))
+        remote.press(.select)
+        RunLoop.current.run(until: Date().addingTimeInterval(10))
+        attach("search-results")
+        remote.press(.down)
+        remote.press(.select)
+        RunLoop.current.run(until: Date().addingTimeInterval(10))
+        attach("search-player")
+        XCTAssertFalse(element("tv.sidebar.search").isHittable, "sidebar must be hidden while the player is open")
+        remote.press(.menu)
+        RunLoop.current.run(until: Date().addingTimeInterval(3))
+        attach("search-after-back")
+        XCTAssertTrue(element("tv.sidebar.search").isHittable, "sidebar must come back after leaving the player")
+    }
+}
 #endif
