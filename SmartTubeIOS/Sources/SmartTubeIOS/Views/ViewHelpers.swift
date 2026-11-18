@@ -185,4 +185,16 @@ enum AppSymbol {
     static let stackLayers = "square.stack"
     static let tvMediabox = "tv.and.mediabox"
     static let tvPlay = "play.tv"
+
+    // MARK: - tvOS sidebar (BrowseSection icons)
+    static let subscriptions = "person.2.fill"
+    static let trending = "flame.fill"
+    static let history = "clock.fill"
+    static let playlists = "list.bullet.rectangle.portrait.fill"
+    static let shorts = "bolt.fill"
+    static let music = "music.note"
+    static let gaming = "gamecontroller.fill"
+    static let news = "newspaper.fill"
+    static let live = "dot.radiowaves.left.and.right"
+    static let sports = "sportscourt.fill"
 }

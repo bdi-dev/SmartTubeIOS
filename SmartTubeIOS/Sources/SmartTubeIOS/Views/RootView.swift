@@ -35,7 +35,11 @@ public struct RootView: View {
         #endif
         Group {
             #if os(tvOS)
-            MainTVTabView()
+            if store.settings.useSidebarHome {
+                TVSidebarRootView()
+            } else {
+                MainTVTabView()
+            }
             #elseif os(macOS)
             MainSidebarView()
             #else
