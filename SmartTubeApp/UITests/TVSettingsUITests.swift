@@ -270,6 +270,43 @@ final class TVSidebarSettingsUITests: XCTestCase {
         XCTAssertTrue(rowAfter.label.contains("2"), "row should show 2×, got \(rowAfter.label)")
     }
 
+    /// On launch focus lands in the content column, not on the sidebar's first row, and the
+    /// sidebar stays collapsed.
+    func testLaunchFocusIsInContentNotSidebar() throws {
+        XCTAssertTrue(element("tv.sidebar").waitForExistence(timeout: 20))
+        RunLoop.current.run(until: Date().addingTimeInterval(4))
+        attach("launch-focus")
+        XCTAssertFalse(element("tv.sidebar.search").hasFocus, "Search row must not hold initial focus")
+        XCTAssertLessThan(element("tv.sidebar").frame.width, 250, "sidebar must be collapsed at launch")
+        remote.press(.left)
+        RunLoop.current.run(until: Date().addingTimeInterval(1))
+        XCTAssertGreaterThan(element("tv.sidebar").frame.width, 300, "Left must still open the sidebar")
+        remote.press(.menu)
+        RunLoop.current.run(until: Date().addingTimeInterval(1))
+    }
+
+    /// Captures collapsed and expanded sidebar screenshots and frames for several sections.
+    /// Measurement aid for the sidebar spacing work; asserts that the collapsed rail never
+    /// extends past the content column's leading edge.
+    func testSidebarSpacingMeasurements() throws {
+        let sidebar = element("tv.sidebar")
+        XCTAssertTrue(sidebar.waitForExistence(timeout: 20))
+        for name in ["home", "subscriptions", "playlists", "settings", "search"] {
+            let item = element("tv.sidebar.\(name)")
+            remote.press(.left)
+            _ = moveFocus(to: item, direction: .down, maxPresses: 12) || moveFocus(to: item, direction: .up, maxPresses: 12)
+            remote.press(.select)
+            RunLoop.current.run(until: Date().addingTimeInterval(6))
+            attach("\(name)-expanded")
+            print("SPACING \(name) expanded sidebar=\(sidebar.frame)")
+            remote.press(.right)
+            RunLoop.current.run(until: Date().addingTimeInterval(2))
+            attach("\(name)-collapsed")
+            print("SPACING \(name) collapsed sidebar=\(sidebar.frame)")
+            print("SPACING_TREE_BEGIN \(name)\n\(app.debugDescription)\nSPACING_TREE_END")
+        }
+    }
+
     /// A deep-linked video opens in a full-screen player with no sidebar, and Back leaves it.
     func testDeepLinkedPlayerHasNoSidebarAndBackLeaves() throws {
         app.terminate()
@@ -289,7 +326,9 @@ final class TVSidebarSettingsUITests: XCTestCase {
     /// A video opened from Search (pushed player) is full screen without the sidebar; Back pops.
     func testSearchResultOpensFullScreenPlayer() throws {
         XCTAssertTrue(element("tv.sidebar.search").waitForExistence(timeout: 20))
-        remote.press(.select)  // Search is focused at launch; make sure it is the selection
+        remote.press(.left)  // focus starts in the content; go to the sidebar's Search row
+        XCTAssertTrue(moveFocus(to: element("tv.sidebar.search"), direction: .up))
+        remote.press(.select)
         remote.press(.right)
         RunLoop.current.run(until: Date().addingTimeInterval(1))
         remote.press(.down)  // from the search bar to the first suggestion

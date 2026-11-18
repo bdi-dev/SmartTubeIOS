@@ -23,8 +23,15 @@ enum TVSidebarItem: Hashable {
 }
 
 private enum TVSidebarLayout {
-    static let railWidth: CGFloat = 120
-    static let expandedWidth: CGFloat = 420
+    /// Total width of the collapsed rail, from the screen edge: leading margin, a 72 pt row
+    /// (40 pt icon plus its padding) and trailing padding. This is both the width the sidebar
+    /// draws and the slot reserved for it, so nothing is ever drawn under the rail.
+    static let railWidth: CGFloat = 128
+    static let expandedWidth: CGFloat = 440
+    /// Gap between the rail's edge and the content. Grids add no padding of their own on tvOS.
+    static let contentLeadingGap: CGFloat = 24
+    /// Margin to the screen edge. The sidebar sits inside the 80 pt tvOS safe area on purpose.
+    static let leadingMargin: CGFloat = 40
 }
 
 // MARK: - Player visibility
@@ -54,6 +61,9 @@ struct TVSidebarRootView: View {
     @State private var showSignIn = false
     @State private var playerPresented = false
     @FocusState private var focusedItem: TVSidebarItem?
+    /// True while focus is somewhere in the content column. Preferred at launch so the app
+    /// opens on the selected section instead of the sidebar's first row.
+    @FocusState private var contentFocused: Bool
 
     /// Browse sections in the order the settings list them (same list as the old chip bar).
     private var sections: [BrowseSection] { HomeView.visibleSections(for: store.settings) }
@@ -73,11 +83,17 @@ struct TVSidebarRootView: View {
                 .disabled(playerPresented)
                 .zIndex(1)
             content
+                .padding(.leading, TVSidebarLayout.contentLeadingGap)
                 .offset(x: isExpanded ? TVSidebarLayout.expandedWidth - TVSidebarLayout.railWidth : 0)
                 .opacity(isExpanded ? 0.5 : 1)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .focusSection()
+                .focused($contentFocused)
         }
+        .defaultFocus($contentFocused, true)
+        // The rail sits close to the screen edge instead of inside the 80 pt tvOS safe area;
+        // otherwise that inset stacks on top of the rail and the content's own padding.
+        .ignoresSafeArea(.container, edges: .leading)
         .animation(.easeInOut(duration: 0.25), value: isExpanded)
         .environment(searchVM)
         .environment(\.tvPlayerPresented, $playerPresented)
@@ -145,7 +161,8 @@ struct TVSidebarRootView: View {
             accountRow
         }
         .padding(.vertical, 40)
-        .padding(.horizontal, 16)
+        .padding(.leading, TVSidebarLayout.leadingMargin)
+        .padding(.trailing, 16)
         .frame(width: isExpanded ? TVSidebarLayout.expandedWidth : TVSidebarLayout.railWidth, alignment: .leading)
         .frame(maxHeight: .infinity, alignment: .top)
         .background(.ultraThinMaterial)
