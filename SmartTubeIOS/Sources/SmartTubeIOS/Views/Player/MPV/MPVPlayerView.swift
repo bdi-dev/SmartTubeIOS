@@ -670,9 +670,19 @@ struct MPVPlayerView: View {
                     relatedCard(related, vm)
                 }
             }
-            .padding(.vertical, 20)
+            // Room inside the scroll content for the `.card` focus lift (~1.1x scale) and its
+            // shadow; with clipping off the glow draws over the surrounding margins instead of
+            // being cut at the scroll view's edges (first/last card included).
+            .padding(.horizontal, Self.shelfFocusInset)
+            .padding(.vertical, Self.shelfFocusInset)
         }
+        .scrollClipDisabled()
+        // Cancel the inset in layout so the cards still line up with the header text.
+        .padding(.horizontal, -Self.shelfFocusInset)
+        .padding(.vertical, -Self.shelfFocusInset + 20)
     }
+
+    private static let shelfFocusInset: CGFloat = 50
 
     private func relatedCard(_ related: Video, _ vm: MPVPlayerViewModel) -> some View {
         Button {
