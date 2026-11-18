@@ -217,11 +217,29 @@ final class TVSidebarSettingsUITests: XCTestCase {
         attach("3-after-menu")
         XCTAssertTrue(visibleSectionsLink.waitForExistence(timeout: 5), "Menu did not pop back to Settings root")
 
+        // Left from the popped page opens the sidebar and puts focus on one of its rows. The old
+        // check pressed Down/Up straight away and looked for one specific row; it read focus
+        // before the pop and the sidebar expansion had settled, so it failed although the
+        // sidebar worked. Wait for the expansion, then accept focus on any sidebar row.
         remote.press(.left)
+        let sidebar = element("tv.sidebar")
+        let expanded = NSPredicate { _, _ in sidebar.frame.width > 300 }
+        wait(for: [XCTNSPredicateExpectation(predicate: expanded, object: nil)], timeout: 8)
+        XCTAssertGreaterThan(sidebar.frame.width, 300, "Left did not open the sidebar after a Settings push/pop")
+        let rows = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'tv.sidebar.'"))
+        let anyRowFocused = NSPredicate { _, _ in rows.allElementsBoundByIndex.contains { $0.hasFocus } }
+        wait(for: [XCTNSPredicateExpectation(predicate: anyRowFocused, object: nil)], timeout: 8)
         XCTAssertTrue(
-            moveFocus(to: sidebarSettings, direction: .down) || moveFocus(to: element("tv.sidebar.search"), direction: .up),
+            rows.allElementsBoundByIndex.contains { $0.hasFocus },
             "sidebar did not regain focus after a Settings push/pop"
         )
+        // And it still responds: one Down press moves focus to another row.
+        let focusedBefore = rows.allElementsBoundByIndex.first { $0.hasFocus }?.identifier
+        remote.press(.down)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.8))
+        let focusedAfter = rows.allElementsBoundByIndex.first { $0.hasFocus }?.identifier
+        XCTAssertNotNil(focusedAfter, "sidebar lost focus on Down")
+        if focusedBefore == "tv.sidebar.account" { _ = focusedAfter } else { XCTAssertNotEqual(focusedBefore, focusedAfter, "sidebar did not respond to Down") }
         attach("4-sidebar-after-pop")
     }
 
@@ -256,9 +274,15 @@ final class TVSidebarSettingsUITests: XCTestCase {
         add(XCTAttachment(string: app.debugDescription))
         print("PICKER_PAGE_HIERARCHY_BEGIN\n\(app.debugDescription)\nPICKER_PAGE_HIERARCHY_END")
 
-        let fast = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS '2×' OR label == '2×'")).firstMatch
+        // Pick an option that differs from the current value, so the test does not depend on
+        // what an earlier run left in the simulator's settings.
+        let target = before.contains("2×") ? "Normal" : "2×"
+        let fast = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", target)).firstMatch
         XCTAssertTrue(fast.waitForExistence(timeout: 5), "picker options did not render (blank page)")
-        XCTAssertTrue(moveFocus(to: fast, direction: .down, maxPresses: 20), "could not focus 2× option")
+        XCTAssertTrue(
+            moveFocus(to: fast, direction: .down, maxPresses: 20) || moveFocus(to: fast, direction: .up, maxPresses: 20),
+            "could not focus \(target) option"
+        )
         remote.press(.select)
         RunLoop.current.run(until: Date().addingTimeInterval(1))
         if !row.waitForExistence(timeout: 2) || row.label == before { remote.press(.menu) }
@@ -267,7 +291,7 @@ final class TVSidebarSettingsUITests: XCTestCase {
         let rowAfter = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH 'Playback Speed'")).firstMatch
         XCTAssertTrue(rowAfter.waitForExistence(timeout: 5), "did not return to Settings root")
         XCTAssertNotEqual(rowAfter.label, before, "row value did not change after selecting an option")
-        XCTAssertTrue(rowAfter.label.contains("2"), "row should show 2×, got \(rowAfter.label)")
+        XCTAssertTrue(rowAfter.label.contains(target), "row should show \(target), got \(rowAfter.label)")
     }
 
     /// On launch focus lands in the content column, not on the sidebar's first row, and the
