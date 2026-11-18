@@ -472,6 +472,9 @@ final class MPVPlayerViewModel {
 
         case .cacheAhead(let seconds):
             cacheAhead = seconds
+
+        case .externalFileFailed(let reported):
+            handleExternalFileFailure(reported)
         }
     }
 
@@ -543,6 +546,21 @@ final class MPVPlayerViewModel {
         return hasAudioFormats || !(sourceHLSMaster?.audioRenditions.isEmpty ?? true)
     }
 
+    /// mpv reported that the audio file of the current load could not be opened. Recover now
+    /// instead of waiting for the first frame. Marking the load's audio as verified first
+    /// keeps the first-frame check from reloading for the same failure; `recoverMissingAudio`
+    /// re-arms it for whichever load it starts.
+    private func handleExternalFileFailure(_ reported: String?) {
+        guard !audioVerified, audioIsExpected, let plan = activePlan else { return }
+        guard
+            MPVStreamSelector.isCurrentAudioFailure(
+                reported: reported, current: currentAudioURL(for: plan), alreadyFailed: failedAudioURLs)
+        else { return }
+        mpvPlayerLog.notice("audio file refused by mpv — recovering before the first frame")
+        audioVerified = true
+        recoverMissingAudio()
+    }
+
     /// mpv opened the video but no audio track is playing (typically an external audio file
     /// that 404ed). Try another audio stream in the viewer's language, then the next plan
     /// and client; give up quietly — video only — once the attempt budget is spent.
@@ -567,7 +585,10 @@ final class MPVPlayerViewModel {
             audioVerified = false
             isLoading = true
             mpvPlayerLog.notice("audio → \(next.host ?? "?")\(next.path.prefix(60))")
-            engine.load(plan, startAt: currentTime, userAgent: activeClient?.userAgent, audioOverride: next)
+            // Before the first frame `currentTime` is not yet the playhead: resume from the
+            // position the video was opened at, as `openNextCandidate` does.
+            let startAt = hasStartedPlayback ? currentTime : resumePosition
+            engine.load(plan, startAt: startAt, userAgent: activeClient?.userAgent, audioOverride: next)
             engine.setSpeed(playbackSpeed)
             if !isPlaying { engine.setPaused(true) }
             return

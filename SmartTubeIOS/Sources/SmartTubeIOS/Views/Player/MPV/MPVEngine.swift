@@ -31,6 +31,9 @@ enum MPVEngineEvent: Sendable, Equatable {
     case hardwareDecoder(String)
     /// Seconds of media buffered ahead of the playhead.
     case cacheAhead(Double)
+    /// mpv could not open an external file, normally the audio track. Payload is the file name
+    /// mpv printed, when the log line gave one.
+    case externalFileFailed(String?)
 }
 
 // MARK: - MPVMetalLayer
@@ -420,6 +423,9 @@ final class MPVEngine: @unchecked Sendable {
                 guard let prefix = message.prefix, let level = message.level, let text = message.text else { break }
                 let line = "[\(String(cString: prefix))] \(String(cString: text))"
                     .trimmingCharacters(in: .whitespacesAndNewlines)
+                if MPVStreamSelector.isExternalFileFailure(logLine: line) {
+                    continuation.yield(.externalFileFailed(MPVStreamSelector.failedExternalFileText(logLine: line)))
+                }
                 switch String(cString: level) {
                 case "fatal", "error": mpvLog.error(line)
                 case "warn": mpvLog.notice(line)

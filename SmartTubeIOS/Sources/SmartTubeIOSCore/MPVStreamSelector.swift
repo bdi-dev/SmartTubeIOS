@@ -430,6 +430,47 @@ public enum MPVStreamSelector {
         }.first
     }
 
+    /// Text of the mpv log line reported when an external file (the audio) cannot be opened.
+    private static let externalFileFailureMarker = "Can not open external file"
+
+    /// True for the mpv log line saying an external file could not be opened. Playback goes
+    /// on without that track, so this is the earliest sign that a plan's audio is missing.
+    public static func isExternalFileFailure(logLine: String) -> Bool {
+        logLine.contains(externalFileFailureMarker)
+    }
+
+    /// The file mpv names in an external-file failure line (`… Can not open external file <name>.`),
+    /// as mpv prints it. mpv decodes the escapes and may cut a long name short with `<…>`, so
+    /// the text is only comparable to a URL through `isCurrentAudioFailure`. Nil when the line
+    /// names nothing.
+    public static func failedExternalFileText(logLine: String) -> String? {
+        guard let range = logLine.range(of: externalFileFailureMarker) else { return nil }
+        let rest = logLine[range.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+        guard var token = rest.split(whereSeparator: \.isWhitespace).first.map(String.init) else { return nil }
+        if token.hasSuffix(truncationMarker) { token.removeLast(truncationMarker.count) }
+        if token.hasSuffix(".") { token.removeLast() }
+        return token.isEmpty ? nil : token
+    }
+
+    /// Marker mpv appends when it cuts a long log line short.
+    private static let truncationMarker = "<…>"
+
+    /// Whether an external-file failure that mpv named `reported` is about the audio the engine
+    /// is playing now (`current`) and should start a recovery at once. mpv prints the name
+    /// percent-decoded, so the comparison decodes the URL and checks that the printed name is
+    /// its beginning. A failure naming another file is a late report from an earlier load, and
+    /// a URL already recorded as failed has been handled. Without a name nothing is acted on
+    /// early; the first-frame check covers it.
+    public static func isCurrentAudioFailure(
+        reported: String?, current: URL?, alreadyFailed: Set<URL>
+    ) -> Bool {
+        guard let reported, !reported.isEmpty, let current, !alreadyFailed.contains(current) else {
+            return false
+        }
+        let printed = current.absoluteString.removingPercentEncoding ?? current.absoluteString
+        return printed.hasPrefix(reported)
+    }
+
     /// One selectable audio language of a multi-audio upload.
     public struct AudioOption: Identifiable, Equatable, Sendable {
         public let id: String
