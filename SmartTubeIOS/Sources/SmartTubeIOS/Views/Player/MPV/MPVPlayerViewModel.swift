@@ -69,10 +69,31 @@ final class MPVPlayerViewModel {
     // Chapters, up-next and audio languages
     private(set) var chapters: [Chapter] = []
     private(set) var relatedVideos: [Video] = []
-    /// Audio languages of a multi-audio upload; empty when there is only one track.
-    private(set) var audioOptions: [MPVStreamSelector.AudioOption] = []
-    /// The language the viewer chose; nil plays the original.
+    /// Formats and HLS master of the client that produced `plans`; the audio languages come
+    /// from whichever of them the active stream uses.
+    private var sourceFormats: [VideoFormat] = []
+    private var sourceHLSMaster: HLSMasterPlaylist?
+    /// The language the viewer chose; nil until they choose one.
     private(set) var selectedAudio: MPVStreamSelector.AudioOption?
+    /// Audio languages the active stream can play; empty when there is only one track.
+    var audioOptions: [MPVStreamSelector.AudioOption] {
+        guard let plan = activePlan, case .adaptive(let video, _) = plan.source else { return [] }
+        if plan.isHLS {
+            guard let master = sourceHLSMaster else { return [] }
+            return MPVStreamSelector.audioOptions(in: master, forVariant: video)
+        }
+        return MPVStreamSelector.audioOptions(in: sourceFormats)
+    }
+    /// What is (or will be) playing: the viewer's choice, else the system language when the
+    /// video offers it, else the original track.
+    var effectiveAudio: MPVStreamSelector.AudioOption? {
+        if let selectedAudio { return selectedAudio }
+        let options = audioOptions
+        for identifier in Locale.preferredLanguages {
+            if let match = options.first(where: { MPVStreamSelector.option($0, matches: identifier) }) { return match }
+        }
+        return options.first { $0.isOriginal }
+    }
     private(set) var hasQueueNext = false
     var canPlayNext: Bool { hasQueueNext || !relatedVideos.isEmpty }
     var canPlayPrevious: Bool { (queueIndex ?? 0) > 0 }
@@ -240,7 +261,7 @@ final class MPVPlayerViewModel {
         mpvPlayerLog.notice(
             "open \(self.video.id) via \(self.activeClient?.rawValue ?? "?"): \(plan.label) startAt=\(Int(startAt ?? 0))s"
         )
-        engine.load(plan, startAt: startAt, userAgent: activeClient?.userAgent, audioOverride: selectedAudio?.url)
+        engine.load(plan, startAt: startAt, userAgent: activeClient?.userAgent, audioOverride: effectiveAudio?.url)
         engine.setSpeed(playbackSpeed)
     }
 
@@ -277,7 +298,8 @@ final class MPVPlayerViewModel {
         if !info.video.title.isEmpty { video = info.video }
         if duration <= 0, let known = info.video.duration { duration = known }
         if captionTracks.isEmpty { captionTracks = info.captionTracks }
-        if audioOptions.isEmpty { audioOptions = MPVStreamSelector.audioOptions(in: info.formats) }
+        sourceFormats = info.formats
+        sourceHLSMaster = hlsMaster
         if !tracker.hasTrackingSession { tracker.setTrackingURLs(info.trackingURLs) }
     }
 
@@ -492,12 +514,12 @@ final class MPVPlayerViewModel {
     }
 
     /// Switches the audio language, keeping the picture and position.
-    func selectAudio(_ option: MPVStreamSelector.AudioOption?) {
-        guard let engine, let plan = activePlan, option != selectedAudio else { return }
+    func selectAudio(_ option: MPVStreamSelector.AudioOption) {
+        guard let engine, let plan = activePlan, option != effectiveAudio else { return }
         selectedAudio = option
         isLoading = true
-        mpvPlayerLog.notice("audio → \(option?.id ?? "original") at \(Int(self.currentTime))s")
-        engine.load(plan, startAt: currentTime, userAgent: activeClient?.userAgent, audioOverride: option?.url)
+        mpvPlayerLog.notice("audio → \(option.id) at \(Int(self.currentTime))s")
+        engine.load(plan, startAt: currentTime, userAgent: activeClient?.userAgent, audioOverride: option.url)
         engine.setSpeed(playbackSpeed)
         if !isPlaying { engine.setPaused(true) }
     }
@@ -691,7 +713,7 @@ final class MPVPlayerViewModel {
         }
         isLoading = true
         mpvPlayerLog.notice("quality → \(plan.label) at \(Int(self.currentTime))s")
-        engine.load(plan, startAt: currentTime, userAgent: activeClient?.userAgent, audioOverride: selectedAudio?.url)
+        engine.load(plan, startAt: currentTime, userAgent: activeClient?.userAgent, audioOverride: effectiveAudio?.url)
         engine.setSpeed(playbackSpeed)
         if !isPlaying { engine.setPaused(true) }
     }

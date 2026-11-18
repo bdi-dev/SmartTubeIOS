@@ -346,4 +346,33 @@ struct MPVStreamSelectorTests {
         #expect(
             MPVStreamSelector.audioOptions(in: [audio(bitrate: 128_000, xtags: "acont=original:lang=en-US")]).isEmpty)
     }
+
+    @Test("HLS audio options come from the variant's audio group, one per language")
+    func audioOptions_hlsGroup() throws {
+        let manifest = """
+            #EXTM3U
+            #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a1",NAME="English original",LANGUAGE="en-US",DEFAULT=YES,URI="https://cdn.example.com/a/en.m3u8"
+            #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a1",NAME="Spanish",LANGUAGE="es-US",DEFAULT=NO,URI="https://cdn.example.com/a/es.m3u8"
+            #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a2",NAME="French",LANGUAGE="fr",DEFAULT=YES,URI="https://cdn.example.com/a/fr.m3u8"
+            #EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720,FRAME-RATE=30,CODECS="avc1.640028,mp4a.40.2",AUDIO="a1"
+            https://cdn.example.com/v/720.m3u8
+            """
+        let master = try #require(
+            HLSMasterPlaylist(manifest: manifest, baseURL: URL(string: "https://cdn.example.com/")!))
+        let variant = try #require(master.variants.first)
+        let options = MPVStreamSelector.audioOptions(
+            in: master, forVariant: variant.url, locale: Locale(identifier: "en_US"))
+        #expect(options.map(\.id) == ["en-US", "es-US"])
+        #expect(options.first?.isOriginal == true)
+        #expect(options.last?.url.lastPathComponent == "es.m3u8")
+    }
+
+    @Test("an option matches a preferred language by its language code")
+    func audioOption_matchesLanguageCode() {
+        let option = MPVStreamSelector.AudioOption(
+            id: "en-US", name: "English", isOriginal: false, url: URL(string: "https://x.example/a")!)
+        #expect(MPVStreamSelector.option(option, matches: "en-GB"))
+        #expect(MPVStreamSelector.option(option, matches: "en"))
+        #expect(!MPVStreamSelector.option(option, matches: "es-US"))
+    }
 }

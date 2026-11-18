@@ -386,6 +386,40 @@ public enum MPVStreamSelector {
             .sorted { ($0.isOriginal ? 0 : 1, $0.name) < ($1.isOriginal ? 0 : 1, $1.name) }
     }
 
+    /// The audio languages an HLS variant can be paired with: one rendition per language from
+    /// the variant's audio group (the `DEFAULT=YES` one when a language has several).
+    public static func audioOptions(
+        in master: HLSMasterPlaylist, forVariant variantURL: URL, locale: Locale = .current
+    ) -> [AudioOption] {
+        guard let group = master.variants.first(where: { $0.url == variantURL })?.audioGroup else { return [] }
+        var best: [String: HLSMasterPlaylist.AudioRendition] = [:]
+        for rendition in master.audioRenditions where rendition.groupID == group {
+            let language = rendition.language.map(normalizedLanguage) ?? rendition.name
+            if let current = best[language], current.isDefault || !rendition.isDefault { continue }
+            best[language] = rendition
+        }
+        guard best.count > 1 else { return [] }
+        return
+            best
+            .map { language, rendition in
+                AudioOption(
+                    id: language,
+                    name: locale.localizedString(forIdentifier: language) ?? rendition.name,
+                    isOriginal: rendition.isDefault,
+                    url: rendition.url
+                )
+            }
+            .sorted { ($0.isOriginal ? 0 : 1, $0.name) < ($1.isOriginal ? 0 : 1, $1.name) }
+    }
+
+    /// Whether `option` is in the language of `identifier` (`en` matches `en-US`).
+    public static func option(_ option: AudioOption, matches identifier: String) -> Bool {
+        func code(_ value: String) -> String {
+            value.split(whereSeparator: { $0 == "-" || $0 == "_" }).first.map { $0.lowercased() } ?? ""
+        }
+        return code(option.id) == code(identifier)
+    }
+
     /// `xtags` is lower-cased for matching; restore BCP 47 casing (`en-us` → `en-US`).
     private static func normalizedLanguage(_ tag: String) -> String {
         tag.split(separator: "-").enumerated().map { index, part in

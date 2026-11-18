@@ -200,9 +200,9 @@ final class MPVEngine: @unchecked Sendable {
         let primary: URL
         switch plan.source {
         case .adaptive(let video, let audio):
-            // A chosen language replaces the plan's audio only for direct files; an HLS
-            // variant's audio is the rendition its master playlist paired with it.
-            let audio = (plan.isHLS ? nil : audioOverride) ?? audio
+            // A chosen language replaces the plan's audio: a direct audio file, or for an
+            // HLS variant one of the renditions of its audio group.
+            let audio = audioOverride ?? audio
             command(["change-list", "audio-files", "append", audio.absoluteString])
             primary = video
         case .hls(let url), .muxed(let url):

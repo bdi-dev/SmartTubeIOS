@@ -462,11 +462,11 @@ struct MPVPlayerView: View {
     }
 
     private func audioMenu(_ vm: MPVPlayerViewModel) -> some View {
-        let current = vm.selectedAudio ?? vm.audioOptions.first { $0.isOriginal }
+        let current = vm.effectiveAudio
         return Menu {
             ForEach(vm.audioOptions) { option in
                 Button {
-                    vm.selectAudio(option.isOriginal ? nil : option)
+                    vm.selectAudio(option)
                 } label: {
                     menuRow(option.name, selected: current == option)
                 }
