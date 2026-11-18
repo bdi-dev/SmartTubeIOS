@@ -888,8 +888,38 @@ extension InnerTubeAPI {
                 return nil
             }(),
             publishedAt: publishedAt,
-            isLive: false, isShort: isShort, badges: []
+            isLive: false, isShort: isShort,
+            watchProgress: Self.lockupWatchProgress(thumbnailViewModel: thumbVM),
+            badges: []
         )
+    }
+
+    /// Resume-progress for the newer view-model thumbnails (`lockupViewModel`,
+    /// `shortsLockupViewModel`). Classic renderers carry
+    /// `thumbnailOverlayResumePlaybackRenderer.percentDurationWatched`; view-model
+    /// thumbnails carry `thumbnailOverlayProgressBarViewModel.startPercent` (0-100),
+    /// nested under `overlays[].thumbnailBottomOverlayViewModel.progressBar`, and
+    /// possibly directly under `overlays[]`. Tolerant of both shapes (and of the legacy
+    /// resume renderer appearing inside `overlays`). Returns a 0...1 fraction, or nil
+    /// when absent or 0 (signed-out responses never carry it).
+    static func lockupWatchProgress(thumbnailViewModel: [String: Any]?) -> Double? {
+        guard let overlays = thumbnailViewModel?["overlays"] as? [[String: Any]] else { return nil }
+        func percent(_ v: Any?) -> Double? { (v as? NSNumber)?.doubleValue }
+        for overlay in overlays {
+            var percent_: Double?
+            if let bar = overlay["thumbnailOverlayProgressBarViewModel"] as? [String: Any] {
+                percent_ = percent(bar["startPercent"])
+            } else if let bottom = overlay["thumbnailBottomOverlayViewModel"] as? [String: Any],
+                let bar = (bottom["progressBar"] as? [String: Any])?["thumbnailOverlayProgressBarViewModel"]
+                    as? [String: Any]
+            {
+                percent_ = percent(bar["startPercent"])
+            } else if let resume = overlay["thumbnailOverlayResumePlaybackRenderer"] as? [String: Any] {
+                percent_ = percent(resume["percentDurationWatched"])
+            }
+            if let p = percent_, p > 0 { return min(p, 100) / 100.0 }
+        }
+        return nil
     }
 
     // MARK: – Shorts reelItemRenderer parser

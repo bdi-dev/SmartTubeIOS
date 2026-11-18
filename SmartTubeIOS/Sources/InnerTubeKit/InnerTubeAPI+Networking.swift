@@ -438,7 +438,14 @@ extension InnerTubeAPI {
         return json
     }
 
-    func post(endpoint: String, body: [String: Any], useAuth: Bool = false) async throws -> [String: Any] {
+    /// `useWebSession`: sign the request with SAPISIDHASH when a SAPISID is held, so the
+    /// WEB client returns per-viewer data (resume progress). The WEB client on
+    /// www.youtube.com rejects OAuth Bearer tokens, so without a SAPISID this stays
+    /// unauthenticated (signed-out behaviour, unchanged). The header only ever goes to
+    /// `baseURL` (www.youtube.com).
+    func post(
+        endpoint: String, body: [String: Any], useAuth: Bool = false, useWebSession: Bool = false
+    ) async throws -> [String: Any] {
         guard var comps = URLComponents(url: baseURL.appendingPathComponent(endpoint), resolvingAgainstBaseURL: false)
         else {
             throw APIError.invalidURL(endpoint)
@@ -454,12 +461,18 @@ extension InnerTubeAPI {
         request.setValue("https://www.youtube.com", forHTTPHeaderField: "Origin")
         request.setValue(InnerTubeClients.Web.nameID, forHTTPHeaderField: "X-YouTube-Client-Name")
         request.setValue(InnerTubeClients.Web.version, forHTTPHeaderField: "X-YouTube-Client-Version")
+        var webSessionSigned = false
         if let token = resolvedToken {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
             activeChannel.apply(to: &request)
+        } else if useWebSession, let sid = sapisid {
+            request.setValue(InnerTubeAPI.sapisidhash(sapisid: sid), forHTTPHeaderField: "Authorization")
+            request.setValue("1", forHTTPHeaderField: "X-Origin")
+            activeChannel.apply(to: &request)
+            webSessionSigned = true
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let authLabel = resolvedToken != nil ? "yes" : "no"
+        let authLabel = resolvedToken != nil ? "yes" : (webSessionSigned ? "sapisidhash" : "no")
         tubeLog.notice("POST /\(endpoint, privacy: .public) [WEB] auth=\(authLabel, privacy: .public)")
         let (data, response) = try await session.data(for: request)
         let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0

@@ -20,8 +20,9 @@ extension InnerTubeAPI {
         var body = makeBody(client: webClientContext)
         body["browseId"] = resolvedId
         tubeLog.notice("fetchChannel browseId=\(resolvedId, privacy: .public)")
-        let data = try await post(endpoint: "browse", body: body)
-        return try parseChannel(from: data, channelId: resolvedId)
+        let data = try await post(endpoint: "browse", body: body, useWebSession: true)
+        let (parsedChannel, parsedVideos) = try parseChannel(from: data, channelId: resolvedId)
+        return (parsedChannel, await applyingHistoryFallback(to: parsedVideos))
     }
 
     /// Lightweight channel thumbnail fetch.
@@ -54,8 +55,42 @@ extension InnerTubeAPI {
         tubeLog.notice(
             "fetchChannelVideos browseId=\(channelId, privacy: .public) hasContinuation=\(continuationToken != nil, privacy: .public) params=\(videosParams, privacy: .public)"
         )
-        let data = try await post(endpoint: "browse", body: body)
-        return try parseVideoGroup(from: data, title: nil)
+        let data = try await post(endpoint: "browse", body: body, useWebSession: true)
+        let group = try parseVideoGroup(from: data, title: nil)
+        return await applyingHistoryFallback(to: group)
+    }
+
+    /// Channel responses carry resume progress only when the WEB request is signed with a
+    /// SAPISID session. For OAuth-only (TV) sessions they never do, so videos the viewer
+    /// already watched look unplayed. Fill the gap from the account's History feed
+    /// (session-cached, capped); progress the response itself carried always wins.
+    func applyingHistoryFallback(to group: VideoGroup) async -> VideoGroup {
+        guard let token = authToken, group.videos.contains(where: { $0.watchProgress == nil }) else {
+            return group
+        }
+        let owner = "\(token.hashValue)|\(ActiveChannel.shared.pageId ?? "")"
+        let index = await WatchedHistoryIndex.shared.index(ownerKey: owner) { [self] in
+            try await loadHistoryProgress(pages: 3)
+        }
+        var merged = group
+        merged.videos = WatchedHistoryIndex.merge(group.videos, index: index)
+        return merged
+    }
+
+    /// First `pages` pages of FEhistory as id -> progress. History tiles without a resume
+    /// overlay get `WatchedHistoryIndex.playedFallbackProgress`.
+    func loadHistoryProgress(pages: Int) async throws -> [String: Double] {
+        var result: [String: Double] = [:]
+        var token: String?
+        for _ in 0..<pages {
+            let page = try await fetchHistory(continuationToken: token)
+            for v in page.videos where result[v.id] == nil {
+                result[v.id] = v.watchProgress ?? WatchedHistoryIndex.playedFallbackProgress
+            }
+            guard let next = page.nextPageToken else { break }
+            token = next
+        }
+        return result
     }
 
     // MARK: - Private channel helpers
