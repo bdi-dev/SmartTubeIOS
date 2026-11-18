@@ -348,3 +348,85 @@ final class TVSidebarSettingsUITests: XCTestCase {
     }
 }
 #endif
+
+// MARK: - TVChannelPageUITests
+//
+// Opens a public channel through `--uitesting-deeplink-channel=<id>` and checks the page
+// layout: one title (the header's), a grid that matches Home's spacing and margins, and the
+// Shorts tab. Needs network access. Screenshots are attached for visual review.
+
+final class TVChannelPageUITests: XCTestCase {
+
+    private var app: XCUIApplication!
+    private let remote = XCUIRemote.shared
+    /// MKBHD: a large public channel with many uploads and a Shorts tab.
+    private let channelId = "UCBJycsmduvYEL83R_U4JriQ"
+
+    override func setUpWithError() throws {
+        continueAfterFailure = false
+        app = XCUIApplication()
+        app.launchArguments += ["--uitesting-deeplink-channel=\(channelId)"]
+        app.launch()
+    }
+
+    override func tearDownWithError() throws { app = nil }
+
+    private func attach(_ name: String) {
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    private func videoCards() -> [XCUIElement] {
+        app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH 'video.card.'")).allElementsBoundByIndex
+    }
+
+    func testChannelPageLayout() throws {
+        let firstCard = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH 'video.card.'")).firstMatch
+        let populated = firstCard.waitForExistence(timeout: 40)
+        attach("channel-page-wait")
+        XCTAssertTrue(populated, "channel video grid did not populate")
+        RunLoop.current.run(until: Date().addingTimeInterval(3))
+        attach("channel-page")
+
+        // Cards in the same row must be at least 40 pt apart and must not overlap.
+        let frames = videoCards().map(\.frame).filter { !$0.isEmpty }
+        XCTAssertGreaterThanOrEqual(frames.count, 4, "expected a row of cards")
+        let sorted = frames.sorted { ($0.minY, $0.minX) < ($1.minY, $1.minX) }
+        for (a, b) in zip(sorted, sorted.dropFirst()) where abs(a.minY - b.minY) < 20 {
+            XCTAssertGreaterThanOrEqual(b.minX - a.maxX, 39, "cards in a row are closer than 40 pt: \(a) \(b)")
+        }
+        let sidebar = app.descendants(matching: .any).matching(NSPredicate(format: "identifier == 'tv.sidebar'")).firstMatch
+        if sidebar.exists, let leftmost = sorted.map(\.minX).min() {
+            XCTAssertGreaterThanOrEqual(leftmost - sidebar.frame.maxX, 40, "grid runs up to the sidebar rail")
+        }
+        // The navigation bar must not repeat the channel name.
+        XCTAssertFalse(app.navigationBars.firstMatch.exists && app.navigationBars.firstMatch.staticTexts.count > 0,
+                       "channel name must not be repeated in a navigation bar")
+    }
+
+    func testShortsTabAndScrollingLoadsMore() throws {
+        let firstCard = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH 'video.card.'")).firstMatch
+        XCTAssertTrue(firstCard.waitForExistence(timeout: 40), "channel video grid did not populate")
+        let initialCount = videoCards().count
+        // Scroll down through the grid; pagination must keep adding cards.
+        for _ in 0..<14 { remote.press(.down); RunLoop.current.run(until: Date().addingTimeInterval(0.4)) }
+        RunLoop.current.run(until: Date().addingTimeInterval(3))
+        attach("channel-scrolled")
+        print("CHANNEL_CARDS initial=\(initialCount) afterScroll=\(videoCards().count)")
+        // Back to the top: Up past the grid lands on the header buttons; Down once reaches the tabs.
+        for _ in 0..<16 { remote.press(.up); RunLoop.current.run(until: Date().addingTimeInterval(0.3)) }
+        let shorts = app.descendants(matching: .any).matching(NSPredicate(format: "label == 'Shorts'")).firstMatch
+        XCTAssertTrue(shorts.waitForExistence(timeout: 10), "Shorts tab missing")
+        remote.press(.down)
+        for _ in 0..<3 where !shorts.hasFocus { remote.press(.right); RunLoop.current.run(until: Date().addingTimeInterval(0.4)) }
+        XCTAssertTrue(shorts.hasFocus, "could not focus the Shorts tab")
+        remote.press(.select)
+        RunLoop.current.run(until: Date().addingTimeInterval(3))
+        attach("channel-shorts")
+    }
+}

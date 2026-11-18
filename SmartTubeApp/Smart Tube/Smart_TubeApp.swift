@@ -60,6 +60,20 @@ struct SmartTubeTVApp: App {
         browseViewModel.deepLinkedVideo = Video(id: videoID, title: videoID, channelTitle: "")
     }
 
+    /// Handles `--uitesting-deeplink-channel=<id>`: opens that channel's page through the same
+    /// `.openChannel` notification the in-app links use. Waits a moment so the sidebar's content
+    /// column (the notification's receiver) exists. Mirrors the iOS app's `AppEntry` handling.
+    private func openDeepLinkedChannelFromLaunchArguments() async {
+        let prefix = "--uitesting-deeplink-channel="
+        guard let argument = ProcessInfo.processInfo.arguments.first(where: { $0.hasPrefix(prefix) }) else { return }
+        let channelID = String(argument.dropFirst(prefix.count))
+        guard !channelID.isEmpty else { return }
+        try? await Task.sleep(for: .seconds(2))
+        NotificationCenter.default.post(
+            name: Notification.Name("com.smarttube.openChannel"), object: nil,
+            userInfo: ["channelId": channelID, "channelTitle": ""])
+    }
+
     var body: some Scene {
         WindowGroup {
             RootView()
@@ -86,6 +100,7 @@ struct SmartTubeTVApp: App {
                     browseViewModel.updateHistoryEnabled(newState == .enabled)
                 }
                 .task { openDeepLinkedVideoFromLaunchArguments() }
+                .task { await openDeepLinkedChannelFromLaunchArguments() }
         }
     }
 }
