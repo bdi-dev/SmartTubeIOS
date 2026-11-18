@@ -29,7 +29,7 @@ private enum TVSidebarLayout {
     static let railWidth: CGFloat = 128
     static let expandedWidth: CGFloat = 440
     /// Gap between the rail's edge and the content. Grids add no padding of their own on tvOS.
-    static let contentLeadingGap: CGFloat = 24
+    static let contentLeadingGap: CGFloat = 56
     /// Margin to the screen edge. The sidebar sits inside the 80 pt tvOS safe area on purpose.
     static let leadingMargin: CGFloat = 40
 }
