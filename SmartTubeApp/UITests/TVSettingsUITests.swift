@@ -225,6 +225,51 @@ final class TVSidebarSettingsUITests: XCTestCase {
         attach("4-sidebar-after-pop")
     }
 
+    /// Opens a Picker row in Settings, checks its options render, picks one, goes Back and
+    /// checks the row's value changed. Regression test for blank Picker pages on tvOS.
+    func testPickerPageShowsOptionsAndSelectionPersists() throws {
+        let sidebarSettings = element("tv.sidebar.settings")
+        XCTAssertTrue(sidebarSettings.waitForExistence(timeout: 20), "sidebar must be visible on launch")
+        remote.press(.left)
+        XCTAssertTrue(moveFocus(to: sidebarSettings, direction: .down), "could not focus sidebar Settings")
+        remote.press(.select)
+
+        let row = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH 'Playback Speed'")).firstMatch
+        let rowAppeared = row.waitForExistence(timeout: 12)
+        if !rowAppeared { print("ROW_MISSING_HIERARCHY_BEGIN\n\(app.debugDescription)\nROW_MISSING_HIERARCHY_END") }
+        XCTAssertTrue(rowAppeared, "Settings did not render Playback Speed row")
+        let sidebarSearch = element("tv.sidebar.search")
+        for _ in 0..<6 where sidebarSettings.hasFocus || sidebarSearch.hasFocus {
+            remote.press(.right)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.4))
+        }
+        attach("settings-root-picker-test")
+        print("SETTINGS_ROOT_HIERARCHY_BEGIN\n\(app.debugDescription)\nSETTINGS_ROOT_HIERARCHY_END")
+        XCTAssertTrue(
+            moveFocus(to: row, direction: .up, maxPresses: 12) || moveFocus(to: row, direction: .down, maxPresses: 40),
+            "could not focus Playback Speed row"
+        )
+        let before = row.label
+        remote.press(.select)
+        RunLoop.current.run(until: Date().addingTimeInterval(2))
+        attach("picker-page")
+        add(XCTAttachment(string: app.debugDescription))
+        print("PICKER_PAGE_HIERARCHY_BEGIN\n\(app.debugDescription)\nPICKER_PAGE_HIERARCHY_END")
+
+        let fast = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS '2×' OR label == '2×'")).firstMatch
+        XCTAssertTrue(fast.waitForExistence(timeout: 5), "picker options did not render (blank page)")
+        XCTAssertTrue(moveFocus(to: fast, direction: .down, maxPresses: 20), "could not focus 2× option")
+        remote.press(.select)
+        RunLoop.current.run(until: Date().addingTimeInterval(1))
+        if !row.waitForExistence(timeout: 2) || row.label == before { remote.press(.menu) }
+        RunLoop.current.run(until: Date().addingTimeInterval(1))
+        attach("after-select")
+        let rowAfter = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH 'Playback Speed'")).firstMatch
+        XCTAssertTrue(rowAfter.waitForExistence(timeout: 5), "did not return to Settings root")
+        XCTAssertNotEqual(rowAfter.label, before, "row value did not change after selecting an option")
+        XCTAssertTrue(rowAfter.label.contains("2"), "row should show 2×, got \(rowAfter.label)")
+    }
+
     /// A deep-linked video opens in a full-screen player with no sidebar, and Back leaves it.
     func testDeepLinkedPlayerHasNoSidebarAndBackLeaves() throws {
         app.terminate()
