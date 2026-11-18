@@ -983,6 +983,9 @@
         }
       }
     },
+    "%lld%%" : {
+
+    },
     "1s" : {
       "comment" : "SponsorBlock min-segment picker option — 1 second",
       "extractionState" : "manual",
@@ -1942,6 +1945,9 @@
           }
         }
       }
+    },
+    "Accent Color" : {
+
     },
     "Account" : {
       "comment" : "Settings section header; also sidebar account label fallback",
@@ -3185,6 +3191,9 @@
         }
       }
     },
+    "Audio" : {
+
+    },
     "Audio only — thumbnail" : {
       "localizations" : {
         "ar" : {
@@ -4040,6 +4049,9 @@
           }
         }
       }
+    },
+    "Blue" : {
+
     },
     "Cancel" : {
       "comment" : "Generic cancel button used throughout the app",
@@ -5004,6 +5016,9 @@
         }
       }
     },
+    "Compact" : {
+
+    },
     "Compact Thumbnails" : {
       "comment" : "Settings toggle for compact video thumbnail layout",
       "extractionState" : "manual",
@@ -5296,6 +5311,9 @@
 
     },
     "Could Not Load Playlists" : {
+
+    },
+    "Could not load the channels of this account." : {
 
     },
     "Could Not Remove" : {
@@ -5679,6 +5697,9 @@
           }
         }
       }
+    },
+    "Default" : {
+
     },
     "Default Quality" : {
 
@@ -9586,6 +9607,15 @@
         }
       }
     },
+    "Green" : {
+
+    },
+    "Hardware" : {
+
+    },
+    "Hidden" : {
+
+    },
     "Hide Controls After" : {
       "comment" : "Settings picker label — duration before player controls auto-hide",
       "extractionState" : "manual",
@@ -9967,6 +9997,9 @@
       }
     },
     "Hide Watched Videos" : {
+
+    },
+    "High Resolution" : {
 
     },
     "Highlight" : {
@@ -10445,6 +10478,9 @@
           }
         }
       }
+    },
+    "Indigo" : {
+
     },
     "Interaction Reminder" : {
       "comment" : "SponsorBlock category display name",
@@ -12164,6 +12200,9 @@
         }
       }
     },
+    "Mint" : {
+
+    },
     "Missing playlist entry information for \"%@\"." : {
 
     },
@@ -12360,6 +12399,9 @@
         }
       }
     },
+    "mpv Player" : {
+
+    },
     "Music (Off-Topic)" : {
       "comment" : "SponsorBlock category display name",
       "extractionState" : "manual",
@@ -12455,6 +12497,12 @@
           }
         }
       }
+    },
+    "Next" : {
+
+    },
+    "No Channels" : {
+
     },
     "No chapters available." : {
 
@@ -12840,6 +12888,9 @@
           }
         }
       }
+    },
+    "No playable stream was found for this video." : {
+
     },
     "No Playlists" : {
 
@@ -13413,6 +13464,9 @@
           }
         }
       }
+    },
+    "Not Signed In" : {
+
     },
     "Nothing" : {
       "comment" : "SponsorBlock action option — play segment without action",
@@ -14466,6 +14520,9 @@
         }
       }
     },
+    "Orange" : {
+
+    },
     "Original" : {
       "comment" : "Audio track label for the original audio track",
       "extractionState" : "manual",
@@ -14851,6 +14908,9 @@
     "Parental Controls" : {
 
     },
+    "Pause" : {
+
+    },
     "paused" : {
       "localizations" : {
         "ar" : {
@@ -15134,6 +15194,12 @@
         }
       }
     },
+    "Pink" : {
+
+    },
+    "Play" : {
+
+    },
     "Play Incognito" : {
 
     },
@@ -15230,6 +15296,9 @@
           }
         }
       }
+    },
+    "Playback position" : {
+
     },
     "Playback speed" : {
       "localizations" : {
@@ -15803,6 +15872,9 @@
         }
       }
     },
+    "Plays through mpv instead of the system player: opens YouTube's separate video and audio streams directly, including VP9. Chapters, the queue, autoplay and audio-track selection are not available in this player yet. Videos mpv cannot open can be played with the standard player." : {
+
+    },
     "Portuguese (Brazil)" : {
       "localizations" : {
         "ar" : {
@@ -16180,6 +16252,15 @@
           }
         }
       }
+    },
+    "Previous" : {
+
+    },
+    "Primary account" : {
+
+    },
+    "Purple" : {
+
     },
     "Quality" : {
       "comment" : "Player more-menu label and quality-picker header",
@@ -16562,6 +16643,9 @@
           }
         }
       }
+    },
+    "Red" : {
+
     },
     "Refresh" : {
       "comment" : "Button to reload an empty feed",
@@ -21260,6 +21344,9 @@
         }
       }
     },
+    "Sign in to switch between your channels." : {
+
+    },
     "Sign in with Google" : {
       "comment" : "Settings button when user is not signed in",
       "extractionState" : "manual",
@@ -21836,6 +21923,12 @@
         }
       }
     },
+    "Skip Back" : {
+
+    },
+    "Skip Forward" : {
+
+    },
     "Sleep Timer" : {
       "comment" : "Player more-menu label and sleep-timer picker header",
       "extractionState" : "manual",
@@ -22123,6 +22216,9 @@
           }
         }
       }
+    },
+    "Software" : {
+
     },
     "Sort" : {
       "comment" : "Search filter picker hidden label",
@@ -22599,6 +22695,9 @@
           }
         }
       }
+    },
+    "Standard" : {
+
     },
     "Stats for Nerds" : {
       "localizations" : {
@@ -23456,7 +23555,13 @@
         }
       }
     },
+    "Teal" : {
+
+    },
     "Thanks for the feedback — this segment has been reported to SponsorBlock." : {
+
+    },
+    "The mpv player could not start." : {
 
     },
     "The report couldn't be sent. Please try again later." : {
@@ -23940,6 +24045,9 @@
         }
       }
     },
+    "Thumbnails" : {
+
+    },
     "Today" : {
       "comment" : "Upload date search filter option",
       "extractionState" : "manual",
@@ -24131,6 +24239,9 @@
           }
         }
       }
+    },
+    "Trying another source…" : {
+
     },
     "Two-finger tap to dismiss" : {
       "comment" : "Player stats-for-nerds overlay hint text",
@@ -24798,6 +24909,9 @@
         }
       }
     },
+    "Up Next" : {
+
+    },
     "Upload date" : {
       "comment" : "Search filter section header; also a sort order option",
       "extractionState" : "manual",
@@ -24990,7 +25104,11 @@
         }
       }
     },
+    "Use Standard Player" : {
+
+    },
     "Uses YouTube's official embedded player instead of the direct stream pipeline. Quality selection and downloads are unavailable. Ads will play. Useful for videos that refuse to play via the standard path." : {
+      "extractionState" : "stale",
       "localizations" : {
         "ar" : {
           "stringUnit" : {
@@ -25752,6 +25870,9 @@
         }
       }
     },
+    "Visible — drag to reorder" : {
+
+    },
     "Visible Sections" : {
       "comment" : "Settings navigation link and navigation title for section visibility settings",
       "extractionState" : "manual",
@@ -26043,10 +26164,16 @@
     "Watch history is saved on this device. SmartTube also tries to report watches to your YouTube account, but YouTube may not always record them." : {
 
     },
+    "Watched threshold" : {
+
+    },
     "Watched threshold: %lld%%" : {
 
     },
     "When a PIN is set, it must be entered every time this Settings screen is opened." : {
+
+    },
+    "Yellow" : {
 
     },
     "Your Google account is required." : {

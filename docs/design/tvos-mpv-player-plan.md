@@ -8,12 +8,14 @@ Ordered by what unblocks the most.
 
 ## 1. Verify on a real Apple TV (blocks everything else)
 
-- **Back/Menu**: hides the controls, then leaves the player. Never exercised — the Simulator
-  tooling used so far cannot send it.
-- **Hardware decode**: does VP9 actually decode in VideoToolbox on tvOS 26.2+? The engine assumes
-  so and steps down if not; confirm with the stream badge ("Hardware" vs "Software") at 4K60.
-- **Dropped frames** at 1080p60 and 2160p60, H.264 and VP9; memory with the 96 MiB cache.
-- **SponsorBlock auto-skip** on a video with a `sponsor` segment (only the manual button is tested).
+Checked on an Apple TV 4K (3rd generation), 2026-11-18:
+
+- **Hardware decode — verified:** 2160p VP9 reports "Hardware" and plays without stutter.
+- **Back/Menu — partly verified:** it hides the controls; leaving the player on a second press is
+  not yet confirmed.
+- **Still open:** 2160p60 sustained for several minutes (memory with the 96 MiB cache), H.264 at
+  60 fps, and **SponsorBlock auto-skip** on a video with a `sponsor` segment (only the manual button
+  is tested).
 
 ## 2. Picture quality on a TV
 
