@@ -72,6 +72,7 @@ struct MPVPlayerView: View {
         static let audio = "mpvPlayer.audioMenu"
         static let chapters = "mpvPlayer.chaptersMenu"
         static let related = "mpvPlayer.relatedVideoButton"
+        static let relatedShelf = "mpvPlayer.relatedShelf"
         static let speed = "mpvPlayer.speedMenu"
         static let captions = "mpvPlayer.captionsMenu"
         static let skipSegment = "mpvPlayer.skipSegmentButton"
@@ -124,7 +125,10 @@ struct MPVPlayerView: View {
             }
 
             if vm.errorMessage == nil {
-                if vm.controlsVisible {
+                if vm.relatedShelfVisible {
+                    relatedShelf(vm)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                } else if vm.controlsVisible {
                     controlsOverlay(vm)
                         .transition(.opacity)
                 } else {
@@ -154,7 +158,7 @@ struct MPVPlayerView: View {
                 loadingIndicator(vm)
             }
 
-            if let segment = vm.toastSegment, vm.errorMessage == nil {
+            if let segment = vm.toastSegment, vm.errorMessage == nil, !vm.relatedShelfVisible {
                 skipSegmentButton(segment, vm)
             }
 
@@ -164,9 +168,13 @@ struct MPVPlayerView: View {
         }
         .animation(.easeInOut(duration: 0.2), value: vm.controlsVisible)
         .animation(.easeInOut(duration: 0.2), value: vm.progressFlashVisible)
+        .animation(.easeOut(duration: 0.25), value: vm.relatedShelfVisible)
         .onPlayPauseCommand { vm.togglePlayPause() }
+        // Back peels one layer at a time: shelf, then controls, then the player.
         .onExitCommand {
-            if vm.controlsVisible, vm.errorMessage == nil, !vm.videoEnded {
+            if vm.relatedShelfVisible {
+                vm.closeRelatedShelf()
+            } else if vm.controlsVisible, vm.errorMessage == nil, !vm.videoEnded {
                 vm.hideControls()
             } else {
                 close(vm)
@@ -183,6 +191,7 @@ struct MPVPlayerView: View {
             vm.holdControls = newFocus == nil && menuButtons.contains(oldFocus) && vm.controlsVisible
             if newFocus != nil, newFocus != .surface, vm.controlsVisible { vm.showControls() }
             if let newFocus, newFocus.isTransport { lastTransportFocus = newFocus }
+            if case .related(let id)? = newFocus { vm.relatedCardFocused(id) }
         }
         // Every fresh show of the overlay starts on Play, as it always has.
         .onChange(of: vm.controlsVisible) { _, visible in
@@ -192,7 +201,7 @@ struct MPVPlayerView: View {
         // the controls up. Hand focus to the skip button when it appears so one press of
         // Select skips the segment; when it goes away focus falls back to the surface.
         .onChange(of: vm.toastSegment?.id) { _, segmentID in
-            if segmentID != nil, !vm.controlsVisible { focus = .skipSegment }
+            if segmentID != nil, !vm.controlsVisible, !vm.relatedShelfVisible { focus = .skipSegment }
         }
         // Safety net: the focused control can leave the hierarchy in the same update that
         // shows or hides the overlay (e.g. the skip button at the end of the video), and
@@ -200,9 +209,38 @@ struct MPVPlayerView: View {
         // Give it a moment, then put focus where that state expects it.
         .task(id: vm.controlsVisible) {
             try? await Task.sleep(for: .milliseconds(600))
-            guard !Task.isCancelled, focus == nil, vm.errorMessage == nil, !vm.holdControls else { return }
+            guard !Task.isCancelled, focus == nil, vm.errorMessage == nil, !vm.holdControls,
+                !vm.relatedShelfVisible
+            else { return }
             focus = vm.controlsVisible ? restoredTransportFocus(vm) : (vm.toastSegment != nil ? .skipSegment : .surface)
         }
+        // The shelf and the surface come and go with this flag, and the focused view leaves
+        // the hierarchy with them. Opening puts focus on a card; closing returns it to the
+        // surface, so Select and the remote keep working without a stray press.
+        .task(id: vm.relatedShelfVisible) {
+            try? await Task.sleep(for: .milliseconds(150))
+            guard !Task.isCancelled, vm.errorMessage == nil else { return }
+            if vm.relatedShelfVisible {
+                focus = relatedShelfFocus(vm)
+            } else if !vm.controlsVisible, focus == nil || isRelatedCard(focus) {
+                focus = vm.toastSegment != nil ? .skipSegment : .surface
+            }
+        }
+    }
+
+    /// The card focus should land on when the shelf opens: the one last focused in this
+    /// video, else the first.
+    private func relatedShelfFocus(_ vm: MPVPlayerViewModel) -> FocusTarget? {
+        let cards = vm.relatedVideos.prefix(8)
+        if let id = vm.relatedShelfFocusID, cards.contains(where: { $0.id == id }) {
+            return .related(id)
+        }
+        return cards.first.map { .related($0.id) }
+    }
+
+    private func isRelatedCard(_ target: FocusTarget?) -> Bool {
+        if case .related? = target { return true }
+        return false
     }
 
     /// The remembered transport button, or Play when that button is no longer rendered
@@ -239,6 +277,9 @@ struct MPVPlayerView: View {
             switch direction {
             case .left: vm.seekRelative(seconds: -Double(store.settings.seekBackSeconds))
             case .right: vm.seekRelative(seconds: Double(store.settings.seekForwardSeconds))
+            case .down:
+                // Down opens the related shelf; with nothing to show, it brings up the controls.
+                if vm.relatedVideos.isEmpty { vm.showControls() } else { vm.openRelatedShelf() }
             default: vm.showControls()
             }
         }
@@ -481,6 +522,10 @@ struct MPVPlayerView: View {
         }
         .font(.title3)
         .defaultFocus($focus, restoredTransportFocus(vm))
+        // Down from the bottom row has nowhere to go in the overlay: it raises the shelf.
+        .onMoveCommand { direction in
+            if direction == .down, !vm.relatedVideos.isEmpty { vm.openRelatedShelf() }
+        }
     }
 
     private func chaptersMenu(_ vm: MPVPlayerViewModel) -> some View {
@@ -525,35 +570,73 @@ struct MPVPlayerView: View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Up Next", bundle: .module)
                 .font(.headline)
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 28) {
-                    ForEach(vm.relatedVideos.prefix(8)) { related in
-                        Button {
-                            vm.play(related: related)
-                        } label: {
-                            VStack(alignment: .leading, spacing: 10) {
-                                AsyncImage(url: related.thumbnailURL) { image in
-                                    image.resizable().aspectRatio(16 / 9, contentMode: .fill)
-                                } placeholder: {
-                                    Color.white.opacity(0.1)
-                                }
-                                .frame(width: 320, height: 180)
-                                .clipped()
-                                Text(related.title)
-                                    .font(.caption)
-                                    .lineLimit(2)
-                                    .frame(width: 320, alignment: .leading)
-                            }
-                        }
-                        .buttonStyle(.card)
-                        .focused($focus, equals: .related(related.id))
-                        .accessibilityIdentifier(ID.related)
-                    }
-                }
-                .padding(.vertical, 20)
-            }
+            relatedCards(vm)
         }
         .foregroundStyle(.white)
+    }
+
+    /// Related videos raised over the bottom third of the playing video. The video keeps
+    /// playing behind a scrim that darkens only the bottom of the frame.
+    private func relatedShelf(_ vm: MPVPlayerViewModel) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Related", bundle: .module)
+                .font(.headline)
+            relatedCards(vm)
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 80)
+        .padding(.bottom, 60)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+        .background(
+            LinearGradient(
+                stops: [
+                    .init(color: .clear, location: 0.3),
+                    .init(color: .black.opacity(0.6), location: 1),
+                ],
+                startPoint: .top, endPoint: .bottom
+            )
+            .ignoresSafeArea()
+        )
+        .focusSection()
+        // Up from the top row of cards leaves the shelf; Back closes it through `onExitCommand`.
+        .onMoveCommand { direction in
+            if direction == .up { vm.closeRelatedShelf() }
+        }
+        .accessibilityIdentifier(ID.relatedShelf)
+    }
+
+    private func relatedCards(_ vm: MPVPlayerViewModel) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 28) {
+                ForEach(vm.relatedVideos.prefix(8)) { related in
+                    relatedCard(related, vm)
+                }
+            }
+            .padding(.vertical, 20)
+        }
+    }
+
+    private func relatedCard(_ related: Video, _ vm: MPVPlayerViewModel) -> some View {
+        Button {
+            vm.play(related: related)
+        } label: {
+            VStack(alignment: .leading, spacing: 10) {
+                AsyncImage(url: related.thumbnailURL) { image in
+                    image.resizable().aspectRatio(16 / 9, contentMode: .fill)
+                } placeholder: {
+                    Color.white.opacity(0.1)
+                }
+                .frame(width: 320, height: 180)
+                .clipped()
+                Text(related.title)
+                    .font(.caption)
+                    .lineLimit(2)
+                    .frame(width: 320, alignment: .leading)
+            }
+        }
+        .buttonStyle(.card)
+        .focused($focus, equals: .related(related.id))
+        .accessibilityIdentifier(ID.related)
     }
 
     private func captionsMenu(_ vm: MPVPlayerViewModel) -> some View {

@@ -120,6 +120,15 @@ final class MPVPlayerViewModel {
     /// Set by the view while a system menu (quality / speed / captions) is open, so the
     /// auto-hide timer does not pull the overlay out from under it.
     var holdControls = false
+    /// The related-videos shelf raised over the bottom of the playing video. Mutually
+    /// exclusive with the controls: opening it hides them, showing them closes it.
+    private(set) var relatedShelfVisible = false
+    /// The shelf card focus last rested on, so reopening the shelf within this video
+    /// returns there. Nil until a card has been focused.
+    private(set) var relatedShelfFocusID: String?
+    /// The shelf closes after this long with no focus movement across its cards.
+    static let relatedShelfIdleTimeout: Duration = .seconds(12)
+    private var relatedShelfIdleTask: Task<Void, Never>?
     private(set) var isScrubbing = false
     private(set) var scrubTime: TimeInterval = 0
 
@@ -754,6 +763,7 @@ final class MPVPlayerViewModel {
     private static let keepControlsForTesting = ProcessInfo.processInfo.arguments.contains("--uitesting-keep-controls")
 
     func showControls(autoHide: Bool = true) {
+        if relatedShelfVisible { closeRelatedShelf() }
         controlsVisible = true
         controlsHideTask?.cancel()
         guard autoHide, isPlaying, !Self.keepControlsForTesting else { return }
@@ -772,6 +782,40 @@ final class MPVPlayerViewModel {
     func hideControls() {
         controlsHideTask?.cancel()
         controlsVisible = false
+    }
+
+    // MARK: - Related shelf
+
+    /// Raises the related-videos shelf over the playing video; playback carries on. Does
+    /// nothing without suggestions, or once the video has ended (the end-of-video row covers
+    /// that case).
+    func openRelatedShelf() {
+        guard !relatedVideos.isEmpty, !videoEnded, errorMessage == nil else { return }
+        controlsHideTask?.cancel()
+        controlsVisible = false
+        relatedShelfVisible = true
+        restartRelatedShelfIdle()
+    }
+
+    func closeRelatedShelf() {
+        relatedShelfIdleTask?.cancel()
+        relatedShelfVisible = false
+    }
+
+    /// Focus moved to a shelf card: remember it and keep the shelf open a while longer.
+    func relatedCardFocused(_ id: String) {
+        relatedShelfFocusID = id
+        guard relatedShelfVisible else { return }
+        restartRelatedShelfIdle()
+    }
+
+    private func restartRelatedShelfIdle() {
+        relatedShelfIdleTask?.cancel()
+        relatedShelfIdleTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.relatedShelfIdleTimeout)
+            guard !Task.isCancelled, let self, self.relatedShelfVisible else { return }
+            self.closeRelatedShelf()
+        }
     }
 
     // MARK: - Lifecycle
@@ -806,6 +850,7 @@ final class MPVPlayerViewModel {
         controlsHideTask?.cancel()
         progressFlashTask?.cancel()
         scrubCommitTask?.cancel()
+        relatedShelfIdleTask?.cancel()
         eventTask?.cancel()
         eventTask = nil
         isPlaying = false
