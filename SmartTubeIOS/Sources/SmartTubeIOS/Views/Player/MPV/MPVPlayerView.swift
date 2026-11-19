@@ -37,6 +37,9 @@ struct MPVPlayerView: View {
     /// The transport-row button focus last rested on. Down from the scrubber returns here,
     /// so the focus engine re-enters the row at the button the user left.
     @State private var lastTransportFocus: FocusTarget = .playPause
+    /// Set while Down from the scrubber is handing focus back to `lastTransportFocus`; keeps
+    /// the row locked to that one button until focus lands there.
+    @State private var restoringTransportFocus: FocusTarget?
 
     enum FocusTarget: Hashable {
         case surface
@@ -215,7 +218,11 @@ struct MPVPlayerView: View {
             let menuButtons: [FocusTarget?] = [.captions, .speed, .quality, .audio, .chapters]
             vm.holdControls = newFocus == nil && menuButtons.contains(oldFocus) && vm.controlsVisible
             if newFocus != nil, newFocus != .surface, vm.controlsVisible { vm.showControls() }
-            if let newFocus, newFocus.isTransport { lastTransportFocus = newFocus }
+            if let target = restoringTransportFocus {
+                if newFocus == target { restoringTransportFocus = nil }
+            } else if let newFocus, newFocus.isTransport {
+                lastTransportFocus = newFocus
+            }
             if case .related(let id)? = newFocus { vm.relatedCardFocused(id) }
             if case .comment(let id)? = newFocus { vm.commentFocused(id) }
         }
@@ -320,6 +327,28 @@ struct MPVPlayerView: View {
         case .quality: return vm.selectablePlans.count > 1 ? .quality : .playPause
         case .comments: return vm.canShowComments ? .comments : .playPause
         default: return lastTransportFocus
+        }
+    }
+
+    /// The only transport button that may take focus right now: the remembered one while the
+    /// timeline is focused or focus is being handed back to it. Nil when the row is free.
+    private func transportFocusLock(_ vm: MPVPlayerViewModel) -> FocusTarget? {
+        guard focus == .scrubber || restoringTransportFocus != nil else { return nil }
+        return restoringTransportFocus ?? restoredTransportFocus(vm)
+    }
+
+    /// Returns focus to the remembered transport button once the engine's own move from the
+    /// scrubber has landed, and keeps that move from rewriting `lastTransportFocus`.
+    private func restoreTransportFocus(_ vm: MPVPlayerViewModel) {
+        let target = restoredTransportFocus(vm)
+        restoringTransportFocus = target
+        Task { @MainActor in
+            await Task.yield()
+            focus = target
+            lastTransportFocus = target
+            // If focus was already there no change fires; do not stay in restoring mode.
+            try? await Task.sleep(for: .milliseconds(400))
+            if restoringTransportFocus == target { restoringTransportFocus = nil }
         }
     }
 
@@ -431,9 +460,12 @@ struct MPVPlayerView: View {
                 case .left: vm.scrub(by: -scrubStep(vm))
                 case .right: vm.scrub(by: scrubStep(vm))
                 case .down:
-                    // Commit only: the focus engine moves to the transport row, and its
-                    // `defaultFocus` there picks `lastTransportFocus`.
+                    // `onMoveCommand` does not consume the move: the focus engine also
+                    // steps down to the button nearest the scrubber (+30) and ignores
+                    // `defaultFocus` for directional moves. Let it finish, then put focus
+                    // back on the button the user left.
                     vm.commitScrub()
+                    restoreTransportFocus(vm)
                 default: break
                 }
             }
@@ -524,6 +556,7 @@ struct MPVPlayerView: View {
                     Image(systemName: AppSymbol.previousTrack)
                 }
                 .focused($focus, equals: .previous)
+                .transportFocusable(.previous, only: transportFocusLock(vm))
                 .accessibilityLabel(Text("Previous", bundle: .module))
                 .accessibilityIdentifier(ID.previous)
             }
@@ -534,6 +567,7 @@ struct MPVPlayerView: View {
                 Image(systemName: AppSymbol.seekBackward(store.settings.seekBackSeconds))
             }
             .focused($focus, equals: .seekBack)
+            .transportFocusable(.seekBack, only: transportFocusLock(vm))
             .accessibilityLabel(Text("Skip Back", bundle: .module))
             .accessibilityIdentifier(ID.seekBack)
 
@@ -544,6 +578,7 @@ struct MPVPlayerView: View {
                     .frame(minWidth: 44)
             }
             .focused($focus, equals: .playPause)
+            .transportFocusable(.playPause, only: transportFocusLock(vm))
             .accessibilityLabel(
                 vm.isPlaying ? Text("Pause", bundle: .module) : Text("Play", bundle: .module)
             )
@@ -555,6 +590,7 @@ struct MPVPlayerView: View {
                 Image(systemName: AppSymbol.seekForward(store.settings.seekForwardSeconds))
             }
             .focused($focus, equals: .seekForward)
+            .transportFocusable(.seekForward, only: transportFocusLock(vm))
             .accessibilityLabel(Text("Skip Forward", bundle: .module))
             .accessibilityIdentifier(ID.seekForward)
 
@@ -565,6 +601,7 @@ struct MPVPlayerView: View {
                     Image(systemName: AppSymbol.nextTrack)
                 }
                 .focused($focus, equals: .next)
+                .transportFocusable(.next, only: transportFocusLock(vm))
                 .accessibilityLabel(Text("Next", bundle: .module))
                 .accessibilityIdentifier(ID.next)
             }
@@ -589,7 +626,6 @@ struct MPVPlayerView: View {
             }
         }
         .font(.title3)
-        .defaultFocus($focus, restoredTransportFocus(vm))
         // Down from the bottom row has nowhere to go in the overlay: it raises the shelf.
         .onMoveCommand { direction in
             if direction == .down, !vm.relatedVideos.isEmpty { vm.openRelatedShelf() }
@@ -603,6 +639,7 @@ struct MPVPlayerView: View {
             Image(systemName: AppSymbol.comments)
         }
         .focused($focus, equals: .comments)
+        .transportFocusable(.comments, only: transportFocusLock(vm))
         .accessibilityLabel(Text("Comments", bundle: .module))
         .accessibilityIdentifier(ID.comments)
     }
@@ -623,6 +660,7 @@ struct MPVPlayerView: View {
                 .labelStyle(.iconOnly)
         }
         .focused($focus, equals: .chapters)
+        .transportFocusable(.chapters, only: transportFocusLock(vm))
         .accessibilityIdentifier(ID.chapters)
     }
 
@@ -641,6 +679,7 @@ struct MPVPlayerView: View {
                 .labelStyle(.iconOnly)
         }
         .focused($focus, equals: .audio)
+        .transportFocusable(.audio, only: transportFocusLock(vm))
         .accessibilityIdentifier(ID.audio)
     }
 
@@ -747,6 +786,7 @@ struct MPVPlayerView: View {
                 .labelStyle(.iconOnly)
         }
         .focused($focus, equals: .captions)
+        .transportFocusable(.captions, only: transportFocusLock(vm))
         .accessibilityIdentifier(ID.captions)
     }
 
@@ -762,8 +802,11 @@ struct MPVPlayerView: View {
         } label: {
             Text(Self.speedLabel(vm.playbackSpeed))
                 .monospacedDigit()
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
         }
         .focused($focus, equals: .speed)
+        .transportFocusable(.speed, only: transportFocusLock(vm))
         .accessibilityLabel(Text("Playback Speed", bundle: .module))
         .accessibilityIdentifier(ID.speed)
     }
@@ -780,8 +823,11 @@ struct MPVPlayerView: View {
         } label: {
             Text(vm.activePlan?.height.map { "\($0)p" } ?? String(localized: "Quality", bundle: .module))
                 .monospacedDigit()
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
         }
         .focused($focus, equals: .quality)
+        .transportFocusable(.quality, only: transportFocusLock(vm))
         .accessibilityLabel(Text("Quality", bundle: .module))
         .accessibilityIdentifier(ID.quality)
     }
@@ -931,6 +977,21 @@ private struct MPVVideoSurface: UIViewRepresentable {
             videoLayer.frame = bounds
             videoLayer.contentsScale = window?.screen.nativeScale ?? traitCollection.displayScale
             CATransaction.commit()
+        }
+    }
+}
+
+private extension View {
+    /// While the timeline owns focus, only the remembered transport button may take it. The
+    /// focus engine moves focus before any state change from the Down press can render, and
+    /// it picks the button nearest the bar (and ignores `defaultFocus` for directional
+    /// moves), so the row has to offer a single candidate up front.
+    @ViewBuilder
+    func transportFocusable(_ target: MPVPlayerView.FocusTarget, only locked: MPVPlayerView.FocusTarget?) -> some View {
+        if let locked, locked != target {
+            focusable(false)
+        } else {
+            self
         }
     }
 }
