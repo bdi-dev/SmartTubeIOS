@@ -93,22 +93,45 @@ extension InnerTubeAPI {
     /// Fetches the list of channels the authenticated user subscribes to (requires auth).
     ///
     /// Strategy:
-    ///  1. `/guide` endpoint with TV client + auth — returns the TV sidebar guide which
-    ///     includes every subscribed channel with avatar thumbnail URLs via guideEntryRenderer.
-    ///  2. If that yields no channels, fall back to parsing unique channels from the
-    ///     TVHTML5 video-tile subscription feed (channel IDs + names, no avatars).
+    ///  1. `FEchannels` (TV client dedicated channel list, paged) — the complete set.
+    ///  2. `/guide` sidebar — merged in for avatars and as a second source, because the
+    ///     guide alone can be capped by YouTube's collapsed "Show more" section.
+    ///  3. If both yield nothing, unique channels from the TVHTML5 FEsubscriptions tiles.
+    /// A failure of one source never discards what the other returned.
     public func fetchSubscribedChannels() async throws -> [Channel] {
-        // Primary: TV guide sidebar — includes subscribed channels with avatar thumbnails
-        let guideBody = makeBody(client: tvClientContext)
-        let guideData = try await postTV(endpoint: "guide", body: guideBody)
-        let guideKeys = Array(guideData.keys.sorted().prefix(8))
-        tubeLog.notice("fetchSubscribedChannels guide top-level keys: \(guideKeys, privacy: .public)")
-        let guideChannels = parseGuideChannels(from: guideData)
-        tubeLog.notice("fetchSubscribedChannels guide → \(guideChannels.count, privacy: .public) channels")
-        if !guideChannels.isEmpty { return guideChannels }
+        var listChannels: [Channel] = []
+        var listError: Error?
+        do {
+            let result = try await fetchChannelListPaged()
+            listChannels = result.channels
+            tubeLog.notice(
+                "fetchSubscribedChannels FEchannels → \(listChannels.count, privacy: .public) channels in \(result.pages, privacy: .public) pages truncated=\(result.truncated, privacy: .public)"
+            )
+        } catch {
+            listError = error
+            tubeLog.error("fetchSubscribedChannels FEchannels failed: \(String(describing: error), privacy: .public)")
+        }
+
+        var guideChannels: [Channel] = []
+        var guideError: Error?
+        do {
+            let guideData = try await postTV(endpoint: "guide", body: makeBody(client: tvClientContext))
+            let scan = scanGuide(guideData)
+            guideChannels = scan.channels
+            tubeLog.notice(
+                "fetchSubscribedChannels guide → \(guideChannels.count, privacy: .public) channels collapsible=\(scan.collapsibleEntries, privacy: .public) expandable=\(scan.expandableItemEntries, privacy: .public) continuation=\(scan.hasContinuation, privacy: .public)"
+            )
+        } catch {
+            guideError = error
+            tubeLog.error("fetchSubscribedChannels guide failed: \(String(describing: error), privacy: .public)")
+        }
+
+        let merged = InnerTubeAPI.mergeChannelLists([listChannels, guideChannels])
+        if !merged.isEmpty { return merged }
+        if let listError, let guideError { _ = guideError; throw listError }
 
         // Fallback: TV subscription video-tile feed — extract unique channels (no avatars)
-        tubeLog.notice("fetchSubscribedChannels: guide returned 0 — falling back to video tile parse")
+        tubeLog.notice("fetchSubscribedChannels: list and guide returned 0 — falling back to video tile parse")
         var tvBody = makeBody(client: tvClientContext)
         tvBody["browseId"] = "FEsubscriptions"
         let tvData = try await postTV(endpoint: "browse", body: tvBody)
