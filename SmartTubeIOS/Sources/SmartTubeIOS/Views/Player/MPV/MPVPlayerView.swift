@@ -40,6 +40,17 @@ struct MPVPlayerView: View {
     /// Set while Down from the scrubber is handing focus back to `lastTransportFocus`; keeps
     /// the row locked to that one button until focus lands there.
     @State private var restoringTransportFocus: FocusTarget?
+    /// When the restore lock was last released with focus on a transport button. For a short
+    /// window after, a Left/Right the focus engine swallows (neighbours still re-rendering as
+    /// focusable) is replayed by hand.
+    @State private var transportLockReleasedAt: Date?
+    /// A Left/Right that arrived while focus was still travelling from the timeline back to
+    /// the row; replayed from the landing button once focus is there.
+    /// Counts focus changes other than the restore landing; tells a replay whether the
+    /// focus engine handled a press itself (and when).
+    @State private var focusMoveCount = 0
+    @State private var lastFocusMoveAt = Date.distantPast
+    @State private var pendingTransportMove: MoveCommandDirection?
 
     enum FocusTarget: Hashable {
         case surface
@@ -218,8 +229,21 @@ struct MPVPlayerView: View {
             let menuButtons: [FocusTarget?] = [.captions, .speed, .quality, .audio, .chapters]
             vm.holdControls = newFocus == nil && menuButtons.contains(oldFocus) && vm.controlsVisible
             if newFocus != nil, newFocus != .surface, vm.controlsVisible { vm.showControls() }
+            if !(restoringTransportFocus != nil && newFocus == restoringTransportFocus) {
+                focusMoveCount += 1
+                lastFocusMoveAt = Date()
+            }
             if let target = restoringTransportFocus {
-                if newFocus == target { restoringTransportFocus = nil }
+                if newFocus == target {
+                    // Landed: release the lock right now so neighbours are focusable again.
+                    lastTransportFocus = target
+                    releaseTransportLock()
+                    replayPendingTransportMove(from: target)
+                } else if newFocus != nil, newFocus != .scrubber {
+                    // Focus went somewhere else (another button, surface, shelf, comments...):
+                    // never keep the row locked.
+                    releaseTransportLock()
+                }
             } else if let newFocus, newFocus.isTransport {
                 lastTransportFocus = newFocus
             }
@@ -236,8 +260,12 @@ struct MPVPlayerView: View {
         }
         // Every fresh show of the overlay starts on Play, as it always has.
         .onChange(of: vm.controlsVisible) { _, visible in
-            if visible { lastTransportFocus = .playPause }
+            if visible { lastTransportFocus = .playPause } else { restoringTransportFocus = nil; pendingTransportMove = nil }
         }
+        .onChange(of: vm.errorMessage) { _, message in
+            if message != nil { restoringTransportFocus = nil }
+        }
+        .onDisappear { restoringTransportFocus = nil }
         // With the controls hidden, focus sits on the video surface, whose Select brings
         // the controls up. Hand focus to the skip button when it appears so one press of
         // Select skips the segment; when it goes away focus falls back to the surface.
@@ -333,6 +361,8 @@ struct MPVPlayerView: View {
     /// The only transport button that may take focus right now: the remembered one while the
     /// timeline is focused or focus is being handed back to it. Nil when the row is free.
     private func transportFocusLock(_ vm: MPVPlayerViewModel) -> FocusTarget? {
+        // Never lock while focus is already on a transport button.
+        if let focus, focus.isTransport { return nil }
         guard focus == .scrubber || restoringTransportFocus != nil else { return nil }
         return restoringTransportFocus ?? restoredTransportFocus(vm)
     }
@@ -342,13 +372,81 @@ struct MPVPlayerView: View {
     private func restoreTransportFocus(_ vm: MPVPlayerViewModel) {
         let target = restoredTransportFocus(vm)
         restoringTransportFocus = target
+        pendingTransportMove = nil
         Task { @MainActor in
             await Task.yield()
+            guard restoringTransportFocus == target else { return }
             focus = target
-            lastTransportFocus = target
-            // If focus was already there no change fires; do not stay in restoring mode.
-            try? await Task.sleep(for: .milliseconds(400))
-            if restoringTransportFocus == target { restoringTransportFocus = nil }
+        }
+        // Last resort only: landing normally releases the lock in `onChange(of: focus)`
+        // (including when focus was already on the target and no change fires).
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(250))
+            if restoringTransportFocus == target {
+                if focus == target { lastTransportFocus = target; transportLockReleasedAt = Date() }
+                restoringTransportFocus = nil
+                pendingTransportMove = nil
+            }
+        }
+    }
+
+    private func releaseTransportLock() {
+        restoringTransportFocus = nil
+        transportLockReleasedAt = Date()
+    }
+
+    private func replayPendingTransportMove(from: FocusTarget) {
+        guard let direction = pendingTransportMove, let vm else { return }
+        pendingTransportMove = nil
+        let order = renderedTransportOrder(vm)
+        guard let i = order.firstIndex(of: from) else { return }
+        let j = direction == .left ? i - 1 : i + 1
+        guard order.indices.contains(j) else { return }
+        let to = order[j]
+        let moves = focusMoveCount
+        Task { @MainActor in
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(60))
+            if focus == from, focusMoveCount == moves { focus = to }
+        }
+    }
+
+    /// Transport buttons in row order, limited to the ones rendered.
+    private func renderedTransportOrder(_ vm: MPVPlayerViewModel) -> [FocusTarget] {
+        var order: [FocusTarget] = []
+        if vm.canPlayPrevious { order.append(.previous) }
+        order += [.seekBack, .playPause, .seekForward]
+        if vm.canPlayNext { order.append(.next) }
+        // Same left-to-right order as `transportRow`.
+        if !vm.chapters.isEmpty { order.append(.chapters) }
+        if vm.audioOptions.count > 1 { order.append(.audio) }
+        if vm.canShowComments { order.append(.comments) }
+        if !vm.captionTracks.isEmpty { order.append(.captions) }
+        order.append(.speed)
+        if vm.selectablePlans.count > 1 { order.append(.quality) }
+        return order
+    }
+
+    /// Left/Right right after the restore lock released can be swallowed while SwiftUI
+    /// re-renders the neighbours as focusable. If the engine did not move focus, do it here.
+    private func replaySwallowedMove(_ direction: MoveCommandDirection, _ vm: MPVPlayerViewModel) {
+        pendingTransportMove = nil
+        guard direction == .left || direction == .right,
+            let released = transportLockReleasedAt, Date().timeIntervalSince(released) < 0.6,
+            let from = focus, from.isTransport,
+            // The engine may already have handled this press (focus changed just now).
+            Date().timeIntervalSince(lastFocusMoveAt) > 0.06
+        else { return }
+        let order = renderedTransportOrder(vm)
+        guard let i = order.firstIndex(of: from) else { return }
+        let j = direction == .left ? i - 1 : i + 1
+        guard order.indices.contains(j) else { return }
+        let to = order[j]
+        let moves = focusMoveCount
+        Task { @MainActor in
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(60))
+            if focus == from, focusMoveCount == moves { focus = to }
         }
     }
 
@@ -457,8 +555,14 @@ struct MPVPlayerView: View {
             .focused($focus, equals: .scrubber)
             .onMoveCommand { direction in
                 switch direction {
-                case .left: vm.scrub(by: -scrubStep(vm))
-                case .right: vm.scrub(by: scrubStep(vm))
+                case .left, .right:
+                    if restoringTransportFocus != nil {
+                        // Focus is already on its way back to the row: this press is meant
+                        // for the buttons, not the timeline.
+                        pendingTransportMove = direction
+                    } else {
+                        vm.scrub(by: direction == .left ? -scrubStep(vm) : scrubStep(vm))
+                    }
                 case .down:
                     // `onMoveCommand` does not consume the move: the focus engine also
                     // steps down to the button nearest the scrubber (+30) and ignores
@@ -628,6 +732,7 @@ struct MPVPlayerView: View {
         .font(.title3)
         // Down from the bottom row has nowhere to go in the overlay: it raises the shelf.
         .onMoveCommand { direction in
+            replaySwallowedMove(direction, vm)
             if direction == .down, !vm.relatedVideos.isEmpty { vm.openRelatedShelf() }
         }
     }

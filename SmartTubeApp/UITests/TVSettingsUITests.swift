@@ -624,141 +624,83 @@ final class TVMPVTimelineFocusUITests: XCTestCase {
         }
     }
 
-    /// Left/Right on the timeline still scrub and do not disturb the remembered button.
-    func testScrubbingKeepsRememberedButton() {
-        let back = button("seekBackButton")
-        focusRowButton(back, name: "seekBackButton")
-        remote.press(.up)
-        pause(1)
-        remote.press(.right)
-        pause(0.4)
-        remote.press(.left)
-        pause(0.4)
-        XCTAssertTrue(scrubber.hasFocus, "scrubbing must keep focus on the timeline")
-        remote.press(.down)
-        pause(1.8)
-        XCTAssertTrue(back.hasFocus, "Down after scrubbing must return to Skip Back")
-    }
-}
+    // MARK: Quick presses right after leaving the timeline
 
-// MARK: - TVMPVTimelineFocusUITests
-//
-// Down from the mpv player's timeline (scrubber) must return focus to the exact transport
-// button the user left, with no intermediate stop on +30 and no later jump to Play.
-// Needs network (plays a public video). Launches straight into the mpv player with the
-// controls pinned open.
-
-final class TVMPVTimelineFocusUITests: XCTestCase {
-
-    private var app: XCUIApplication!
-    private let remote = XCUIRemote.shared
-
-    override func setUpWithError() throws {
-        continueAfterFailure = false
-        app = XCUIApplication()
-        app.launchArguments = [
-            "--uitesting-enable-mpv-player", "--uitesting-deeplink-video=jNQXAC9IVRw", "--uitesting-keep-controls",
-        ]
-        app.launch()
-        XCTAssertTrue(button("playPauseButton").waitForExistence(timeout: 60), "mpv controls did not appear")
-        // Let the initial focus settle on Play.
-        pause(2)
-    }
-
-    override func tearDownWithError() throws { app = nil }
-
-    private func pause(_ seconds: TimeInterval) { RunLoop.current.run(until: Date().addingTimeInterval(seconds)) }
-
-    private func button(_ name: String) -> XCUIElement {
-        app.descendants(matching: .any).matching(NSPredicate(format: "identifier == 'mpvPlayer.\(name)'")).firstMatch
-    }
-
-    private var scrubber: XCUIElement { button("scrubber") }
-
-    private func attach(_ name: String) {
-        let a = XCTAttachment(screenshot: app.screenshot())
-        a.name = name
-        a.lifetime = .keepAlways
-        add(a)
-    }
-
-    /// Moves focus along the row (left/right) until `target` is focused.
-    private func focusRowButton(_ target: XCUIElement, name: String) {
-        for _ in 0..<12 where !target.hasFocus {
-            let order = ["previousButton", "seekBackButton", "playPauseButton", "seekForwardButton", "nextButton"]
-            // Direction: toward the target's x position relative to the focused button.
-            let focused = order.map { button($0) }.first { $0.exists && $0.hasFocus }
-            let goRight = (focused.map { $0.frame.midX < target.frame.midX }) ?? true
-            remote.press(goRight ? .right : .left)
-            pause(0.6)
+    /// The test clip is ~19 s and the player closes when it ends; pause it (Play is focused
+    /// after setUp) so long press loops are not cut short.
+    private func pausePlayback() {
+        if button("playPauseButton").hasFocus {
+            remote.press(.select)
+            pause(0.8)
         }
-        XCTAssertTrue(target.hasFocus, "could not focus \(name)")
     }
 
-    private func assertRoundTrip(via name: String) {
+    private var rowOrder: [XCUIElement] {
+        ["previousButton", "seekBackButton", "playPauseButton", "seekForwardButton", "nextButton"].map { button($0) }.filter(\.exists)
+    }
+
+    /// Down from the timeline into `name`, then IMMEDIATELY (no sleep) one Left/Right press:
+    /// focus must move by exactly one button. Repeated to catch intermittent swallowing.
+    private func assertQuickPress(from name: String, goRight: Bool, iterations: Int = 5) {
         let target = button(name)
         XCTAssertTrue(target.waitForExistence(timeout: 5), "\(name) missing")
-        focusRowButton(target, name: name)
-        remote.press(.up)
-        pause(1.2)
-        XCTAssertTrue(scrubber.hasFocus, "Up from \(name) must focus the timeline")
-        remote.press(.down)
-        // Sample immediately and again after the 600 ms safety net would have fired.
-        pause(0.15)
-        let early = target.hasFocus
-        pause(1.5)
-        attach("roundtrip-\(name)")
-        print("TIMELINE_FOCUS via=\(name) early=\(early) settled=\(target.hasFocus) forward=\(button("seekForwardButton").hasFocus) play=\(button("playPauseButton").hasFocus)")
-        XCTAssertTrue(target.hasFocus, "Down from the timeline must return to \(name)")
-        XCTAssertFalse(scrubber.hasFocus)
+        pausePlayback()
+        for i in 0..<iterations {
+            focusRowButton(target, name: name)
+            remote.press(.up)
+            pause(1.0)
+            XCTAssertTrue(scrubber.hasFocus, "iteration \(i): Up must focus the timeline")
+            let order = rowOrder
+            guard let idx = order.firstIndex(where: { $0.frame == target.frame }) else {
+                XCTFail("\(name) is not in the left cluster"); return
+            }
+            let expectedIdx = idx + (goRight ? 1 : -1)
+            guard order.indices.contains(expectedIdx) else { XCTFail("no neighbour"); return }
+            let expected = order[expectedIdx]
+            remote.press(.down)
+            remote.press(goRight ? .right : .left)
+            pause(0.8)
+            let ok = expected.hasFocus
+            print("QUICK_PRESS from=\(name) right=\(goRight) iter=\(i) landed=\(ok)")
+            if !ok { attach("quick-\(name)-\(i)"); print("QUICK_FOCUS \(focusedFrames()) target=\(target.frame) expected=\(expected.frame)") }
+            XCTAssertTrue(ok, "iteration \(i): quick \(goRight ? "Right" : "Left") after Down into \(name) was swallowed or mis-targeted")
+            XCTAssertFalse(scrubber.hasFocus)
+        }
     }
 
-    func testRoundTripFromSeekBack() { assertRoundTrip(via: "seekBackButton") }
-    func testRoundTripFromSeekForward() { assertRoundTrip(via: "seekForwardButton") }
-    func testRoundTripFromPlayPause() { assertRoundTrip(via: "playPauseButton") }
+    func testQuickRightAfterDownIntoSeekForward() { assertQuickPress(from: "seekForwardButton", goRight: true) }
+    func testQuickLeftAfterDownIntoSeekForward() { assertQuickPress(from: "seekForwardButton", goRight: false) }
+    func testQuickRightAfterDownIntoSeekBack() { assertQuickPress(from: "seekBackButton", goRight: true) }
+    func testQuickRightAfterDownIntoPlay() { assertQuickPress(from: "playPauseButton", goRight: true) }
+    func testQuickLeftAfterDownIntoPlay() { assertQuickPress(from: "playPauseButton", goRight: false) }
 
-    /// Frames of everything currently focused. A menu button reports focus on an unnamed
-    /// wrapper, so it is matched to the control by frame rather than by identifier.
-    private func focusedFrames() -> [CGRect] {
-        app.descendants(matching: .any).matching(NSPredicate(format: "hasFocus == true")).allElementsBoundByIndex.map(\.frame)
-    }
-
-    private func isFocused(_ el: XCUIElement) -> Bool {
-        el.hasFocus || focusedFrames().contains { abs($0.midX - el.frame.midX) < 2 && abs($0.midY - el.frame.midY) < 2 }
-    }
-
-    func testRoundTripFromQualityMenuIfPresent() throws {
+    /// Quality is the rightmost control: Down into it, then an immediate Left must move one
+    /// control left (to Speed, or the next one left of Quality).
+    func testQuickLeftAfterDownIntoQualityIfPresent() throws {
         let quality = button("qualityMenu")
         guard quality.waitForExistence(timeout: 5) else { throw XCTSkip("no quality menu for this video") }
-        // Quality is the rightmost control: press Right until the focus no longer changes.
-        var last: [CGRect] = []
-        for _ in 0..<12 {
-            remote.press(.right)
-            pause(0.5)
+        pausePlayback()
+        for i in 0..<5 {
+            var last: [CGRect] = []
+            for _ in 0..<12 {
+                remote.press(.right)
+                pause(0.5)
+                let now = focusedFrames()
+                if now == last { break }
+                last = now
+            }
+            XCTAssertTrue(isFocused(quality), "iteration \(i): could not focus quality")
+            remote.press(.up)
+            pause(1.0)
+            XCTAssertTrue(scrubber.hasFocus)
+            remote.press(.down)
+            remote.press(.left)
+            pause(0.8)
             let now = focusedFrames()
-            if now == last { break }
-            last = now
-        }
-        XCTAssertTrue(isFocused(quality), "could not focus quality: \(last)")
-        remote.press(.up)
-        pause(1.2)
-        XCTAssertTrue(scrubber.hasFocus)
-        remote.press(.down)
-        pause(1.8)
-        XCTAssertTrue(isFocused(quality), "Down from the timeline must return to the quality menu, got \(focusedFrames())")
-    }
-
-    /// Menu labels such as "2160p" must stay on one line: no transport button may be taller
-    /// than Play (a wrapped quality label made a tall box on device).
-    func testTransportButtonsShareOneHeight() {
-        let reference = button("playPauseButton").frame.height
-        XCTAssertGreaterThan(reference, 0)
-        attach("transport-row")
-        for name in ["seekBackButton", "seekForwardButton", "speedMenu", "qualityMenu", "captionsMenu", "audioMenu", "chaptersMenu", "commentsButton"] {
-            let el = button(name)
-            guard el.exists else { continue }
-            print("TRANSPORT_HEIGHT \(name)=\(el.frame.height) play=\(reference) width=\(el.frame.width)")
-            XCTAssertLessThanOrEqual(el.frame.height, reference + 6, "\(name) is taller than the other transport buttons (label wrapped?)")
+            let moved = !now.isEmpty && !isFocused(quality) && !scrubber.hasFocus
+            print("QUICK_PRESS from=quality iter=\(i) moved=\(moved) focused=\(now)")
+            XCTAssertTrue(moved, "iteration \(i): quick Left after Down into Quality was swallowed")
+            XCTAssertTrue(focusedFrames().allSatisfy { $0.midX < quality.frame.midX }, "focus must be left of Quality")
         }
     }
 
