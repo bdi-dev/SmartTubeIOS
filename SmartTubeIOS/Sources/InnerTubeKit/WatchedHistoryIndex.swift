@@ -281,6 +281,7 @@ public actor WatchedHistoryIndex {
         if pagesLoaded >= maxPages || entries.count >= maxEntries { complete = true }
         deepenTask = nil
         persist()
+        print("[WATCHDIAG] history deepen finished ids=\(entries.count) pages=\(pagesLoaded) complete=\(complete)") // WATCHDIAG
         NotificationCenter.default.post(name: .watchedHistoryIndexDidUpdate, object: nil)
     }
 

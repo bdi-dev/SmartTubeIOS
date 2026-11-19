@@ -473,10 +473,19 @@ extension InnerTubeAPI {
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         let authLabel = resolvedToken != nil ? "yes" : (webSessionSigned ? "sapisidhash" : "no")
+        // WATCHDIAG-BEGIN (temporary)
+        if useWebSession {
+            let mode = resolvedToken != nil ? "oauth" : (webSessionSigned ? "sapisidhash" : "none")
+            print(
+                "[WATCHDIAG] post /\(endpoint) [WEB useWebSession] authMode=\(mode) sapisidPresent=\(sapisid != nil) oauthTokenPresent=\(authToken != nil) pageIdSet=\(activeChannel.pageId != nil)"
+            )
+        }
+        // WATCHDIAG-END
         tubeLog.notice("POST /\(endpoint, privacy: .public) [WEB] auth=\(authLabel, privacy: .public)")
         let (data, response) = try await session.data(for: request)
         let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            if useWebSession { print("[WATCHDIAG] post /\(endpoint) HTTP \(statusCode) FAILED") } // WATCHDIAG (temporary)
             tubeLog.error("❌ HTTP \(statusCode, privacy: .public) for /\(endpoint, privacy: .public)")
             throw APIError.httpError(statusCode)
         }

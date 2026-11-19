@@ -28,11 +28,15 @@ extension InnerTubeAPI {
             ? (try? await fetchChannelVideosTV(channelId: resolvedId, continuationToken: nil)) : nil
         let data = try await post(endpoint: "browse", body: body, useWebSession: true)
         let (parsedChannel, parsedVideos) = try parseChannel(from: data, channelId: resolvedId)
-        if let tv = await tvVideos, !tv.videos.isEmpty {
+        let tvResult = await tvVideos
+        if let tv = tvResult, !tv.videos.isEmpty {
             var group = tv
             group.title = parsedVideos.title
             return (parsedChannel, await applyingHistoryFallback(to: group, source: .tvChannelBrowse))
         }
+        // WATCHDIAG-BEGIN
+        print("[WATCHDIAG] fetchChannel path=web+history tvEligible=\(usesTVChannelVideos) tvVideos=\(tvResult?.videos.count ?? -1)")
+        // WATCHDIAG-END
         return (parsedChannel, await applyingHistoryFallback(to: parsedVideos, source: .webChannelBrowse))
     }
 
@@ -110,8 +114,20 @@ extension InnerTubeAPI {
         tubeLog.notice(
             "fetchChannelVideosTV browseId=\(channelId, privacy: .public) hasContinuation=\(continuationToken != nil, privacy: .public)"
         )
-        let data = try await postTV(endpoint: "browse", body: body)
-        return Self.channelVideoGroup(try parseVideoGroup(from: data, title: nil), channelId: channelId)
+        let data: [String: Any]
+        do {
+            data = try await postTV(endpoint: "browse", body: body)
+        } catch {
+            print("[WATCHDIAG] tv-channel-browse FAILED error=\(type(of: error)) \((error as? APIError).map { String(describing: $0) } ?? "")") // WATCHDIAG
+            throw error
+        }
+        let group = Self.channelVideoGroup(try parseVideoGroup(from: data, title: nil), channelId: channelId)
+        // WATCHDIAG-BEGIN
+        print(
+            "[WATCHDIAG] tv-channel-browse OK continuation=\(continuationToken != nil) videos=\(group.videos.count) withResumeProgress=\(group.videos.filter { ($0.watchProgress ?? 0) > 0 }.count) withPublishedText=\(group.videos.filter { $0.publishedTimeText != nil }.count) hasNextPage=\(group.nextPageToken != nil)"
+        )
+        // WATCHDIAG-END
+        return group
     }
 
     /// Normalises a TV uploads-playlist group into a channel video list: playlist-entry
@@ -143,7 +159,10 @@ extension InnerTubeAPI {
     /// (once, then cached/persisted), the rest load in the background and are announced
     /// via `.watchedHistoryIndexDidUpdate` so visible cards refresh themselves.
     func applyingHistoryFallback(to group: VideoGroup, source: ChannelVideoSource) async -> VideoGroup {
-        guard authToken != nil else { return group }
+        guard authToken != nil else {
+            print("[WATCHDIAG] channel path=\(source.rawValue) videos=\(group.videos.count) history=SKIPPED oauthToken=absent") // WATCHDIAG
+            return group
+        }
         let owner = historyOwnerKey
         let fetch = historyPageFetcher()
         let snap = await WatchedHistoryIndex.shared.warm(ownerKey: owner, fetch: fetch)
@@ -153,6 +172,14 @@ extension InnerTubeAPI {
         }
         var merged = group
         merged.videos = WatchedHistoryIndex.merge(group.videos, index: snap.entries)
+        // WATCHDIAG-BEGIN
+        let before = group.videos.filter { ($0.watchProgress ?? 0) > 0 }.count
+        let after = merged.videos.filter { ($0.watchProgress ?? 0) > 0 }.count
+        let matched = group.videos.filter { snap.entries[$0.id] != nil }.count
+        print(
+            "[WATCHDIAG] channel path=\(source.rawValue) videos=\(group.videos.count) withProgressFromResponse=\(before) historyMatched=\(matched) withProgressAfter=\(after) historyIndexIds=\(snap.entries.count) historyPages=\(snap.pagesLoaded) historyComplete=\(snap.complete) historyStale=\(snap.stale) deepeningStarted=\(unmatched && !snap.complete)"
+        )
+        // WATCHDIAG-END
         return merged
     }
 
