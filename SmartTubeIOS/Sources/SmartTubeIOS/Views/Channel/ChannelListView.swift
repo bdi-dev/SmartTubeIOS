@@ -75,6 +75,9 @@ private struct ChannelListRow: View {
     @ViewBuilder
     private var avatar: some View {
         if let url = channel.thumbnailURL {
+            #if canImport(UIKit)
+            CachedAvatarImage(url: url, size: 48) { avatarPlaceholder }
+            #else
             AsyncImage(url: url) { phase in
                 switch phase {
                 case .success(let img):
@@ -87,6 +90,7 @@ private struct ChannelListRow: View {
                 }
             }
             .frame(width: 48, height: 48)
+            #endif
         } else {
             avatarPlaceholder
         }
