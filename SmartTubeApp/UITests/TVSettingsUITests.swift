@@ -294,6 +294,54 @@ final class TVSidebarSettingsUITests: XCTestCase {
         XCTAssertTrue(rowAfter.label.contains(target), "row should show \(target), got \(rowAfter.label)")
     }
 
+    // MARK: Return-to-selected-row focus
+
+    private var sidebarRows: XCUIElementQuery {
+        app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'tv.sidebar.' AND identifier != 'tv.sidebar'"))
+    }
+
+    private func focusedSidebarRowID() -> String? {
+        sidebarRows.allElementsBoundByIndex.first { $0.hasFocus }?.identifier
+    }
+
+    /// Selects `name` in the sidebar, then moves focus into the content column.
+    private func selectSectionAndEnterContent(_ name: String) {
+        let item = element("tv.sidebar.\(name)")
+        XCTAssertTrue(item.waitForExistence(timeout: 20), "sidebar row \(name) missing")
+        if focusedSidebarRowID() == nil { remote.press(.left) }
+        XCTAssertTrue(
+            moveFocus(to: item, direction: .down, maxPresses: 12) || moveFocus(to: item, direction: .up, maxPresses: 12),
+            "could not focus sidebar row \(name)"
+        )
+        remote.press(.select)
+        RunLoop.current.run(until: Date().addingTimeInterval(4))
+        for _ in 0..<4 where focusedSidebarRowID() != nil {
+            remote.press(.right)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.8))
+        }
+        XCTAssertNil(focusedSidebarRowID(), "focus did not leave the sidebar")
+        // Move a bit inside the content so focus is not on the geometric neighbour of the selected row.
+        remote.press(.down)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.8))
+    }
+
+    private func assertReturnsToSelectedRow(_ name: String, using button: XCUIRemote.Button, label: String) {
+        selectSectionAndEnterContent(name)
+        remote.press(button)
+        RunLoop.current.run(until: Date().addingTimeInterval(1.5))
+        let focused = focusedSidebarRowID()
+        print("RETURN_FOCUS section=\(name) via=\(label) focused=\(focused ?? "nil")")
+        attach("return-\(name)-\(label)")
+        XCTAssertEqual(focused, "tv.sidebar.\(name)", "\(label) from \(name) content must focus the selected row, got \(focused ?? "none")")
+    }
+
+    func testLeftReturnsToSelectedRow_settings() throws { assertReturnsToSelectedRow("settings", using: .left, label: "left") }
+    func testBackReturnsToSelectedRow_settings() throws { assertReturnsToSelectedRow("settings", using: .menu, label: "back") }
+    func testLeftReturnsToSelectedRow_search() throws { assertReturnsToSelectedRow("search", using: .left, label: "left") }
+    func testBackReturnsToSelectedRow_search() throws { assertReturnsToSelectedRow("search", using: .menu, label: "back") }
+    func testLeftReturnsToSelectedRow_home() throws { assertReturnsToSelectedRow("home", using: .left, label: "left") }
+    func testBackReturnsToSelectedRow_home() throws { assertReturnsToSelectedRow("home", using: .menu, label: "back") }
+
     /// On launch focus lands in the content column, not on the sidebar's first row, and the
     /// sidebar stays collapsed.
     func testLaunchFocusIsInContentNotSidebar() throws {
@@ -452,5 +500,143 @@ final class TVChannelPageUITests: XCTestCase {
         remote.press(.select)
         RunLoop.current.run(until: Date().addingTimeInterval(3))
         attach("channel-shorts")
+    }
+}
+
+// MARK: - TVMPVTimelineFocusUITests
+//
+// Down from the mpv player's timeline (scrubber) must return focus to the exact transport
+// button the user left, with no intermediate stop on +30 and no later jump to Play.
+// Needs network (plays a public video). Launches straight into the mpv player with the
+// controls pinned open.
+
+final class TVMPVTimelineFocusUITests: XCTestCase {
+
+    private var app: XCUIApplication!
+    private let remote = XCUIRemote.shared
+
+    override func setUpWithError() throws {
+        continueAfterFailure = false
+        app = XCUIApplication()
+        app.launchArguments = [
+            "--uitesting-enable-mpv-player", "--uitesting-deeplink-video=jNQXAC9IVRw", "--uitesting-keep-controls",
+        ]
+        app.launch()
+        XCTAssertTrue(button("playPauseButton").waitForExistence(timeout: 60), "mpv controls did not appear")
+        // Let the initial focus settle on Play.
+        pause(2)
+    }
+
+    override func tearDownWithError() throws { app = nil }
+
+    private func pause(_ seconds: TimeInterval) { RunLoop.current.run(until: Date().addingTimeInterval(seconds)) }
+
+    private func button(_ name: String) -> XCUIElement {
+        app.descendants(matching: .any).matching(NSPredicate(format: "identifier == 'mpvPlayer.\(name)'")).firstMatch
+    }
+
+    private var scrubber: XCUIElement { button("scrubber") }
+
+    private func attach(_ name: String) {
+        let a = XCTAttachment(screenshot: app.screenshot())
+        a.name = name
+        a.lifetime = .keepAlways
+        add(a)
+    }
+
+    /// Moves focus along the row (left/right) until `target` is focused.
+    private func focusRowButton(_ target: XCUIElement, name: String) {
+        for _ in 0..<12 where !target.hasFocus {
+            let order = ["previousButton", "seekBackButton", "playPauseButton", "seekForwardButton", "nextButton"]
+            // Direction: toward the target's x position relative to the focused button.
+            let focused = order.map { button($0) }.first { $0.exists && $0.hasFocus }
+            let goRight = (focused.map { $0.frame.midX < target.frame.midX }) ?? true
+            remote.press(goRight ? .right : .left)
+            pause(0.6)
+        }
+        XCTAssertTrue(target.hasFocus, "could not focus \(name)")
+    }
+
+    private func assertRoundTrip(via name: String) {
+        let target = button(name)
+        XCTAssertTrue(target.waitForExistence(timeout: 5), "\(name) missing")
+        focusRowButton(target, name: name)
+        remote.press(.up)
+        pause(1.2)
+        XCTAssertTrue(scrubber.hasFocus, "Up from \(name) must focus the timeline")
+        remote.press(.down)
+        // Sample immediately and again after the 600 ms safety net would have fired.
+        pause(0.15)
+        let early = target.hasFocus
+        pause(1.5)
+        attach("roundtrip-\(name)")
+        print("TIMELINE_FOCUS via=\(name) early=\(early) settled=\(target.hasFocus) forward=\(button("seekForwardButton").hasFocus) play=\(button("playPauseButton").hasFocus)")
+        XCTAssertTrue(target.hasFocus, "Down from the timeline must return to \(name)")
+        XCTAssertFalse(scrubber.hasFocus)
+    }
+
+    func testRoundTripFromSeekBack() { assertRoundTrip(via: "seekBackButton") }
+    func testRoundTripFromSeekForward() { assertRoundTrip(via: "seekForwardButton") }
+    func testRoundTripFromPlayPause() { assertRoundTrip(via: "playPauseButton") }
+
+    /// Frames of everything currently focused. A menu button reports focus on an unnamed
+    /// wrapper, so it is matched to the control by frame rather than by identifier.
+    private func focusedFrames() -> [CGRect] {
+        app.descendants(matching: .any).matching(NSPredicate(format: "hasFocus == true")).allElementsBoundByIndex.map(\.frame)
+    }
+
+    private func isFocused(_ el: XCUIElement) -> Bool {
+        el.hasFocus || focusedFrames().contains { abs($0.midX - el.frame.midX) < 2 && abs($0.midY - el.frame.midY) < 2 }
+    }
+
+    func testRoundTripFromQualityMenuIfPresent() throws {
+        let quality = button("qualityMenu")
+        guard quality.waitForExistence(timeout: 5) else { throw XCTSkip("no quality menu for this video") }
+        // Quality is the rightmost control: press Right until the focus no longer changes.
+        var last: [CGRect] = []
+        for _ in 0..<12 {
+            remote.press(.right)
+            pause(0.5)
+            let now = focusedFrames()
+            if now == last { break }
+            last = now
+        }
+        XCTAssertTrue(isFocused(quality), "could not focus quality: \(last)")
+        remote.press(.up)
+        pause(1.2)
+        XCTAssertTrue(scrubber.hasFocus)
+        remote.press(.down)
+        pause(1.8)
+        XCTAssertTrue(isFocused(quality), "Down from the timeline must return to the quality menu, got \(focusedFrames())")
+    }
+
+    /// Menu labels such as "2160p" must stay on one line: no transport button may be taller
+    /// than Play (a wrapped quality label made a tall box on device).
+    func testTransportButtonsShareOneHeight() {
+        let reference = button("playPauseButton").frame.height
+        XCTAssertGreaterThan(reference, 0)
+        attach("transport-row")
+        for name in ["seekBackButton", "seekForwardButton", "speedMenu", "qualityMenu", "captionsMenu", "audioMenu", "chaptersMenu", "commentsButton"] {
+            let el = button(name)
+            guard el.exists else { continue }
+            print("TRANSPORT_HEIGHT \(name)=\(el.frame.height) play=\(reference) width=\(el.frame.width)")
+            XCTAssertLessThanOrEqual(el.frame.height, reference + 6, "\(name) is taller than the other transport buttons (label wrapped?)")
+        }
+    }
+
+    /// Left/Right on the timeline still scrub and do not disturb the remembered button.
+    func testScrubbingKeepsRememberedButton() {
+        let back = button("seekBackButton")
+        focusRowButton(back, name: "seekBackButton")
+        remote.press(.up)
+        pause(1)
+        remote.press(.right)
+        pause(0.4)
+        remote.press(.left)
+        pause(0.4)
+        XCTAssertTrue(scrubber.hasFocus, "scrubbing must keep focus on the timeline")
+        remote.press(.down)
+        pause(1.8)
+        XCTAssertTrue(back.hasFocus, "Down after scrubbing must return to Skip Back")
     }
 }

@@ -70,6 +70,9 @@ struct TVSidebarRootView: View {
     /// True while focus is somewhere in the content column. Preferred at launch so the app
     /// opens on the selected section instead of the sidebar's first row.
     @FocusState private var contentFocused: Bool
+    /// Set when focus was in the content column and has not yet entered the sidebar. Used to
+    /// tell "arrived from the content" apart from navigating between sidebar rows.
+    @State private var focusCameFromContent = false
 
     /// Browse sections in the order the settings list them (same list as the old chip bar).
     private var sections: [BrowseSection] { HomeView.visibleSections(for: store.settings) }
@@ -104,6 +107,19 @@ struct TVSidebarRootView: View {
         // otherwise that inset stacks on top of the rail and the content's own padding.
         .ignoresSafeArea(.container, edges: .leading)
         .animation(.easeInOut(duration: 0.25), value: isExpanded)
+        .onChange(of: contentFocused) { _, focused in
+            if focused { focusCameFromContent = true }
+        }
+        // The focus engine enters the sidebar on the row nearest the card that had focus
+        // (neither `prefersDefaultFocus` nor `defaultFocus` is honoured for a section entered
+        // from the side). Entering from the content must always land on the selected row, as
+        // Back does, so correct the landing row once, right after focus arrives.
+        .onChange(of: focusedItem) { old, new in
+            guard old == nil, let new else { return }
+            let fromContent = focusCameFromContent
+            focusCameFromContent = false
+            if fromContent, new != selection { focusedItem = selection }
+        }
         .environment(searchVM)
         .environment(\.tvPlayerPresented, $playerPresented)
         .sheet(isPresented: $showSignIn) { SignInView() }
