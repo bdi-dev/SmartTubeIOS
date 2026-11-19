@@ -40,6 +40,9 @@ public struct VideoCardView: View {
     @Environment(PlayerRouter.self) private var playerRouter
     #endif
     @State private var localProgress: Double?
+    /// Progress from the account's YouTube History index (covers videos whose own
+    /// response carried none, e.g. OAuth-only channel pages).
+    @State private var historyProgress: Double?
     @State private var watchLaterAlert: DownloadAlertItem?
     @State private var playlistPickerMode: PlaylistPickerSheet.Mode?
     /// Index into `video.thumbnailFallbackURLs`. -1 = use primary `thumbnailURL`.
@@ -53,8 +56,11 @@ public struct VideoCardView: View {
     @FocusState private var isFocused: Bool
     #endif
 
+    /// Remote (YouTube) progress always supplements local: the larger signal wins, so a
+    /// full watch on the web beats a 2-minute local watch, and a local watch still shows
+    /// when YouTube has nothing.
     private var effectiveProgress: Double? {
-        localProgress ?? video.watchProgress
+        WatchProgressPolicy.combined(video.watchProgress, historyProgress, localProgress)
     }
 
     /// #125: falls back to `video.playlistId` when the caller doesn't explicitly pass
@@ -86,6 +92,10 @@ public struct VideoCardView: View {
         }
         .task {
             localProgress = await VideoStateStore.shared.state(for: video.id)?.watchedFraction
+            historyProgress = await WatchedHistoryIndex.shared.progress(for: video.id)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .watchedHistoryIndexDidUpdate)) { _ in
+            Task { historyProgress = await WatchedHistoryIndex.shared.progress(for: video.id) }
         }
         .task(id: video.id) {
             await VideoPreloadCache.shared.prefetch(

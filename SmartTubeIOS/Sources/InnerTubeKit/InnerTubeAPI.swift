@@ -329,8 +329,12 @@ public actor InnerTubeAPI {
     public func setAuthToken(_ token: String?) {
         let msg = token != nil ? "token(\(token!.prefix(8))…)" : "nil"
         tubeLog.notice("setAuthToken: \(msg, privacy: .public)")
+        let wasSignedIn = self.authToken != nil
         self.authToken = token
         if sharesAuthSession { SharedAuthSession.shared.setToken(token) }
+        // A real sign-out (not the nil seen at launch before the keychain loads): never let
+        // one account's watched-history leak (memory or disk) to the next.
+        if token == nil, wasSignedIn, sharesAuthSession { Task { await WatchedHistoryIndex.shared.reset() } }
     }
 
     /// Sets the YouTube.com SAPISID cookie value extracted via the OAuthLogin/MergeSession

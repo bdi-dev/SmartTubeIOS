@@ -573,10 +573,12 @@ extension InnerTubeAPI {
 
         // percentWatched: thumbnailOverlays[].thumbnailOverlayResumePlaybackRenderer.percentDurationWatched
         // (same path as WEB, used for watch-again resume)
+        // NSNumber-tolerant: the value arrives as Int (100) or Double (12.5); a bare
+        // `as? Double` rejects native Ints (fixtures) and is brittle across decoders.
         let watchProgress: Double? = overlays?.compactMap {
             ($0["thumbnailOverlayResumePlaybackRenderer"] as? [String: Any])
-                .flatMap { $0["percentDurationWatched"] as? Double }
-        }.first.map { $0 / 100.0 }
+                .flatMap { ($0["percentDurationWatched"] as? NSNumber)?.doubleValue }
+        }.first.flatMap { $0 > 0 ? min($0, 100) / 100.0 : nil }
 
         // isLive: thumbnailOverlay style == "LIVE" — Android: TileItem.isLive()
         let isLive =

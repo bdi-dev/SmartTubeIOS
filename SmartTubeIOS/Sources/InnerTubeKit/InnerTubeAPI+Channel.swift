@@ -20,12 +20,20 @@ extension InnerTubeAPI {
         var body = makeBody(client: webClientContext)
         body["browseId"] = resolvedId
         tubeLog.notice("fetchChannel browseId=\(resolvedId, privacy: .public)")
+        // OAuth-only (TV) sessions: the WEB response cannot carry per-viewer progress, so
+        // fetch the video list through the TVHTML5 client in parallel and keep WEB for the
+        // header/metadata. Failure or an empty list falls back to the WEB videos.
+        async let tvVideos: VideoGroup? =
+            usesTVChannelVideos && Self.isChannelId(resolvedId)
+            ? (try? await fetchChannelVideosTV(channelId: resolvedId, continuationToken: nil)) : nil
         let data = try await post(endpoint: "browse", body: body, useWebSession: true)
         let (parsedChannel, parsedVideos) = try parseChannel(from: data, channelId: resolvedId)
-        // WATCHDIAG-BEGIN (temporary)
-        Self.watchDiagLockups(label: "fetchChannel", json: data, videos: parsedVideos.videos)
-        // WATCHDIAG-END
-        return (parsedChannel, await applyingHistoryFallback(to: parsedVideos, label: "fetchChannel"))
+        if let tv = await tvVideos, !tv.videos.isEmpty {
+            var group = tv
+            group.title = parsedVideos.title
+            return (parsedChannel, await applyingHistoryFallback(to: group, source: .tvChannelBrowse))
+        }
+        return (parsedChannel, await applyingHistoryFallback(to: parsedVideos, source: .webChannelBrowse))
     }
 
     /// Lightweight channel thumbnail fetch.
@@ -49,6 +57,16 @@ extension InnerTubeAPI {
     }
 
     public func fetchChannelVideos(channelId: String, continuationToken: String? = nil) async throws -> VideoGroup {
+        // A token minted by the TVHTML5 path must be continued on the TVHTML5 path.
+        if let token = continuationToken, token.hasPrefix(Self.tvChannelTokenPrefix) {
+            let group = try await fetchChannelVideosTV(channelId: channelId, continuationToken: token)
+            return await applyingHistoryFallback(to: group, source: .tvChannelBrowse)
+        }
+        if continuationToken == nil, usesTVChannelVideos, Self.isChannelId(channelId),
+            let tv = try? await fetchChannelVideosTV(channelId: channelId, continuationToken: nil), !tv.videos.isEmpty
+        {
+            return await applyingHistoryFallback(to: tv, source: .tvChannelBrowse)
+        }
         var body = makeBody(client: webClientContext, continuationToken: continuationToken)
         if continuationToken == nil {
             body["browseId"] = channelId
@@ -60,98 +78,97 @@ extension InnerTubeAPI {
         )
         let data = try await post(endpoint: "browse", body: body, useWebSession: true)
         let group = try parseVideoGroup(from: data, title: nil)
-        // WATCHDIAG-BEGIN (temporary)
-        Self.watchDiagLockups(label: "fetchChannelVideos", json: data, videos: group.videos)
-        // WATCHDIAG-END
-        return await applyingHistoryFallback(to: group, label: "fetchChannelVideos")
+        return await applyingHistoryFallback(to: group, source: .webChannelBrowse)
     }
 
-    /// Channel responses carry resume progress only when the WEB request is signed with a
-    /// SAPISID session. For OAuth-only (TV) sessions they never do, so videos the viewer
-    /// already watched look unplayed. Fill the gap from the account's History feed
-    /// (session-cached, capped); progress the response itself carried always wins.
-    func applyingHistoryFallback(to group: VideoGroup, label: String = "") async -> VideoGroup {
-        // WATCHDIAG-BEGIN (temporary)
-        let diagBefore = group.videos.filter { $0.watchProgress != nil }.count
-        guard let token = authToken else {
-            print("[WATCHDIAG] \(label) history fallback: SKIPPED oauthToken=absent videos=\(group.videos.count)")
-            return group
+    // MARK: - TVHTML5 channel videos (OAuth-only sessions)
+
+    static let tvChannelTokenPrefix = "tvch:"
+
+    /// True when the TV (OAuth bearer) client is the only one that can see per-viewer
+    /// progress: a token is held but there is no SAPISID web session.
+    var usesTVChannelVideos: Bool { authToken != nil && sapisid == nil }
+
+    static func isChannelId(_ id: String) -> Bool { id.hasPrefix("UC") && id.count > 2 }
+
+    /// `UULF` + the channel id without its `UC` prefix is the channel's auto-generated
+    /// "Videos tab" playlist (long-form uploads, newest first, no Shorts/live), which the
+    /// TVHTML5 client browses as `VL<playlistId>`. Verified live: ~170 KB response of
+    /// `tileRenderer`s in `playlistVideoListRenderer` with `nextContinuationData` paging,
+    /// versus 1.5 MB for the TV channel home (shelves).
+    static func channelUploadsBrowseId(channelId: String) -> String { "VLUULF" + channelId.dropFirst(2) }
+
+    /// Channel videos via TVHTML5 + OAuth bearer. Tiles carry
+    /// `thumbnailOverlayResumePlaybackRenderer.percentDurationWatched`, published-time and
+    /// view-count lines, and duration, exactly like Home/Subscriptions/History tiles.
+    /// Continuation tokens are tagged with `tvChannelTokenPrefix`.
+    func fetchChannelVideosTV(channelId: String, continuationToken: String?) async throws -> VideoGroup {
+        var body = makeBody(
+            client: tvClientContext,
+            continuationToken: continuationToken.map { String($0.dropFirst(Self.tvChannelTokenPrefix.count)) })
+        if continuationToken == nil { body["browseId"] = Self.channelUploadsBrowseId(channelId: channelId) }
+        tubeLog.notice(
+            "fetchChannelVideosTV browseId=\(channelId, privacy: .public) hasContinuation=\(continuationToken != nil, privacy: .public)"
+        )
+        let data = try await postTV(endpoint: "browse", body: body)
+        return Self.channelVideoGroup(try parseVideoGroup(from: data, title: nil), channelId: channelId)
+    }
+
+    /// Normalises a TV uploads-playlist group into a channel video list: playlist-entry
+    /// tokens are dropped (the playlist is synthetic, so playlist actions must not
+    /// appear), the channel id is the real UC id, and the page token is tagged.
+    static func channelVideoGroup(_ group: VideoGroup, channelId: String) -> VideoGroup {
+        var g = group
+        g.videos = group.videos.map { v in
+            var c = v
+            c.setVideoId = nil
+            c.playlistId = nil
+            c.playlistIndex = nil
+            if c.channelId == nil || c.channelId?.hasPrefix("UC") == false { c.channelId = channelId }
+            return c
         }
-        guard group.videos.contains(where: { $0.watchProgress == nil }) else {
-            print("[WATCHDIAG] \(label) history fallback: SKIPPED all \(group.videos.count) videos already have progress")
-            return group
-        }
-        // WATCHDIAG-END
-        let owner = "\(token.hashValue)|\(ActiveChannel.shared.pageId ?? "")"
-        let index = await WatchedHistoryIndex.shared.index(ownerKey: owner) { [self] in
-            // WATCHDIAG-BEGIN (temporary)
-            do {
-                let loaded = try await loadHistoryProgress(pages: 3)
-                print("[WATCHDIAG] history index LOADED ids=\(loaded.count)")
-                return loaded
-            } catch {
-                print("[WATCHDIAG] history index LOAD FAILED error=\(type(of: error)) \((error as? APIError).map { String(describing: $0) } ?? "")")
-                throw error
-            }
-            // WATCHDIAG-END
+        g.nextPageToken = group.nextPageToken.map { tvChannelTokenPrefix + $0 }
+        return g
+    }
+
+    enum ChannelVideoSource: String {
+        case tvChannelBrowse = "tv-channel-browse"
+        case webChannelBrowse = "web+history"
+    }
+
+    // MARK: - History supplement
+
+    /// Folds the account's History feed into `group` (progress already on a video wins
+    /// only when larger). Never blocks on the deep pages: the first pages load up front
+    /// (once, then cached/persisted), the rest load in the background and are announced
+    /// via `.watchedHistoryIndexDidUpdate` so visible cards refresh themselves.
+    func applyingHistoryFallback(to group: VideoGroup, source: ChannelVideoSource) async -> VideoGroup {
+        guard authToken != nil else { return group }
+        let owner = historyOwnerKey
+        let fetch = historyPageFetcher()
+        let snap = await WatchedHistoryIndex.shared.warm(ownerKey: owner, fetch: fetch)
+        let unmatched = group.videos.contains { snap.entries[$0.id] == nil && ($0.watchProgress ?? 0) < 1 }
+        if unmatched, !snap.complete {
+            await WatchedHistoryIndex.shared.deepenInBackground(ownerKey: owner, fetch: fetch)
         }
         var merged = group
-        merged.videos = WatchedHistoryIndex.merge(group.videos, index: index)
-        // WATCHDIAG-BEGIN (temporary)
-        let diagAfter = merged.videos.filter { $0.watchProgress != nil }.count
-        print(
-            "[WATCHDIAG] \(label) history fallback: RAN oauthToken=present indexIds=\(index.count) channelVideos=\(group.videos.count) matchedFilled=\(diagAfter - diagBefore) progressBefore=\(diagBefore) progressAfter=\(diagAfter)"
-        )
-        // WATCHDIAG-END
+        merged.videos = WatchedHistoryIndex.merge(group.videos, index: snap.entries)
         return merged
     }
 
-    // WATCHDIAG-BEGIN (temporary)
-    /// Prints how many parsed videos carry watchProgress and which overlay KEY NAMES the
-    /// first two raw lockupViewModel items have (names only, never values).
-    static func watchDiagLockups(label: String, json: [String: Any], videos: [Video]) {
-        var lockups: [[String: Any]] = []
-        func walk(_ v: Any, _ depth: Int) {
-            guard depth < 40, lockups.count < 2 else { return }
-            if let d = v as? [String: Any] {
-                if let l = d["lockupViewModel"] as? [String: Any] { lockups.append(l); return }
-                for c in d.values { walk(c, depth + 1) }
-            } else if let a = v as? [Any] {
-                for c in a { walk(c, depth + 1) }
-            }
-        }
-        walk(json, 0)
-        let overlayKeys: [String] = lockups.map { l in
-            let thumb = (l["contentImage"] as? [String: Any])?["thumbnailViewModel"] as? [String: Any]
-            let overlays = thumb?["overlays"] as? [[String: Any]] ?? []
-            return overlays.map { o in
-                o.keys.sorted().map { k -> String in
-                    if let inner = o[k] as? [String: Any] { return "\(k){\(inner.keys.sorted().joined(separator: ","))}" }
-                    return k
-                }.joined(separator: "+")
-            }.joined(separator: " | ")
-        }
-        let withProgress = videos.filter { $0.watchProgress != nil }.count
-        print(
-            "[WATCHDIAG] \(label) parsed videos=\(videos.count) withLockupProgress=\(withProgress) lockupItemsSampled=\(lockups.count) overlayKeys=\(overlayKeys)"
-        )
-    }
-    // WATCHDIAG-END
+    /// Stable across token refreshes (the old token-hash key reset the index hourly and
+    /// differed per launch); sign-out calls `WatchedHistoryIndex.reset()`.
+    var historyOwnerKey: String { activeChannel.pageId ?? "primary" }
 
-    /// First `pages` pages of FEhistory as id -> progress. History tiles without a resume
-    /// overlay get `WatchedHistoryIndex.playedFallbackProgress`.
-    func loadHistoryProgress(pages: Int) async throws -> [String: Double] {
-        var result: [String: Double] = [:]
-        var token: String?
-        for _ in 0..<pages {
+    func historyPageFetcher() -> WatchedHistoryIndex.PageFetcher {
+        { [self] token in
             let page = try await fetchHistory(continuationToken: token)
-            for v in page.videos where result[v.id] == nil {
-                result[v.id] = v.watchProgress ?? WatchedHistoryIndex.playedFallbackProgress
+            var ids: [String: Double] = [:]
+            for v in page.videos where ids[v.id] == nil {
+                ids[v.id] = v.watchProgress ?? WatchedHistoryIndex.playedFallbackProgress
             }
-            guard let next = page.nextPageToken else { break }
-            token = next
+            return WatchedHistoryIndex.Page(ids: ids, next: page.nextPageToken)
         }
-        return result
     }
 
     // MARK: - Private channel helpers
