@@ -17,6 +17,7 @@ struct ChannelListView: View {
         // clipped inside it. A `.plain` Button in a ScrollView is the poster-style effect (about
         // 1.1x scale plus lift) and is meant for artwork, not for full-width rows; on a row it
         // produced a platter far larger than the content that overlapped its neighbours.
+        let _ = print("[CHANDIAG] ChannelListView body channels=\(channels.count) uniqueIds=\(Set(channels.map(\.id)).count)") // CHANDIAG (temporary)
         List {
             ForEach(channels) { channel in
                 Button {

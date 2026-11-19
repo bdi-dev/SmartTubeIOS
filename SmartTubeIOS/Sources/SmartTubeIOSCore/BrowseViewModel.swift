@@ -492,11 +492,20 @@ public final class BrowseViewModel {
 
         case .channels:
             if hasAuthToken {
-                let channels = try await api.fetchSubscribedChannels()
+                print("[CHANDIAG] vm .channels fetch begin") // CHANDIAG (temporary)
+                let channels: [Channel]
+                do {
+                    channels = try await api.fetchSubscribedChannels()
+                } catch {
+                    print("[CHANDIAG] vm fetchSubscribedChannels THREW \(type(of: error)) cancelled=\(Task.isCancelled)") // CHANDIAG (temporary)
+                    throw error
+                }
+                print("[CHANDIAG] vm fetched=\(channels.count) isCancelled=\(Task.isCancelled) uniqueIds=\(Set(channels.map(\.id)).count)") // CHANDIAG (temporary)
                 browseLog.notice("channels fetch complete: \(channels.count) channels, isCancelled=\(Task.isCancelled)")
                 if !Task.isCancelled {
                     isAuthRequired = channels.isEmpty
                     subscribedChannels = channels
+                    print("[CHANDIAG] vm subscribedChannels set=\(subscribedChannels.count)") // CHANDIAG (temporary)
                     videoGroups = []
                     let chCount = subscribedChannels.count
                     let authReq = isAuthRequired
@@ -863,6 +872,7 @@ public final class BrowseViewModel {
 
         let finalCount = self.subscribedChannels.filter { $0.thumbnailURL != nil }.count
         let total = self.subscribedChannels.count
+        print("[CHANDIAG] vm after enrichment total=\(total) withAvatar=\(finalCount) snapshot=\(snapshot.count) cancelled=\(Task.isCancelled)") // CHANDIAG (temporary)
         browseLog.notice("enrichChannelAvatars done: \(finalCount)/\(total) have avatars")
     }
 }

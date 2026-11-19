@@ -101,14 +101,17 @@ extension InnerTubeAPI {
     public func fetchSubscribedChannels() async throws -> [Channel] {
         var listChannels: [Channel] = []
         var listError: Error?
+        print("[CHANDIAG] fetch start authToken=\(authToken != nil) pageIdSet=\(activeChannel.pageId != nil)") // CHANDIAG (temporary)
         do {
             let result = try await fetchChannelListPaged()
             listChannels = result.channels
+            print("[CHANDIAG] source=FEchannels ok count=\(result.channels.count) pages=\(result.pages) truncated=\(result.truncated) http=200") // CHANDIAG (temporary)
             tubeLog.notice(
                 "fetchSubscribedChannels FEchannels → \(listChannels.count, privacy: .public) channels in \(result.pages, privacy: .public) pages truncated=\(result.truncated, privacy: .public)"
             )
         } catch {
             listError = error
+            print("[CHANDIAG] source=FEchannels FAILED error=\(Self.chanDiagDescribe(error))") // CHANDIAG (temporary)
             tubeLog.error("fetchSubscribedChannels FEchannels failed: \(String(describing: error), privacy: .public)")
         }
 
@@ -118,15 +121,20 @@ extension InnerTubeAPI {
             let guideData = try await postTV(endpoint: "guide", body: makeBody(client: tvClientContext))
             let scan = scanGuide(guideData)
             guideChannels = scan.channels
+            print("[CHANDIAG] source=guide ok http=200 parsed=\(scan.channels.count) collapsibleEntries=\(scan.collapsibleEntries) expandableItems=\(scan.expandableItemEntries) hasContinuation=\(scan.hasContinuation)") // CHANDIAG (temporary)
             tubeLog.notice(
                 "fetchSubscribedChannels guide → \(guideChannels.count, privacy: .public) channels collapsible=\(scan.collapsibleEntries, privacy: .public) expandable=\(scan.expandableItemEntries, privacy: .public) continuation=\(scan.hasContinuation, privacy: .public)"
             )
         } catch {
             guideError = error
+            print("[CHANDIAG] source=guide FAILED error=\(Self.chanDiagDescribe(error))") // CHANDIAG (temporary)
             tubeLog.error("fetchSubscribedChannels guide failed: \(String(describing: error), privacy: .public)")
         }
 
         let merged = InnerTubeAPI.mergeChannelLists([listChannels, guideChannels])
+        // CHANDIAG-BEGIN (temporary)
+        print("[CHANDIAG] merged=\(merged.count) (list=\(listChannels.count) guide=\(guideChannels.count)) withAvatar=\(merged.filter { $0.thumbnailURL != nil }.count) emptyTitle=\(merged.filter { $0.title.isEmpty }.count) path=\(merged.isEmpty ? "tile-fallback-next" : "list+guide")")
+        // CHANDIAG-END
         if !merged.isEmpty { return merged }
         if let listError, let guideError { _ = guideError; throw listError }
 
@@ -135,8 +143,18 @@ extension InnerTubeAPI {
         var tvBody = makeBody(client: tvClientContext)
         tvBody["browseId"] = "FEsubscriptions"
         let tvData = try await postTV(endpoint: "browse", body: tvBody)
-        return parseSubscribedChannels(from: tvData)
+        let tiles = parseSubscribedChannels(from: tvData)
+        print("[CHANDIAG] source=tile-fallback count=\(tiles.count)") // CHANDIAG (temporary)
+        return tiles
     }
+
+    // CHANDIAG-BEGIN (temporary)
+    nonisolated static func chanDiagDescribe(_ error: Error) -> String {
+        if let api = error as? APIError, case .httpError(let code) = api { return "http=\(code)" }
+        if error is CancellationError || (error as? URLError)?.code == .cancelled { return "CANCELLED" }
+        return "\(type(of: error)) \((error as? URLError).map { "urlError=\($0.code.rawValue)" } ?? "")"
+    }
+    // CHANDIAG-END
 
     /// Fetches watch history (requires auth).
     public func fetchHistory(continuationToken: String? = nil) async throws -> VideoGroup {
