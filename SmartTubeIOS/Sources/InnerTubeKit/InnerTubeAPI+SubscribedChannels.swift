@@ -49,7 +49,7 @@ extension InnerTubeAPI {
             let title = (meta?["title"] as? [String: Any]).flatMap { extractText($0) } ?? ""
             let header = (tile["header"] as? [String: Any])?["tileHeaderRenderer"] as? [String: Any]
             let thumb = ((header?["thumbnail"] as? [String: Any])?["thumbnails"] as? [[String: Any]])?
-                .last.flatMap { $0["url"] as? String }.flatMap { URL(string: $0) }
+                .last.flatMap { $0["url"] as? String }.flatMap { URL(string: $0.hasPrefix("//") ? "https:" + $0 : $0) }
             return Channel(id: id, title: title, thumbnailURL: thumb)
         }
 

@@ -1,6 +1,7 @@
 import SwiftUI
 
 #if canImport(UIKit)
+import ImageIO
 import UIKit
 
 /// Process-wide cache for channel avatars: decoded images in memory (so a row that is
@@ -22,6 +23,21 @@ final class AvatarImageCache: @unchecked Sendable {
         session = URLSession(configuration: configuration)
     }
 
+    /// Decodes a small, ready-to-draw bitmap off the main thread so scrolling never decodes
+    /// a full-size avatar.
+    private static func downsampled(_ data: Data) -> UIImage? {
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: 160,
+        ]
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+            let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        else { return nil }
+        return UIImage(cgImage: cg)
+    }
+
     /// The decoded image if it is already in memory.
     func cached(_ url: URL) -> UIImage? {
         memory.object(forKey: url as NSURL)
@@ -35,10 +51,8 @@ final class AvatarImageCache: @unchecked Sendable {
             if let existing = inflight[url] { return existing }
             let session = self.session
             let created = Task<UIImage?, Never> {
-                guard let (data, _) = try? await session.data(from: url),
-                    let image = UIImage(data: data)
-                else { return nil }
-                return image
+                guard let (data, _) = try? await session.data(from: url) else { return nil }
+                return Self.downsampled(data)
             }
             inflight[url] = created
             return created

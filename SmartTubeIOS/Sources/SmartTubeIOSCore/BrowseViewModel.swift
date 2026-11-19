@@ -505,6 +505,8 @@ public final class BrowseViewModel {
                 if !Task.isCancelled {
                     isAuthRequired = channels.isEmpty
                     subscribedChannels = channels
+                    rankTask?.cancel()
+                    rankTask = Task { await self.promoteFrequentChannels() }
                     print("[CHANDIAG] vm subscribedChannels set=\(subscribedChannels.count)") // CHANDIAG (temporary)
                     videoGroups = []
                     let chCount = subscribedChannels.count
@@ -830,6 +832,22 @@ public final class BrowseViewModel {
         return videos.filter { seen.insert($0.id).inserted }
     }
 
+    // MARK: - Frequent channels first
+
+    private var rankTask: Task<Void, Never>?
+
+    /// Moves the channels the viewer watches most and most recently to the top of the list,
+    /// using local history plus the first page of YouTube history.
+    private func promoteFrequentChannels() async {
+        let local = LocalWatchHistoryStore.shared.entries.compactMap(\.video.channelId)
+        let remote = (try? await api.fetchHistory())?.videos.compactMap(\.channelId) ?? []
+        guard !Task.isCancelled, !subscribedChannels.isEmpty else { return }
+        let ranked = ChannelRanking.ranked(subscribedChannels, watchedChannelIds: local + remote)
+        // Avatars may have been patched in meanwhile; keep them.
+        let latest = Dictionary(uniqueKeysWithValues: subscribedChannels.map { ($0.id, $0) })
+        subscribedChannels = ranked.map { latest[$0.id] ?? $0 }
+    }
+
     // MARK: - Channel avatar enrichment
 
     /// Concurrently fetches the avatar thumbnail URL for each subscribed channel and
@@ -847,9 +865,6 @@ public final class BrowseViewModel {
         browseLog.notice("enrichChannelAvatars: fetching avatars for \(missing.count) channels")
 
         let apiRef = api
-        let indexByID: [String: Int] = Dictionary(
-            uniqueKeysWithValues: snapshot.enumerated().map { ($1.id, $0) }
-        )
 
         await withTaskGroup(of: (String, URL?).self) { group in
             for channel in missing {
@@ -863,8 +878,7 @@ public final class BrowseViewModel {
             for await (channelId, thumbURL) in group {
                 guard !Task.isCancelled else { break }
                 guard let thumbURL,
-                    let idx = indexByID[channelId],
-                    idx < self.subscribedChannels.count
+                    let idx = self.subscribedChannels.firstIndex(where: { $0.id == channelId })
                 else { continue }
                 self.subscribedChannels[idx].thumbnailURL = thumbURL
             }
