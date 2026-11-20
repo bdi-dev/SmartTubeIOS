@@ -428,6 +428,8 @@ public final class PlaybackViewModel {
     // MARK: - Dependencies
 
     let api: InnerTubeAPI
+    /// Center the audio-session interruption observer registers on (injectable so tests don't cross-talk).
+    nonisolated let audioSessionNotificationCenter: NotificationCenter
     let sponsorBlock: SponsorBlockService
     let deArrow: DeArrowService
     public var settings: AppSettings
@@ -438,8 +440,10 @@ public final class PlaybackViewModel {
         api: InnerTubeAPI = InnerTubeAPI(),
         sponsorBlock: SponsorBlockService = SponsorBlockService(),
         deArrow: DeArrowService = DeArrowService(),
-        settings: AppSettings = AppSettings()
+        settings: AppSettings = AppSettings(),
+        audioSessionNotificationCenter: NotificationCenter = .default
     ) {
+        self.audioSessionNotificationCenter = audioSessionNotificationCenter
         self.api = api
         self.tracker = WatchtimeTracker(api: api)
         self.sponsorBlock = sponsorBlock
@@ -499,7 +503,7 @@ public final class PlaybackViewModel {
         if let obs = timeObserver { player.removeTimeObserver(obs) }
         rateObserver?.invalidate()
         airPlayObserver?.invalidate()
-        if let obs = audioSessionObserver { NotificationCenter.default.removeObserver(obs) }
+        if let obs = audioSessionObserver { audioSessionNotificationCenter.removeObserver(obs) }
         #if canImport(UIKit)
         let center = MPRemoteCommandCenter.shared()
         center.playCommand.removeTarget(nil)

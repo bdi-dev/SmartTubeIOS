@@ -231,24 +231,26 @@ struct BrandAccountAuthServiceTests {
     private let primary = YouTubeChannel(name: "Primary User", avatarURL: nil, pageId: nil)
     private let brand = YouTubeChannel(name: "Brand Channel", avatarURL: nil, pageId: "100000000000000000001")
 
-    private func countChannelChanges(during action: () -> Void) -> Int {
+    /// Private center: the switch notification must not reach feed view models in other suites.
+    private func countChannelChanges(on center: NotificationCenter, during action: () -> Void) -> Int {
         let counter = NotificationCounter()
-        let token = NotificationCenter.default.addObserver(
+        let token = center.addObserver(
             forName: .activeChannelDidChange, object: nil, queue: nil
         ) { _ in counter.count += 1 }
         action()
-        NotificationCenter.default.removeObserver(token)
+        center.removeObserver(token)
         return counter.count
     }
 
     // deve disparar activeChannelDidChange ao trocar para um Brand Account diferente do ativo
     @Test("should post activeChannelDidChange when switching to a different Brand Account")
     func postsChangeOnSwitch() {
-        let auth = AuthService()
+        let center = NotificationCenter()
+        let auth = AuthService(notificationCenter: center)
         auth.applyChannels([primary, brand])
         defer { auth.resetChannels() }
 
-        let changes = countChannelChanges { auth.selectChannel(brand) }
+        let changes = countChannelChanges(on: center) { auth.selectChannel(brand) }
 
         #expect(changes == 1)
         #expect(auth.activePageId == brand.pageId)
@@ -257,12 +259,13 @@ struct BrandAccountAuthServiceTests {
     // não deve disparar activeChannelDidChange ao selecionar o canal que já está ativo
     @Test("should not post activeChannelDidChange when selecting the already active channel")
     func skipsChangeForActiveChannel() {
-        let auth = AuthService()
+        let center = NotificationCenter()
+        let auth = AuthService(notificationCenter: center)
         auth.applyChannels([primary, brand])
         auth.selectChannel(brand)
         defer { auth.resetChannels() }
 
-        let changes = countChannelChanges { auth.selectChannel(brand) }
+        let changes = countChannelChanges(on: center) { auth.selectChannel(brand) }
 
         #expect(changes == 0)
     }
@@ -270,7 +273,8 @@ struct BrandAccountAuthServiceTests {
     // deve limpar o canal selecionado no logout e enviar a próxima requisição sem X-Goog-Pageid
     @Test("should clear the selected channel on sign-out and send the next request without X-Goog-Pageid")
     func signOutClearsSelectedChannel() async {
-        let auth = AuthService()
+        let center = NotificationCenter()
+        let auth = AuthService(notificationCenter: center)
         auth.applyChannels([primary, brand])
         auth.selectChannel(brand)
 

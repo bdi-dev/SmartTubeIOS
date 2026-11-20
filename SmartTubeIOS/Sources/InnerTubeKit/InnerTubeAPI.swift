@@ -34,6 +34,8 @@ public actor InnerTubeAPI {
     /// `SharedAuthSession`, so a view model's own `InnerTubeAPI()` (e.g. ChannelViewModel)
     /// is signed in like the app's main instance. Test-only instances never share.
     let sharesAuthSession: Bool
+    /// The process-wide session this instance seeds from / publishes to (`.shared` in the app; injectable for tests).
+    let sharedAuth: SharedAuthSession
 
     // MARK: - signatureTimestamp (STS) cache
     //
@@ -277,7 +279,8 @@ public actor InnerTubeAPI {
 
     public init(
         authToken: String? = nil, poTokenProvider: (any PoTokenProvider)? = nil,
-        activeChannel: ActiveChannel = .shared
+        activeChannel: ActiveChannel = .shared,
+        sharedAuth: SharedAuthSession = .shared
     ) {
         let config = URLSessionConfiguration.default
         // NW-4-FIX: 30 s request timeout. Slow/throttled youtubei.googleapis.com requests
@@ -288,8 +291,9 @@ public actor InnerTubeAPI {
         config.timeoutIntervalForResource = 60
         config.waitsForConnectivity = true
         self.session = URLSession(configuration: config)
-        self.authToken = authToken ?? SharedAuthSession.shared.token
-        self.sapisid = SharedAuthSession.shared.sapisid
+        self.sharedAuth = sharedAuth
+        self.authToken = authToken ?? sharedAuth.token
+        self.sapisid = sharedAuth.sapisid
         self.sharesAuthSession = true
         self.poTokenProvider = poTokenProvider
         self.activeChannel = activeChannel
@@ -307,6 +311,7 @@ public actor InnerTubeAPI {
         self.session = session
         self.authToken = authToken
         self.sharesAuthSession = false
+        self.sharedAuth = SharedAuthSession()
         self.poTokenProvider = nil
         self.activeChannel = activeChannel
     }
@@ -331,7 +336,7 @@ public actor InnerTubeAPI {
         tubeLog.notice("setAuthToken: \(msg, privacy: .public)")
         let wasSignedIn = self.authToken != nil
         self.authToken = token
-        if sharesAuthSession { SharedAuthSession.shared.setToken(token) }
+        if sharesAuthSession { sharedAuth.setToken(token) }
         // A real sign-out (not the nil seen at launch before the keychain loads): never let
         // one account's watched-history leak (memory or disk) to the next.
         if token == nil, wasSignedIn, sharesAuthSession { Task { await WatchedHistoryIndex.shared.reset() } }
@@ -343,7 +348,7 @@ public actor InnerTubeAPI {
         let msg = value != nil ? "present" : "nil"
         tubeLog.notice("setSAPISID: \(msg, privacy: .public)")
         self.sapisid = value
-        if sharesAuthSession, let value { SharedAuthSession.shared.setSAPISID(value) }
+        if sharesAuthSession, let value { sharedAuth.setSAPISID(value) }
     }
 
     /// Returns whether the SAPISID cookie is currently set.

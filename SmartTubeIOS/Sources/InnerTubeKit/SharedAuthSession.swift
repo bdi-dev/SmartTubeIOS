@@ -19,7 +19,7 @@ public final class SharedAuthSession: Sendable {
     }
     private let state = OSAllocatedUnfairLock<State>(initialState: State())
 
-    init() {}
+    package init() {}
 
     var token: String? { state.withLock { $0.token } }
     var sapisid: String? { state.withLock { $0.sapisid } }

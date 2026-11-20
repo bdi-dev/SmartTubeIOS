@@ -23,7 +23,8 @@ struct WatchHistoryAuthTokenTests {
     // MARK: - Helpers
 
     private func makeAPI() -> InnerTubeAPI {
-        InnerTubeAPI()
+        // Private session: setAuthToken must not publish to the process-wide `.shared`.
+        InnerTubeAPI(sharedAuth: SharedAuthSession())
     }
 
     // MARK: - Tests
@@ -67,7 +68,7 @@ struct WatchHistoryAuthTokenTests {
 
     @Test("InnerTubeAPI can be initialised with a token")
     func apiInitWithToken() async {
-        let api = InnerTubeAPI(authToken: "init-token")
+        let api = InnerTubeAPI(authToken: "init-token", sharedAuth: SharedAuthSession())
         #expect(await api.authToken == "init-token")
     }
 }

@@ -93,6 +93,8 @@ public final class AuthService {
     private var isSigningIn: Bool = false
 
     public let tokenManager: TokenManager
+    /// Where `.activeChannelDidChange` is posted; tests inject a private center so feed view models in other suites don't see it.
+    let notificationCenter: NotificationCenter
 
     // MARK: - Static endpoint URLs (known-valid literals)
 
@@ -100,7 +102,12 @@ public final class AuthService {
     static let tokenURL = URL(string: "https://oauth2.googleapis.com/token")!
     static let accountsListURL = URL(string: "https://www.youtube.com/youtubei/v1/account/accounts_list")!
 
-    public init() {
+    public convenience init() {
+        self.init(notificationCenter: .default)
+    }
+
+    init(notificationCenter: NotificationCenter) {
+        self.notificationCenter = notificationCenter
         tokenManager = TokenManager()
         loadFromKeychain()
         // UI-testing override: treat the session as signed-in so the home feed

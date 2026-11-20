@@ -26,7 +26,7 @@ private func makeNonisolatedArtworkProvider(image: UIImage) -> (CGSize) -> UIIma
 extension PlaybackViewModel {
 
     func setupAudioSessionObserver() {
-        audioSessionObserver = NotificationCenter.default.addObserver(
+        audioSessionObserver = audioSessionNotificationCenter.addObserver(
             forName: AVAudioSession.interruptionNotification,
             object: AVAudioSession.sharedInstance(),
             queue: .main

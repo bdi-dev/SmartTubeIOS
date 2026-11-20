@@ -59,10 +59,12 @@ struct PhoneCallInterruptionNotificationTests {
 
     @Test("Interruption .began pauses the player and sets interruption flags")
     func interruptionBeganPausesAndSetsFlags() async {
-        let vm = PlaybackViewModel()
+        // Private center: no other PlaybackViewModel or test sees these interruptions.
+        let center = NotificationCenter()
+        let vm = PlaybackViewModel(audioSessionNotificationCenter: center)
         vm.isPlaying = true
 
-        NotificationCenter.default.post(
+        center.post(
             name: AVAudioSession.interruptionNotification,
             object: AVAudioSession.sharedInstance(),
             userInfo: [AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.began.rawValue]
@@ -85,10 +87,12 @@ struct PhoneCallInterruptionNotificationTests {
 
     @Test("Interruption .ended with shouldResume resumes playback")
     func interruptionEndedResumesWhenShouldResume() async {
-        let vm = PlaybackViewModel()
+        // Private center: no other PlaybackViewModel or test sees these interruptions.
+        let center = NotificationCenter()
+        let vm = PlaybackViewModel(audioSessionNotificationCenter: center)
         vm.isPlaying = true
 
-        NotificationCenter.default.post(
+        center.post(
             name: AVAudioSession.interruptionNotification,
             object: AVAudioSession.sharedInstance(),
             userInfo: [AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.began.rawValue]
@@ -99,7 +103,7 @@ struct PhoneCallInterruptionNotificationTests {
             try? await Task.sleep(for: .milliseconds(10))
         }
 
-        NotificationCenter.default.post(
+        center.post(
             name: AVAudioSession.interruptionNotification,
             object: AVAudioSession.sharedInstance(),
             userInfo: [

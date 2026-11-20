@@ -1276,7 +1276,7 @@ extension PlaybackViewModel {
         center.previousTrackCommand.removeTarget(nil)
         #endif
         if let obs = audioSessionObserver {
-            NotificationCenter.default.removeObserver(obs)
+            audioSessionNotificationCenter.removeObserver(obs)
             audioSessionObserver = nil
         }
     }
