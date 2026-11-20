@@ -65,6 +65,7 @@ public final class BrowseViewModel {
     private let api: any InnerTubeAPIProtocol
     private let localHistory: LocalWatchHistoryStore
     private let watchLaterMembership: WatchLaterMembershipStore
+    private let rankingHistory: FrequentChannelHistoryCache
     private var fetchTask: Task<Void, Never>?
     private var enrichTask: Task<Void, Never>?
     /// When `false`, the History section returns empty content rather than fetching from YouTube.
@@ -85,10 +86,12 @@ public final class BrowseViewModel {
     public init(
         api: any InnerTubeAPIProtocol = InnerTubeAPI(), initialSection: BrowseSection? = nil,
         localHistory: LocalWatchHistoryStore = .shared,
-        watchLaterMembership: WatchLaterMembershipStore = .shared
+        watchLaterMembership: WatchLaterMembershipStore = .shared,
+        rankingHistory: FrequentChannelHistoryCache = .shared
     ) {
         self.localHistory = localHistory
         self.watchLaterMembership = watchLaterMembership
+        self.rankingHistory = rankingHistory
         self.api = api
         if let initial = initialSection {
             // Ensure the initial section appears in the picker list.
@@ -310,6 +313,8 @@ public final class BrowseViewModel {
             // Signed in — reload everything
             loadContent(refresh: true, source: "updateAuthToken")
         } else if wasAuthenticated {
+            // Never let one account's watch history rank the next account's channels.
+            await rankingHistory.reset()
             // Signed out — reload auth-gated sections to show local content instead
             let authSections: Set<BrowseSection.SectionType> = [.subscriptions, .channels]
             if authSections.contains(currentSection.type) {
@@ -500,15 +505,18 @@ public final class BrowseViewModel {
 
         case .channels:
             if hasAuthToken {
-                print("[CHANDIAG] vm .channels fetch begin") // CHANDIAG (temporary)
+                print("[CHANDIAG] vm .channels fetch begin")  // CHANDIAG (temporary)
                 let channels: [Channel]
                 do {
                     channels = try await api.fetchSubscribedChannels()
                 } catch {
-                    print("[CHANDIAG] vm fetchSubscribedChannels THREW \(type(of: error)) cancelled=\(Task.isCancelled)") // CHANDIAG (temporary)
+                    print(
+                        "[CHANDIAG] vm fetchSubscribedChannels THREW \(type(of: error)) cancelled=\(Task.isCancelled)")  // CHANDIAG (temporary)
                     throw error
                 }
-                print("[CHANDIAG] vm fetched=\(channels.count) isCancelled=\(Task.isCancelled) uniqueIds=\(Set(channels.map(\.id)).count)") // CHANDIAG (temporary)
+                print(
+                    "[CHANDIAG] vm fetched=\(channels.count) isCancelled=\(Task.isCancelled) uniqueIds=\(Set(channels.map(\.id)).count)"
+                )  // CHANDIAG (temporary)
                 browseLog.notice("channels fetch complete: \(channels.count) channels, isCancelled=\(Task.isCancelled)")
                 if !Task.isCancelled {
                     isAuthRequired = channels.isEmpty
@@ -516,7 +524,7 @@ public final class BrowseViewModel {
                     frequentChannelCount = 0
                     rankTask?.cancel()
                     rankTask = Task { await self.promoteFrequentChannels() }
-                    print("[CHANDIAG] vm subscribedChannels set=\(subscribedChannels.count)") // CHANDIAG (temporary)
+                    print("[CHANDIAG] vm subscribedChannels set=\(subscribedChannels.count)")  // CHANDIAG (temporary)
                     videoGroups = []
                     let chCount = subscribedChannels.count
                     let authReq = isAuthRequired
@@ -852,35 +860,73 @@ public final class BrowseViewModel {
     /// Moves the channels the viewer watches most and most recently to the top of the list.
     /// YouTube's own history (several pages, so web and other-device viewing counts) leads;
     /// videos watched only in this app and not yet in that history follow.
+    /// Ranks the Channels list by watch history. Fresh cache: rank with no network. Stale
+    /// cache: rank from it at once, then refresh and re-rank only if the frequent group changed.
+    /// Empty cache: read history first (the list is unranked until then, as before).
     private func promoteFrequentChannels() async {
-        var remote: [Video] = []
+        let base = subscribedChannels
+        let owner = await api.historyOwnerKey
+        let cached = await rankingHistory.snapshot(ownerKey: owner)
+        if !cached.watches.isEmpty {
+            applyFrequentRanking(base: base, remote: cached.watches)
+            guard cached.stale else { return }
+        }
+        let fetched = await fetchRankingHistory()
+        guard !Task.isCancelled, !subscribedChannels.isEmpty else { return }
+        if !fetched.isEmpty { await rankingHistory.store(fetched, ownerKey: owner) }
+        // A failed refresh keeps the cached signal rather than dropping it.
+        applyFrequentRanking(base: base, remote: fetched.isEmpty ? cached.watches : fetched)
+    }
+
+    /// Reads up to `rankingHistoryPages` pages of History, stopping early on error.
+    private func fetchRankingHistory() async -> [HistoryChannelWatch] {
+        var remote: [HistoryChannelWatch] = []
         var token: String?
         for _ in 0..<Self.rankingHistoryPages {
             guard !Task.isCancelled, let page = try? await api.fetchHistory(continuationToken: token) else { break }
-            remote.append(contentsOf: page.videos)
+            remote.append(
+                contentsOf: page.videos.map {
+                    HistoryChannelWatch(videoId: $0.id, channelId: $0.channelId, channelTitle: $0.channelTitle)
+                })
             token = page.nextPageToken
             if token == nil { break }
         }
-        guard !Task.isCancelled, !subscribedChannels.isEmpty else { return }
-        let remoteIds = Set(remote.map(\.id))
+        return remote
+    }
+
+    /// Ranks `base` by `remote` history plus this device's local plays. Skips the update when
+    /// the frequent group is unchanged, so the list does not reshuffle on a no-op refresh.
+    private func applyFrequentRanking(base: [Channel], remote: [HistoryChannelWatch]) {
+        let remoteIds = Set(remote.map(\.videoId))
         let localOnly = LocalWatchHistoryStore.shared.entries.map(\.video).filter { !remoteIds.contains($0.id) }
-        let watched = remote + localOnly
+        let watched: [(channelId: String?, channelTitle: String)] =
+            remote.map { ($0.channelId, $0.channelTitle) } + localOnly.map { ($0.channelId, $0.channelTitle) }
 
         // History tiles do not always carry a channel id, so fall back to the channel name.
-        let ids = Set(subscribedChannels.map(\.id))
+        let ids = Set(base.map(\.id))
         var idByTitle: [String: String] = [:]
-        for c in subscribedChannels where !c.title.isEmpty { idByTitle[c.title.lowercased()] = c.id }
-        let channelIds: [String] = watched.compactMap { v in
-            if let id = v.channelId, ids.contains(id) { return id }
-            return idByTitle[v.channelTitle.lowercased()]
+        for c in base where !c.title.isEmpty { idByTitle[c.title.lowercased()] = c.id }
+        let channelIds: [String] = watched.compactMap { w in
+            if let id = w.channelId, ids.contains(id) { return id }
+            return idByTitle[w.channelTitle.lowercased()]
         }
-        print("[CHANDIAG] ranking remote=\(remote.count) localOnly=\(localOnly.count) resolved=\(channelIds.count) withChannelId=\(watched.filter { $0.channelId != nil }.count)") // CHANDIAG (temporary)
+        print(
+            "[CHANDIAG] ranking remote=\(remote.count) localOnly=\(localOnly.count) resolved=\(channelIds.count) withChannelId=\(watched.filter { $0.channelId != nil }.count)"
+        )  // CHANDIAG (temporary)
 
-        let split = ChannelRanking.split(subscribedChannels, watchedChannelIds: channelIds)
+        let split = ChannelRanking.split(base, watchedChannelIds: channelIds)
+        let currentFrequent = subscribedChannels.prefix(frequentChannelCount).map(\.id)
+        guard split.frequent.map(\.id) != currentFrequent else { return }
         // Avatars may have been patched in meanwhile; keep them.
         let latest = Dictionary(uniqueKeysWithValues: subscribedChannels.map { ($0.id, $0) })
         subscribedChannels = (split.frequent + split.rest).map { latest[$0.id] ?? $0 }
         frequentChannelCount = split.frequent.count
+    }
+
+    /// Waits for the Channels load and its ranking (including any background refresh).
+    func waitForFrequentRanking() async {
+        await fetchTask?.value
+        await rankTask?.value
     }
 
     // MARK: - Channel avatar enrichment
@@ -921,7 +967,9 @@ public final class BrowseViewModel {
 
         let finalCount = self.subscribedChannels.filter { $0.thumbnailURL != nil }.count
         let total = self.subscribedChannels.count
-        print("[CHANDIAG] vm after enrichment total=\(total) withAvatar=\(finalCount) snapshot=\(snapshot.count) cancelled=\(Task.isCancelled)") // CHANDIAG (temporary)
+        print(
+            "[CHANDIAG] vm after enrichment total=\(total) withAvatar=\(finalCount) snapshot=\(snapshot.count) cancelled=\(Task.isCancelled)"
+        )  // CHANDIAG (temporary)
         browseLog.notice("enrichChannelAvatars done: \(finalCount)/\(total) have avatars")
     }
 }

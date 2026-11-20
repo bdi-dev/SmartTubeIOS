@@ -212,7 +212,7 @@ extension InnerTubeAPI {
 
     /// Stable across token refreshes (the old token-hash key reset the index hourly and
     /// differed per launch); sign-out calls `WatchedHistoryIndex.reset()`.
-    var historyOwnerKey: String { activeChannel.pageId ?? "primary" }
+    public var historyOwnerKey: String { activeChannel.pageId ?? "primary" }
 
     func historyPageFetcher() -> WatchedHistoryIndex.PageFetcher {
         { [self] token in

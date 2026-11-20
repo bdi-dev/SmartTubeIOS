@@ -29,6 +29,10 @@ public protocol InnerTubeAPIProtocol: AnyObject, Sendable {
     func fetchLive() async throws -> VideoGroup
     func fetchSports() async throws -> VideoGroup
 
+    /// Key for the signed-in account's watch history (brand page id, or "primary"). Scopes
+    /// account-keyed caches so one account's history never ranks another account's channels.
+    var historyOwnerKey: String { get async }
+
     // MARK: Library
     func fetchUserPlaylists() async throws -> [PlaylistInfo]
     func fetchSubscribedChannels() async throws -> [Channel]
@@ -89,6 +93,9 @@ public extension InnerTubeAPIProtocol {
     func search(query: String) async throws -> VideoGroup {
         try await search(query: query, continuationToken: nil, filter: .default)
     }
+
+    /// Fakes that do not model accounts share one history owner.
+    var historyOwnerKey: String { get async { "primary" } }
 }
 
 // MARK: - InnerTubeAPI conformance
