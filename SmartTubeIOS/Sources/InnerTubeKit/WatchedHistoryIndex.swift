@@ -119,6 +119,9 @@ public actor WatchedHistoryIndex {
     /// Progress for one video from the current account's index, if any.
     public func progress(for videoId: String) -> Double? { entries[videoId] }
 
+    /// Every entry of the current account's index (video id -> progress), for bulk filters.
+    public func allProgress() -> [String: Double] { entries }
+
     // MARK: Loading
 
     /// Makes sure `ownerKey` has an index and returns it.

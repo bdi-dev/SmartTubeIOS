@@ -34,6 +34,12 @@ public struct HomeView: View {
     @State private var subscriptionsChannelFilter: String? = nil
     @State private var showSignIn = false
     @State private var queueVideosCount: Int = 0
+    /// Progress from the History index and local playback, for the hide-watched filters.
+    /// Refreshed when those stores change, so late progress reaches cards already on screen.
+    @State private var watchProgress = WatchProgressSnapshot.empty
+    /// When the section feed was last (re)loaded. Cards played after this stay on screen
+    /// until the next reload instead of vanishing under the user.
+    @State private var feedLoadedAt = Date()
     // Auto-retry tracking: record the type-specific video count at the moment a
     // scroll trigger fires so onChange can detect whether the next page helped.
     @State private var needsMoreShorts = false
@@ -155,7 +161,12 @@ public struct HomeView: View {
             await homeVM.updateAuthToken(auth.accessToken)
             await sectionVM.updateAuthToken(auth.accessToken)
         }
+        .onAppear { refreshWatchProgress() }
+        .onReceive(NotificationCenter.default.publisher(for: .watchedHistoryIndexDidUpdate)) { _ in
+            refreshWatchProgress()
+        }
         .task(id: selectedSection) {
+            feedLoadedAt = Date()
             // Reset auto-retry flags when switching sections to prevent stale
             // triggers from a previous section firing on the new section's content.
             needsMoreShorts = false
@@ -176,6 +187,11 @@ public struct HomeView: View {
                 }
             }
         }
+    }
+
+    /// Re-reads the History index and local playback states for the hide-watched filters.
+    private func refreshWatchProgress() {
+        Task { watchProgress = await WatchProgressSnapshot.current() }
     }
 
     // MARK: - Chip bar
@@ -393,6 +409,14 @@ public struct HomeView: View {
         // #121: History is the one place watched videos are the point — never filtered.
         let applyHideWatched = store.settings.hideWatchedVideos && selectedSection.type != .history
         let hideWatchedThreshold = store.settings.hideWatchedThreshold
+        let keptWatched = Set(
+            LocalWatchHistoryStore.shared.entries.filter { $0.watchedAt >= feedLoadedAt }.map(\.video.id))
+        let hideWatched: ([Video]) -> [Video] = { videos in
+            applyHideWatched
+                ? HideWatchedFilter.removingWatched(
+                    videos, threshold: hideWatchedThreshold, in: watchProgress, keeping: keptWatched)
+                : videos
+        }
         // #62: channel filter only applies to (and is only shown for) Subscriptions —
         // it wouldn't make sense for a single-source list like a specific Channel page,
         // and Home mixes recommendations that don't necessarily come from a subscription.
@@ -421,7 +445,7 @@ public struct HomeView: View {
             if applyHideShorts { videos = videos.filter { !$0.isShort } }
             if hideLiveShorts { videos = videos.filter { !($0.isLive && $0.isShort) } }
             if hideVideoPremieres { videos = videos.filter { !$0.isUpcoming } }
-            if applyHideWatched { videos = videos.filter { !$0.isWatched(threshold: hideWatchedThreshold) } }
+            videos = hideWatched(videos)
             if let channelFilter { videos = videos.filter { $0.channelId == channelFilter } }
             copy.videos = videos
             return copy
@@ -432,12 +456,10 @@ public struct HomeView: View {
         // collapses to zero height — grid items become invisible and non-tappable
         // because LazyVStack never provides a measured height to LazyVGrid.
         // Row groups are few (typically ≤15 carousels) so eager rendering is fine.
-        let gridVideos = sectionVM.videoGroups.filter { $0.layout != .row }
-            .flatMap(\.videos)
+        let gridVideos = hideWatched(sectionVM.videoGroups.filter { $0.layout != .row }.flatMap(\.videos))
             .filter { !applyHideShorts || !$0.isShort }
             .filter { !hideLiveShorts || !($0.isLive && $0.isShort) }
             .filter { !hideVideoPremieres || !$0.isUpcoming }
-            .filter { !applyHideWatched || !$0.isWatched(threshold: hideWatchedThreshold) }
             .filter { channelFilter == nil || $0.channelId == channelFilter }
             .filter { isShorts || !$0.isShort }
 
@@ -607,7 +629,10 @@ public struct HomeView: View {
                     }
                 }
                 .accessibilityIdentifier("home.sectionFeed")
-                .refreshable { sectionVM.loadContent(refresh: true) }
+                .refreshable {
+                    feedLoadedAt = Date()
+                    sectionVM.loadContent(refresh: true)
+                }
                 #if os(iOS)
                 .simultaneousGesture(sectionSwipe)
                 #endif
@@ -617,6 +642,7 @@ public struct HomeView: View {
             }
         }
         .onChange(of: sectionVM.videoGroups.flatMap(\.videos).count) { _, _ in
+            refreshWatchProgress()
             // After each page load, check whether the type(s) each trigger was
             // waiting for actually appeared. Compare against the count snapshot
             // recorded when the scroll trigger fired — NOT the last-page slice,

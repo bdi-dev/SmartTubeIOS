@@ -59,6 +59,11 @@ public actor VideoStateStore: UserDefaultsBackedStore {
         states[videoId]
     }
 
+    /// Every saved video's watched fraction (video id -> 0...1), for bulk filters.
+    public func allWatchedFractions() -> [String: Double] {
+        states.mapValues(\.watchedFraction)
+    }
+
     /// Persists watch position. Automatically prunes entries near the start
     /// (< 5 s) or near the end (> 95 %) — mirrors Android's RESTORE_POSITION_PERCENTS.
     public func save(videoId: String, position: TimeInterval, duration: TimeInterval) {
