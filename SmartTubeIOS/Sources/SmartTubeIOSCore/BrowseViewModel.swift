@@ -67,6 +67,9 @@ public final class BrowseViewModel {
     private let watchLaterMembership: WatchLaterMembershipStore
     private let rankingHistory: FrequentChannelHistoryCache
     private var fetchTask: Task<Void, Never>?
+    /// Identifies the newest section load. A cancelled load that resumes late must not clear
+    /// `isLoading` while its replacement is still in flight.
+    private var loadGeneration = 0
     private var enrichTask: Task<Void, Never>?
     /// When `false`, the History section returns empty content rather than fetching from YouTube.
     private var historyEnabled: Bool = true
@@ -256,8 +259,10 @@ public final class BrowseViewModel {
             }
         }
         fetchTask?.cancel()
+        loadGeneration += 1
+        let generation = loadGeneration
         isLoading = true  // synchronous, so an immediate duplicate trigger sees a load in flight
-        fetchTask = Task { await fetchSection(target) }
+        fetchTask = Task { await fetchSection(target, generation: generation) }
     }
 
     public func loadMoreIfNeeded(lastVideo: Video) {
@@ -337,9 +342,9 @@ public final class BrowseViewModel {
         ProcessInfo.processInfo.arguments.contains("--uitesting-extended-fetch-timeout") ? 60 : 20
     }
 
-    private func fetchSection(_ section: BrowseSection) async {
-        isLoading = true
-        defer { isLoading = false }
+    private func fetchSection(_ section: BrowseSection, generation: Int) async {
+        // `isLoading` is set by loadContent before this task starts; only the newest load clears it.
+        defer { if generation == loadGeneration { isLoading = false } }
         browseLog.notice("Fetching section: \(section.title) (\(String(describing: section.type)))")
         do {
             try await withThrowingTaskGroup(of: Void.self) { group in
@@ -929,6 +934,11 @@ public final class BrowseViewModel {
         let latest = Dictionary(uniqueKeysWithValues: subscribedChannels.map { ($0.id, $0) })
         subscribedChannels = (split.frequent + split.rest).map { latest[$0.id] ?? $0 }
         frequentChannelCount = split.frequent.count
+    }
+
+    /// Waits for the most recently started section load to finish.
+    func waitForPendingLoad() async {
+        await fetchTask?.value
     }
 
     /// Waits for the Channels load and its ranking (including any background refresh).

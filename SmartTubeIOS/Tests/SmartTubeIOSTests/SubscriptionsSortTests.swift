@@ -4,15 +4,6 @@ import Testing
 @testable import InnerTubeKit
 @testable import SmartTubeIOSCore
 
-// MARK: - Helpers
-
-/// Yields control enough times so internal @MainActor Tasks spawned by
-/// the ViewModel can complete against an immediately-returning mock API.
-private func waitForSubsTasks() async {
-    for _ in 0..<3 { await Task.yield() }
-    try? await Task.sleep(for: .milliseconds(50))
-}
-
 // MARK: - SubscriptionsSortTests
 
 @Suite("Subscriptions Sort Order")
@@ -105,9 +96,13 @@ struct SubscriptionsSortTests {
         let vm = BrowseViewModel(api: mock, initialSection: section)
         await vm.updateAuthToken("fake-token")
         vm.loadContent(for: section, refresh: true, source: "test")
-        await waitForSubsTasks()
+        await vm.waitForPendingLoad()
 
-        #expect(vm.videoGroups[0].videos.count == 2, "page 1 should load 2 videos")
+        #expect(vm.videoGroups.first?.videos.count == 2, "page 1 should load 2 videos")
+        guard let lastOfPage1 = vm.videoGroups.first?.videos.last else {
+            Issue.record("page 1 produced no videos, cannot trigger pagination")
+            return
+        }
 
         // Page 2: 2 days ago and 1 day ago — newer than "4d" but must still be appended
         // after it, not interleaved between "today" and "4d".
@@ -118,17 +113,13 @@ struct SubscriptionsSortTests {
         )
 
         // Trigger pagination using the last (oldest) video from page 1.
-        let lastOfPage1 = vm.videoGroups[0].videos.last!
         vm.loadMoreIfNeeded(lastVideo: lastOfPage1)
-        await waitForSubsTasks()
+        await vm.waitForPendingLoad()
 
-        let merged = vm.videoGroups[0].videos
+        let merged = vm.videoGroups.first?.videos ?? []
         #expect(merged.count == 4, "all 4 videos should be present after merge")
         // Page 1's order is preserved, page 2's videos are appended at the bottom
         // in the order the API returned them.
-        #expect(merged[0].id == "today")
-        #expect(merged[1].id == "4d")
-        #expect(merged[2].id == "2d")
-        #expect(merged[3].id == "1d")
+        #expect(merged.map(\.id) == ["today", "4d", "2d", "1d"])
     }
 }
