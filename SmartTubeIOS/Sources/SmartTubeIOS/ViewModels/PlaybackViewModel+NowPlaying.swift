@@ -133,6 +133,11 @@ extension PlaybackViewModel {
             Task { @MainActor [weak self] in self?.playPrevious() }
             return .success
         }
+        // MPRemoteCommandCenter is process-wide. Sync the next/previous enabled state
+        // with this instance so a new session does not inherit a previous session's
+        // queue state before updateNowPlayingInfo() runs.
+        center.nextTrackCommand.isEnabled = hasNext
+        center.previousTrackCommand.isEnabled = hasPrevious
     }
 
     func updateNowPlayingInfo() {
