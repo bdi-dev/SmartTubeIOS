@@ -32,6 +32,13 @@ public final class BrowseViewModel {
     public private(set) var videoGroups: [VideoGroup] = []
     /// Populated when the current section is `.channels`; empty for all other sections.
     public private(set) var subscribedChannels: [Channel] = []
+    /// How many leading entries of `subscribedChannels` are the frequently watched group
+    /// (see `ChannelRanking.split`). Zero when there is no watch history to rank by.
+    public private(set) var frequentChannelCount: Int = 0
+    /// The frequently watched channels, shown above `otherChannels`.
+    public var frequentChannels: ArraySlice<Channel> { subscribedChannels.prefix(frequentChannelCount) }
+    /// The channels after the frequent group, in their list order.
+    public var otherChannels: ArraySlice<Channel> { subscribedChannels.dropFirst(frequentChannelCount) }
     public private(set) var isLoading: Bool = false
     /// True while a pagination (loadMore) request is in flight. Distinct from `isLoading`,
     /// which covers the initial/refresh fetch. Keeping these separate prevents the preload
@@ -202,6 +209,7 @@ public final class BrowseViewModel {
         if refresh {
             videoGroups = []
             subscribedChannels = []
+            frequentChannelCount = 0
             recommendedShortsVideos = []
             loadedAt = nil
             consecutiveEmptyShortPages = 0
@@ -505,6 +513,7 @@ public final class BrowseViewModel {
                 if !Task.isCancelled {
                     isAuthRequired = channels.isEmpty
                     subscribedChannels = channels
+                    frequentChannelCount = 0
                     rankTask?.cancel()
                     rankTask = Task { await self.promoteFrequentChannels() }
                     print("[CHANDIAG] vm subscribedChannels set=\(subscribedChannels.count)") // CHANDIAG (temporary)
@@ -527,6 +536,7 @@ public final class BrowseViewModel {
                 if !Task.isCancelled {
                     isAuthRequired = false
                     subscribedChannels = localChannels.map { $0.toChannel() }
+                    frequentChannelCount = 0
                     videoGroups = []
                 }
             }
@@ -842,10 +852,12 @@ public final class BrowseViewModel {
         let local = LocalWatchHistoryStore.shared.entries.compactMap(\.video.channelId)
         let remote = (try? await api.fetchHistory())?.videos.compactMap(\.channelId) ?? []
         guard !Task.isCancelled, !subscribedChannels.isEmpty else { return }
-        let ranked = ChannelRanking.ranked(subscribedChannels, watchedChannelIds: local + remote)
+        let groups = ChannelRanking.split(subscribedChannels, watchedChannelIds: local + remote)
         // Avatars may have been patched in meanwhile; keep them.
         let latest = Dictionary(uniqueKeysWithValues: subscribedChannels.map { ($0.id, $0) })
-        subscribedChannels = ranked.map { latest[$0.id] ?? $0 }
+        let frequent = groups.frequent.map { latest[$0.id] ?? $0 }
+        subscribedChannels = frequent + groups.rest.map { latest[$0.id] ?? $0 }
+        frequentChannelCount = frequent.count
     }
 
     // MARK: - Channel avatar enrichment

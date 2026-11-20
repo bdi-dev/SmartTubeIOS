@@ -289,7 +289,10 @@ public struct HomeView: View {
         } else if sectionVM.subscribedChannels.isEmpty && !sectionVM.isLoading {
             feedEmptyState
         } else {
-            ChannelListView(channels: sectionVM.subscribedChannels) { channel in
+            ChannelListView(
+                frequent: Array(sectionVM.frequentChannels),
+                others: Array(sectionVM.otherChannels)
+            ) { channel in
                 channelDestination = ChannelDestination(channelId: channel.id)
             }
             #if os(iOS)

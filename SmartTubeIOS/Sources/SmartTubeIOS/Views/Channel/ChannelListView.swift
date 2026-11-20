@@ -8,7 +8,10 @@ import SwiftUI
 // Mirrors the Android ChannelsBrowseFragment channel row layout.
 
 struct ChannelListView: View {
-    let channels: [Channel]
+    /// Frequently or recently watched channels, listed first under a "Frequent" header.
+    let frequent: [Channel]
+    /// Every other channel, listed under "All channels" when `frequent` is not empty.
+    let others: [Channel]
     let onSelect: (Channel) -> Void
 
     var body: some View {
@@ -17,13 +20,24 @@ struct ChannelListView: View {
         // clipped inside it. A `.plain` Button in a ScrollView is the poster-style effect (about
         // 1.1x scale plus lift) and is meant for artwork, not for full-width rows; on a row it
         // produced a platter far larger than the content that overlapped its neighbours.
-        let _ = print("[CHANDIAG] ChannelListView body channels=\(channels.count) uniqueIds=\(Set(channels.map(\.id)).count)") // CHANDIAG (temporary)
+        let _ = print("[CHANDIAG] ChannelListView body channels=\(frequent.count + others.count) uniqueIds=\(Set((frequent + others).map(\.id)).count)") // CHANDIAG (temporary)
+        // Section headers are plain text and are not focusable, so focus still moves straight
+        // from row to row. With no frequent group there is one headerless section.
         List {
-            ForEach(channels) { channel in
-                Button {
-                    onSelect(channel)
-                } label: {
-                    ChannelListRow(channel: channel)
+            if frequent.isEmpty {
+                Section {
+                    tvRows(others)
+                }
+            } else {
+                Section {
+                    tvRows(frequent)
+                } header: {
+                    Text("Frequent")
+                }
+                Section {
+                    tvRows(others)
+                } header: {
+                    Text("All channels")
                 }
             }
         }
@@ -32,17 +46,54 @@ struct ChannelListView: View {
         #else
         ScrollView {
             LazyVStack(spacing: 0) {
-                ForEach(channels) { channel in
-                    ChannelListRow(channel: channel)
-                        .contentShape(Rectangle())
-                        .onTapGesture { onSelect(channel) }
-                    Divider()
-                        .padding(.leading, 72)
+                if !frequent.isEmpty {
+                    groupHeader("Frequent")
+                }
+                ForEach(frequent) { channel in
+                    phoneRow(channel)
+                }
+                if !frequent.isEmpty {
+                    groupHeader("All channels")
+                }
+                ForEach(others) { channel in
+                    phoneRow(channel)
                 }
             }
         }
         #endif
     }
+
+    #if os(tvOS)
+    private func tvRows(_ channels: [Channel]) -> some View {
+        ForEach(channels) { channel in
+            Button {
+                onSelect(channel)
+            } label: {
+                ChannelListRow(channel: channel)
+            }
+        }
+    }
+    #else
+    private func phoneRow(_ channel: Channel) -> some View {
+        VStack(spacing: 0) {
+            ChannelListRow(channel: channel)
+                .contentShape(Rectangle())
+                .onTapGesture { onSelect(channel) }
+            Divider()
+                .padding(.leading, 72)
+        }
+    }
+
+    private func groupHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal)
+            .padding(.top, 12)
+            .padding(.bottom, 4)
+    }
+    #endif
 }
 
 // MARK: - ChannelListRow
