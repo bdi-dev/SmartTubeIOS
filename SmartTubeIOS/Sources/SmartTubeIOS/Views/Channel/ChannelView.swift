@@ -148,7 +148,11 @@ public struct ChannelView: View {
 
                 let filtered = filteredVideos
                 if filter == .shorts {
-                    shortsGrid(filtered)
+                    if filtered.isEmpty && !vm.isLoading {
+                        noShortsMessage
+                    } else {
+                        shortsGrid(filtered)
+                    }
                 } else {
                     videosGrid(filtered)
                 }
@@ -161,6 +165,17 @@ public struct ChannelView: View {
         .refreshable { vm.load(channelId: channelId) }
         .accessibilityIdentifier("channel.view")
         #endif
+    }
+
+    private var noShortsMessage: some View {
+        ContentUnavailableView(
+            "No Shorts",
+            systemImage: "play.rectangle.on.rectangle",
+            description: Text("This channel hasn't posted any Shorts, or they couldn't be loaded.")
+        )
+        .frame(maxWidth: .infinity)
+        .padding(.top, 40)
+        .accessibilityIdentifier("channel.noShorts")
     }
 
     #if os(tvOS)
@@ -187,7 +202,11 @@ public struct ChannelView: View {
                 .accessibilityIdentifier("channel.filterPicker")
 
                 if filter == .shorts {
-                    tvShortsGrid(vm.shorts)
+                    if vm.shorts.isEmpty && !vm.isLoading {
+                        noShortsMessage
+                    } else {
+                        tvShortsGrid(vm.shorts)
+                    }
                 } else {
                     VideoGridSection(
                         videos: filteredVideos,

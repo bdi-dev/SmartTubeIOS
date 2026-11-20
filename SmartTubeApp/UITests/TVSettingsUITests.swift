@@ -779,4 +779,28 @@ final class TVMPVRelatedShelfUITests: XCTestCase {
         attach("related-down-twice")
         XCTAssertTrue(element("relatedShelf").waitForExistence(timeout: 3), "second Down from the transport row must open the shelf")
     }
+
+    /// Opening the shelf from the seek-forward button and leaving it with Up must put focus
+    /// back on that button, not on Play.
+    func testUpFromShelfReturnsToEntryButton() {
+        remote.press(.down)
+        pause(1)
+        let playPause = element("playPauseButton")
+        XCTAssertTrue(playPause.waitForExistence(timeout: 3))
+        remote.press(.right)
+        pause(0.5)
+        let forward = element("seekForwardButton")
+        let focused = expectation(for: NSPredicate(format: "hasFocus == true"), evaluatedWith: forward)
+        wait(for: [focused], timeout: 3)
+        remote.press(.down)
+        XCTAssertTrue(element("relatedShelf").waitForExistence(timeout: 3))
+        pause(1)
+        remote.press(.up)
+        pause(1.5)
+        attach("related-up-return")
+        XCTAssertFalse(element("relatedShelf").exists, "Up must close the shelf")
+        XCTAssertTrue(forward.waitForExistence(timeout: 3), "controls must be back")
+        let back = expectation(for: NSPredicate(format: "hasFocus == true"), evaluatedWith: forward)
+        wait(for: [back], timeout: 3)
+    }
 }

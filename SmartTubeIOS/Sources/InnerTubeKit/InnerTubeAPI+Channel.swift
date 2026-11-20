@@ -102,6 +102,33 @@ extension InnerTubeAPI {
     /// versus 1.5 MB for the TV channel home (shelves).
     static func channelUploadsBrowseId(channelId: String) -> String { "VLUULF" + channelId.dropFirst(2) }
 
+    /// `UUSH` + the channel id without `UC` is the channel's auto-generated Shorts playlist.
+    static func channelShortsBrowseId(channelId: String) -> String { "VLUUSH" + channelId.dropFirst(2) }
+
+    /// The channel's Shorts, first page, via the TV client's playlist browse. Every entry is
+    /// marked `isShort` because the playlist only holds Shorts. Returns [] if the channel has
+    /// none or the request fails (the Home shelf remains the fallback).
+    public func fetchChannelShorts(channelId: String) async throws -> [Video] {
+        guard Self.isChannelId(channelId) else { return [] }
+        var body = makeBody(client: tvClientContext, continuationToken: nil)
+        body["browseId"] = Self.channelShortsBrowseId(channelId: channelId)
+        let data: [String: Any]
+        do {
+            data = try await postTV(endpoint: "browse", body: body)
+        } catch {
+            print("[CHANDIAG] shorts FAILED \(type(of: error))") // CHANDIAG (temporary)
+            throw error
+        }
+        let group = Self.channelVideoGroup(try parseVideoGroup(from: data, title: nil), channelId: channelId)
+        let shorts = group.videos.map { v -> Video in
+            var c = v
+            c.isShort = true
+            return c
+        }
+        print("[CHANDIAG] shorts OK count=\(shorts.count)") // CHANDIAG (temporary)
+        return shorts
+    }
+
     /// Channel videos via TVHTML5 + OAuth bearer. Tiles carry
     /// `thumbnailOverlayResumePlaybackRenderer.percentDurationWatched`, published-time and
     /// view-count lines, and duration, exactly like Home/Subscriptions/History tiles.

@@ -223,7 +223,8 @@ public final class ChannelViewModel {
                 nextPageToken = home.nextPageToken
             }
             var seen = Set<String>()
-            shorts = (home.videos + videos).filter { $0.isShort && seen.insert($0.id).inserted }
+            let dedicated = (try? await api.fetchChannelShorts(channelId: ch.id)) ?? []
+            shorts = (dedicated + home.videos + videos).filter { $0.isShort && seen.insert($0.id).inserted }
         } catch {
             self.error = error
         }

@@ -37,6 +37,9 @@ struct MPVPlayerView: View {
     /// The transport-row button focus last rested on. Down from the scrubber returns here,
     /// so the focus engine re-enters the row at the button the user left.
     @State private var lastTransportFocus: FocusTarget = .playPause
+    /// Set when the shelf is dismissed back to the controls: the next show of the overlay keeps
+    /// `lastTransportFocus` (the button the shelf was opened from) instead of resetting to Play.
+    @State private var keepTransportFocusOnShow = false
     /// Set while Down from the scrubber is handing focus back to `lastTransportFocus`; keeps
     /// the row locked to that one button until focus lands there.
     @State private var restoringTransportFocus: FocusTarget?
@@ -212,7 +215,7 @@ struct MPVPlayerView: View {
                     vm.closeComments()
                 }
             } else if vm.relatedShelfVisible {
-                vm.closeRelatedShelf()
+                leaveRelatedShelf(vm)
             } else if vm.controlsVisible, vm.errorMessage == nil, !vm.videoEnded {
                 vm.hideControls()
             } else {
@@ -260,7 +263,9 @@ struct MPVPlayerView: View {
         }
         // Every fresh show of the overlay starts on Play, as it always has.
         .onChange(of: vm.controlsVisible) { _, visible in
-            if visible { lastTransportFocus = .playPause } else { restoringTransportFocus = nil; pendingTransportMove = nil }
+            if visible {
+                if keepTransportFocusOnShow { keepTransportFocusOnShow = false } else { lastTransportFocus = .playPause }
+            } else { restoringTransportFocus = nil; pendingTransportMove = nil }
         }
         .onChange(of: vm.errorMessage) { _, message in
             if message != nil { restoringTransportFocus = nil }
@@ -293,6 +298,9 @@ struct MPVPlayerView: View {
             guard !Task.isCancelled, vm.errorMessage == nil else { return }
             if vm.relatedShelfVisible {
                 focus = relatedShelfFocus(vm)
+            } else if vm.controlsVisible, !vm.commentsVisible, focus == nil || isRelatedCard(focus) {
+                // Dismissed back to the controls: return to the button the shelf was opened from.
+                focus = restoredTransportFocus(vm)
             } else if !vm.controlsVisible, !vm.commentsVisible, focus == nil || isRelatedCard(focus) {
                 focus = vm.toastSegment != nil ? .skipSegment : .surface
             }
@@ -329,6 +337,13 @@ struct MPVPlayerView: View {
 
     /// The card focus should land on when the shelf opens: the one last focused in this
     /// video, else the first.
+    /// Up or Back on the shelf: the controls come back with focus on the button the shelf was
+    /// opened from, rather than the shelf simply disappearing.
+    private func leaveRelatedShelf(_ vm: MPVPlayerViewModel) {
+        keepTransportFocusOnShow = true
+        vm.showControls()
+    }
+
     private func relatedShelfFocus(_ vm: MPVPlayerViewModel) -> FocusTarget? {
         let cards = vm.relatedVideos.prefix(8)
         if let id = vm.relatedShelfFocusID, cards.contains(where: { $0.id == id }) {
@@ -495,6 +510,15 @@ struct MPVPlayerView: View {
             transportRow(vm)
                 .focusSection()
                 .padding(.top, 28)
+            // A second Down raises the related shelf; the chevron says so.
+            if !vm.relatedVideos.isEmpty, !vm.videoEnded {
+                Image(systemName: AppSymbol.chevronDown)
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.7))
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 8)
+                    .accessibilityHidden(true)
+            }
         }
         .padding(.horizontal, 80)
         .padding(.vertical, 60)
@@ -801,6 +825,12 @@ struct MPVPlayerView: View {
     /// playing behind a scrim that darkens only the bottom of the frame.
     private func relatedShelf(_ vm: MPVPlayerViewModel) -> some View {
         VStack(alignment: .leading, spacing: 16) {
+            // Up leaves the shelf and returns to the controls.
+            Image(systemName: AppSymbol.chevronUp)
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.7))
+                .frame(maxWidth: .infinity)
+                .accessibilityHidden(true)
             Text("Related", bundle: .module)
                 .font(.headline)
             relatedCards(vm)
@@ -822,7 +852,7 @@ struct MPVPlayerView: View {
         .focusSection()
         // Up from the top row of cards leaves the shelf; Back closes it through `onExitCommand`.
         .onMoveCommand { direction in
-            if direction == .up { vm.closeRelatedShelf() }
+            if direction == .up { leaveRelatedShelf(vm) }
         }
         .accessibilityIdentifier(ID.relatedShelf)
     }
@@ -854,20 +884,24 @@ struct MPVPlayerView: View {
         } label: {
             // Same card anatomy as `VideoCardView`: 8 pt thumbnail radius, 6 pt gap, a
             // semibold-weight title in a reserved two-line box with a small inset.
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 0) {
                 AsyncImage(url: related.thumbnailURL) { image in
                     image.resizable().aspectRatio(16 / 9, contentMode: .fill)
                 } placeholder: {
                     Color.white.opacity(0.1)
                 }
                 .frame(width: 320, height: 180)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .clipped()
+                // The `.card` platter clips the whole label; the title gets real padding on all
+                // sides inside it instead of sitting against the platter's edges.
                 Text(related.title)
                     .font(.subheadline.weight(.medium))
                     .lineLimit(2, reservesSpace: true)
                     .multilineTextAlignment(.leading)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+                    .padding(.bottom, 14)
                     .frame(width: 320, alignment: .topLeading)
-                    .padding(.horizontal, 2)
             }
         }
         .buttonStyle(.card)

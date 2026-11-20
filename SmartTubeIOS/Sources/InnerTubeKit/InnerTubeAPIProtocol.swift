@@ -37,6 +37,8 @@ public protocol InnerTubeAPIProtocol: AnyObject, Sendable {
     func fetchChannelThumbnailURL(channelId: String) async throws -> URL?
     func fetchChannel(channelId: String) async throws -> (channel: Channel, videos: VideoGroup)
     func fetchChannelVideos(channelId: String, continuationToken: String?) async throws -> VideoGroup
+    /// The channel's Shorts (its auto-generated Shorts playlist). Empty when it has none.
+    func fetchChannelShorts(channelId: String) async throws -> [Video]
 
     // MARK: Search
     func search(query: String, continuationToken: String?, filter: SearchFilter) async throws -> VideoGroup
@@ -75,6 +77,8 @@ public extension InnerTubeAPIProtocol {
     func fetchSubscriptions() async throws -> VideoGroup {
         try await fetchSubscriptions(continuationToken: nil)
     }
+
+    func fetchChannelShorts(channelId: String) async throws -> [Video] { [] }
 
     /// Fetches the watch history from the first page.
     func fetchHistory() async throws -> VideoGroup {
