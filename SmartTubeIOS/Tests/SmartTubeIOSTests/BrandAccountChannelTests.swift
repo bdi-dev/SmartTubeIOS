@@ -181,11 +181,12 @@ struct BrandAccountPersistenceTests {
     @Test("should persist the pageId in the Keychain across TokenManager instances")
     func persistsPageId() async {
         let service = "test-tm-pageid-\(UUID().uuidString)"
-        let tm = TokenManager(keychainService: service)
+        let kc = InMemoryKeychainStore()
+        let tm = TokenManager(keychainService: service, store: kc)
 
         await tm.setPageId("100000000000000000001")
 
-        #expect(TokenManager(keychainService: service).initialSnapshot.pageId == "100000000000000000001")
+        #expect(TokenManager(keychainService: service, store: kc).initialSnapshot.pageId == "100000000000000000001")
         await tm.clearToken()
     }
 
@@ -193,25 +194,27 @@ struct BrandAccountPersistenceTests {
     @Test("should remove the pageId on sign-out")
     func clearTokenRemovesPageId() async {
         let service = "test-tm-pageid-clear-\(UUID().uuidString)"
-        let tm = TokenManager(keychainService: service)
+        let kc = InMemoryKeychainStore()
+        let tm = TokenManager(keychainService: service, store: kc)
         await tm.setPageId("222")
 
         await tm.clearToken()
 
         #expect(await tm.currentPageId() == nil)
-        #expect(TokenManager(keychainService: service).initialSnapshot.pageId == nil)
+        #expect(TokenManager(keychainService: service, store: kc).initialSnapshot.pageId == nil)
     }
 
     // deve voltar para a conta principal ao gravar pageId nil
     @Test("should go back to the primary account when storing a nil pageId")
     func nilPageIdRemovesEntry() async {
         let service = "test-tm-pageid-nil-\(UUID().uuidString)"
-        let tm = TokenManager(keychainService: service)
+        let kc = InMemoryKeychainStore()
+        let tm = TokenManager(keychainService: service, store: kc)
         await tm.setPageId("333")
 
         await tm.setPageId(nil)
 
-        #expect(TokenManager(keychainService: service).initialSnapshot.pageId == nil)
+        #expect(TokenManager(keychainService: service, store: kc).initialSnapshot.pageId == nil)
         await tm.clearToken()
     }
 }

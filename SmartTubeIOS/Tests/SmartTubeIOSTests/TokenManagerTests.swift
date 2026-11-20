@@ -20,7 +20,8 @@ struct TokenManagerTests {
     @Test("setToken persists all fields to Keychain across instances")
     func setTokenPersistsToKeychain() async throws {
         let service = "test-tm-\(UUID().uuidString)"
-        let tm = TokenManager(keychainService: service)
+        let kc = InMemoryKeychainStore()
+        let tm = TokenManager(keychainService: service, store: kc)
         let expiry = Date(timeIntervalSinceNow: 3600)
 
         await tm.setToken(
@@ -32,7 +33,7 @@ struct TokenManagerTests {
         )
 
         // New instance reads from the same Keychain service
-        let tm2 = TokenManager(keychainService: service)
+        let tm2 = TokenManager(keychainService: service, store: kc)
         #expect(tm2.initialSnapshot.accessToken == "access-abc")
         #expect(tm2.initialSnapshot.refreshToken == "refresh-xyz")
         #expect(tm2.initialSnapshot.accountName == "Alice")
@@ -50,12 +51,13 @@ struct TokenManagerTests {
     @Test("clearToken removes all Keychain entries")
     func clearTokenRemovesFromKeychain() async throws {
         let service = "test-tm-clear-\(UUID().uuidString)"
-        let tm = TokenManager(keychainService: service)
+        let kc = InMemoryKeychainStore()
+        let tm = TokenManager(keychainService: service, store: kc)
 
         await tm.setToken(access: "tok", refresh: "ref", expiry: nil, accountName: "Bob", avatarURL: nil)
         await tm.clearToken()
 
-        let tm2 = TokenManager(keychainService: service)
+        let tm2 = TokenManager(keychainService: service, store: kc)
         #expect(tm2.initialSnapshot.accessToken == nil)
         #expect(tm2.initialSnapshot.refreshToken == nil)
         #expect(tm2.initialSnapshot.accountName == nil)
@@ -65,7 +67,8 @@ struct TokenManagerTests {
 
     @Test("updates stream emits .refreshed when setToken is called")
     func streamEmitsRefreshedOnSetToken() async throws {
-        let tm = TokenManager(keychainService: "test-tm-stream-\(UUID().uuidString)")
+        let kc = InMemoryKeychainStore()
+        let tm = TokenManager(keychainService: "test-tm-stream-\(UUID().uuidString)", store: kc)
 
         // Subscribe before triggering
         let task = Task<TokenManager.Update?, Never> {
@@ -90,7 +93,8 @@ struct TokenManagerTests {
 
     @Test("updates stream emits .signedOut when clearToken is called")
     func streamEmitsSignedOutOnClearToken() async throws {
-        let tm = TokenManager(keychainService: "test-tm-so-\(UUID().uuidString)")
+        let kc = InMemoryKeychainStore()
+        let tm = TokenManager(keychainService: "test-tm-so-\(UUID().uuidString)", store: kc)
 
         // Subscribe before triggering
         let task = Task<TokenManager.Update?, Never> {
