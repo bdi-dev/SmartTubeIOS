@@ -81,6 +81,8 @@ public final class BrowseViewModel {
     /// True when a non-nil auth token has been set via updateAuthToken(_:).
     /// Used to select between the authenticated YouTube endpoints and the local RSS feed path.
     private var hasAuthToken: Bool = false
+    /// The token the current content was requested with; an identical token while that load is still in flight is not a reason to restart it.
+    private var appliedToken: String?
     private var hideObserverTasks: [Task<Void, Never>] = []
 
     public init(
@@ -254,6 +256,7 @@ public final class BrowseViewModel {
             }
         }
         fetchTask?.cancel()
+        isLoading = true  // synchronous, so an immediate duplicate trigger sees a load in flight
         fetchTask = Task { await fetchSection(target) }
     }
 
@@ -307,8 +310,13 @@ public final class BrowseViewModel {
     /// Sets the token on the API first so that the fetch always runs authenticated.
     public func updateAuthToken(_ token: String?) async {
         let wasAuthenticated = hasAuthToken
+        let unchanged = token != nil && token == appliedToken && isLoading
         hasAuthToken = token != nil
+        appliedToken = token
         await api.setAuthToken(token)
+        // The app publishes the same token from several places at launch; reloading for each one
+        // cancelled the first in-flight fetch (e.g. the first Channels request).
+        if unchanged { return }
         if token != nil {
             // Signed in — reload everything
             loadContent(refresh: true, source: "updateAuthToken")
