@@ -10,7 +10,7 @@ import SwiftUI
 struct ChannelListView: View {
     /// Frequently or recently watched channels, listed first under a "Frequent" header.
     let frequent: [Channel]
-    /// Every other channel, listed under "All channels" when `frequent` is not empty.
+    /// Every other channel, listed under "All channels" when both groups are non-empty.
     let others: [Channel]
     let onSelect: (Channel) -> Void
 
@@ -26,9 +26,9 @@ struct ChannelListView: View {
         // Section headers are plain text and are not focusable, so focus still moves straight
         // from row to row. With no frequent group there is one headerless section.
         List {
-            if frequent.isEmpty {
+            if frequent.isEmpty || others.isEmpty {
                 Section {
-                    tvRows(others)
+                    tvRows(frequent + others)
                 }
             } else {
                 Section {
@@ -48,13 +48,15 @@ struct ChannelListView: View {
         #else
         ScrollView {
             LazyVStack(spacing: 0) {
-                if !frequent.isEmpty {
+                // Headers only when both groups exist; otherwise one plain list.
+                let grouped = !frequent.isEmpty && !others.isEmpty
+                if grouped {
                     groupHeader("Frequent")
                 }
                 ForEach(frequent) { channel in
                     phoneRow(channel)
                 }
-                if !frequent.isEmpty {
+                if grouped {
                     groupHeader("All channels")
                 }
                 ForEach(others) { channel in

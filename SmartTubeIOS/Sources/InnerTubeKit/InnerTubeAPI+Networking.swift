@@ -485,7 +485,7 @@ extension InnerTubeAPI {
         let (data, response) = try await session.data(for: request)
         let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            if useWebSession { print("[WATCHDIAG] post /\(endpoint) HTTP \(statusCode) FAILED") } // WATCHDIAG (temporary)
+            if useWebSession { print("[WATCHDIAG] post /\(endpoint) HTTP \(statusCode) FAILED") }  // WATCHDIAG (temporary)
             tubeLog.error("❌ HTTP \(statusCode, privacy: .public) for /\(endpoint, privacy: .public)")
             throw APIError.httpError(statusCode)
         }
@@ -929,6 +929,14 @@ extension InnerTubeAPI {
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             tubeLog.error("❌ HTTP \(statusCode, privacy: .public) for /\(endpoint, privacy: .public) [TV]")
             throw APIError.httpError(statusCode)
+        }
+        if data.count < 3000 {  // CHANDIAG (temporary)
+            let full = String(decoding: data.prefix(3000), as: UTF8.self)
+                .components(separatedBy: .whitespacesAndNewlines).joined()
+            let head = full.range(of: "\"contents\"").map { String(full[$0.lowerBound...].prefix(700)) } ?? full
+            tubeLog.notice(
+                "[CHANDIAG] small /\(endpoint, privacy: .public) [TV] bytes=\(data.count, privacy: .public) \(head, privacy: .public)"
+            )
         }
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             tubeLog.error("❌ Non-dictionary JSON root for /\(endpoint, privacy: .public) [TV]")
