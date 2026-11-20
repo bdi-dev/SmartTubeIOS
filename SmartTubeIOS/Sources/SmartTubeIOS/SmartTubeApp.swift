@@ -38,6 +38,16 @@ struct SmartTubeApp: App {
         #endif
     }
 
+    private func syncAuth() {
+        let token = authService.accessToken
+        let sapisid = authService.sapisid
+        Task {
+            await api.setAuthToken(token)
+            await api.setSAPISID(sapisid)
+            await browseViewModel.updateAuthToken(token)
+        }
+    }
+
     var body: some Scene {
         WindowGroup {
             RootView()
@@ -51,17 +61,11 @@ struct SmartTubeApp: App {
                 #if ENABLE_DOWNLOADS
                 .environment(DownloadStore.shared)
                 #endif
-                .onChange(of: authService.accessToken, initial: true) { _, newToken in
-                    Task {
-                        await api.setAuthToken(newToken)
-                        await browseViewModel.updateAuthToken(newToken)
-                    }
-                }
-                // Publish the web-session SAPISID too (SharedAuthSession), so channel pages
-                // opened later are signed with SAPISIDHASH and carry resume progress.
-                .onChange(of: authService.sapisid, initial: true) { _, newSapisid in
-                    Task { await api.setSAPISID(newSapisid) }
-                }
+                // Token and SAPISID are published together, in order, from the current values:
+                // clearing the token also clears the shared SAPISID, so two independent tasks
+                // could leave a signed-in session without its SAPISID depending on scheduling.
+                .onChange(of: authService.accessToken, initial: true) { _, _ in syncAuth() }
+                .onChange(of: authService.sapisid, initial: true) { _, _ in syncAuth() }
                 .onChange(of: settingsStore.settings.enabledSections) { _, newSections in
                     browseViewModel.configureSections(newSections)
                 }
