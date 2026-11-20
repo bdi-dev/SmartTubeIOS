@@ -126,6 +126,9 @@ final class MPVPlayerViewModel {
     /// The shelf card focus last rested on, so reopening the shelf within this video
     /// returns there. Nil until a card has been focused.
     private(set) var relatedShelfFocusID: String?
+    /// The card the shelf's scroll view is parked on, kept so leaving and re-entering the shelf
+    /// does not reset or re-centre the scroll position.
+    var relatedScrollID: String?
     /// The shelf closes after this long with no focus movement across its cards.
     static let relatedShelfIdleTimeout: Duration = .seconds(12)
     private var relatedShelfIdleTask: Task<Void, Never>?
