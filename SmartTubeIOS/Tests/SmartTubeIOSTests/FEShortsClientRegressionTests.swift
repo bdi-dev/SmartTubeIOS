@@ -96,12 +96,15 @@ struct FEShortsClientRegressionTests {
 
     // MARK: - fetchShorts
 
-    /// Verifies that fetchShorts sends `clientName: "TVHTML5"` when authenticated.
+    /// Verifies the current fetchShorts request: a `#shorts` search, sent with the
+    /// WEB client context.
     ///
-    /// Before the fix, this was `"WEB"`, causing YouTube to reject the request
-    /// with HTTP 400 because the device-code OAuth token is bound to TVHTML5.
-    @Test("fetchShorts sends TVHTML5 clientName when authenticated")
-    func fetchShortsSendsTVClientWhenAuthenticated() async throws {
+    /// The FEshorts browse was removed on 2026-05-24 (YouTube rejects the browseId
+    /// on every client), so fetchShorts now goes through `/search`. Search runs
+    /// unauthenticated with WEB, because WEB rejects Bearer tokens; the TVHTML5
+    /// requirement in the original #96 fix applied only to the removed FEshorts path.
+    @Test("fetchShorts searches #shorts with the WEB client")
+    func fetchShortsSearchesWithWebClient() async throws {
         BodyCapturingURLProtocol.capturedBody = nil
         let api = makeTestAPI(authToken: "fake-tv-oauth-token")
 
@@ -120,13 +123,10 @@ struct FEShortsClientRegressionTests {
         let context = json["context"] as? [String: Any]
         let clientDict = context?["client"] as? [String: Any]
 
+        #expect(json["query"] as? String == "#shorts")
         #expect(
-            clientDict?["clientName"] as? String == "TVHTML5",
-            """
-            fetchShorts must use TVHTML5 client when authenticated.
-            Sending a device-code OAuth token with clientName="WEB" returns HTTP 400.
-            Found clientName=\(String(describing: clientDict?["clientName"]))
-            """
+            clientDict?["clientName"] as? String == "WEB",
+            "fetchShorts search must use the WEB client. Found clientName=\(String(describing: clientDict?["clientName"]))"
         )
     }
 
