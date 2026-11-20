@@ -1,6 +1,8 @@
 import Foundation
 import Observation
 
+private let channelLog = ViewModelLogger(category: "ChannelViewModel")
+
 // MARK: - SearchViewModel
 //
 // Mirrors the Android `SearchPresenter`.
@@ -223,7 +225,14 @@ public final class ChannelViewModel {
                 nextPageToken = home.nextPageToken
             }
             var seen = Set<String>()
-            let dedicated = (try? await api.fetchChannelShorts(channelId: ch.id)) ?? []
+            let dedicated: [Video]
+            do {
+                dedicated = try await api.fetchChannelShorts(channelId: ch.id)
+            } catch {
+                // Never fails the screen: the Home shelf below still supplies Shorts.
+                channelLog.error("channel Shorts playlist failed, using Home Shorts: \(error.localizedDescription)")
+                dedicated = []
+            }
             shorts = (dedicated + home.videos + videos).filter { $0.isShort && seen.insert($0.id).inserted }
         } catch {
             self.error = error

@@ -20,7 +20,9 @@ struct ChannelListView: View {
         // clipped inside it. A `.plain` Button in a ScrollView is the poster-style effect (about
         // 1.1x scale plus lift) and is meant for artwork, not for full-width rows; on a row it
         // produced a platter far larger than the content that overlapped its neighbours.
-        let _ = print("[CHANDIAG] ChannelListView body channels=\(frequent.count + others.count) uniqueIds=\(Set((frequent + others).map(\.id)).count)") // CHANDIAG (temporary)
+        let _ = print(
+            "[CHANDIAG] ChannelListView body channels=\(frequent.count + others.count) uniqueIds=\(Set((frequent + others).map(\.id)).count)"
+        )  // CHANDIAG (temporary)
         // Section headers are plain text and are not focusable, so focus still moves straight
         // from row to row. With no frequent group there is one headerless section.
         List {
@@ -76,11 +78,18 @@ struct ChannelListView: View {
     #else
     private func phoneRow(_ channel: Channel) -> some View {
         VStack(spacing: 0) {
-            ChannelListRow(channel: channel)
-                .contentShape(Rectangle())
-                .onTapGesture { onSelect(channel) }
+            // A Button, not onTapGesture, so VoiceOver announces it as a button and the whole
+            // row is the activation target.
+            Button {
+                onSelect(channel)
+            } label: {
+                ChannelListRow(channel: channel)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            // Leading inset = row padding (16) + avatar (48) + spacing (12): starts under the name.
             Divider()
-                .padding(.leading, 72)
+                .padding(.leading, 76)
         }
     }
 
@@ -92,6 +101,7 @@ struct ChannelListView: View {
             .padding(.horizontal)
             .padding(.top, 12)
             .padding(.bottom, 4)
+            .accessibilityAddTraits(.isHeader)
     }
     #endif
 }
@@ -104,6 +114,7 @@ private struct ChannelListRow: View {
     var body: some View {
         HStack(spacing: 12) {
             avatar
+                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text(channel.title.isEmpty ? "Unknown channel" : channel.title)
                     .font(.subheadline.weight(.semibold))
@@ -121,6 +132,8 @@ private struct ChannelListRow: View {
         }
         .padding(.horizontal)
         .padding(.vertical, 12)
+        // One VoiceOver element per channel: "name, subscribers", not each text run.
+        .accessibilityElement(children: .combine)
     }
 
     @ViewBuilder

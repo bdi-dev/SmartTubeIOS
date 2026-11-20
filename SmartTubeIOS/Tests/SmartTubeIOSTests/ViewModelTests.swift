@@ -47,6 +47,9 @@ final class MockInnerTubeAPI: InnerTubeAPIProtocol {
     var channelVideosResult: VideoGroup = VideoGroup(title: "ChVideos", videos: [])
     /// Thrown only by `fetchChannelVideos`, so a test can fail the Videos tab while Home succeeds.
     var channelVideosError: Error?
+    /// The channel's dedicated Shorts playlist; `channelShortsError` makes that call throw.
+    var channelShortsResult: [Video] = []
+    var channelShortsError: Error?
     var searchResult: VideoGroup = VideoGroup(title: "Search", videos: [])
     var suggestionsResult: [String] = []
     var playlistVideosResult: VideoGroup = VideoGroup(title: "Playlist", videos: [])
@@ -156,6 +159,12 @@ final class MockInnerTubeAPI: InnerTubeAPIProtocol {
         calls.append(Call(method: "fetchChannelVideos", args: [channelId, continuationToken ?? "nil"]))
         if let e = channelVideosError ?? errorToThrow { throw e }
         return channelVideosResult
+    }
+
+    func fetchChannelShorts(channelId: String) async throws -> [Video] {
+        calls.append(Call(method: "fetchChannelShorts", args: [channelId]))
+        if let e = channelShortsError { throw e }
+        return channelShortsResult
     }
 
     func search(query: String, continuationToken: String?, filter: SearchFilter) async throws -> VideoGroup {

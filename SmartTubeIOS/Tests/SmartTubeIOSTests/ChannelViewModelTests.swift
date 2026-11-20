@@ -45,9 +45,9 @@ struct ChannelViewModelTests {
 
         #expect(vm.videos.map(\.id) == ["grid1", "grid2"])
         #expect(
-            mock.calls.map(\.method) == ["fetchChannel", "fetchChannelVideos"],
-            "Home supplies the header, the Videos tab supplies the list")
-        #expect(mock.calls.last?.args == ["UCchannel", "nil"])
+            mock.calls.map(\.method) == ["fetchChannel", "fetchChannelVideos", "fetchChannelShorts"],
+            "Home supplies the header, the Videos tab supplies the list, the Shorts playlist supplies Shorts")
+        #expect(mock.calls.first { $0.method == "fetchChannelVideos" }?.args == ["UCchannel", "nil"])
     }
 
     @Test("loadMore() continues with the Videos tab token, never the Home token")
@@ -98,6 +98,54 @@ struct ChannelViewModelTests {
 
         #expect(vm.videos.map(\.id) == ["homeVideo1", "homeShort1"])
         #expect(vm.shorts.map(\.id) == ["homeShort1"])
+        #expect(vm.error == nil)
+    }
+
+    // MARK: - Dedicated Shorts playlist (fetchChannelShorts)
+
+    private func loadedVMWithShorts(
+        dedicated: [Video], dedicatedError: Error? = nil, home: [Video]
+    ) async -> (ChannelViewModel, MockInnerTubeAPI) {
+        let mock = MockInnerTubeAPI()
+        mock.channelResult = (
+            Channel(id: "UCchannel", title: "Channel"),
+            VideoGroup(title: "Home", videos: home, nextPageToken: nil)
+        )
+        mock.channelVideosResult = VideoGroup(title: "V", videos: [video("grid1")])
+        mock.channelShortsResult = dedicated
+        mock.channelShortsError = dedicatedError
+        let vm = ChannelViewModel(api: mock)
+        await vm.loadAsync(channelId: "UCchannel")
+        return (vm, mock)
+    }
+
+    @Test("dedicated Shorts come first, then Home Shorts not already listed, without duplicates")
+    func dedicatedShortsLeadAndDedupe() async {
+        let (vm, mock) = await loadedVMWithShorts(
+            dedicated: [video("ded1", isShort: true), video("shared", isShort: true)],
+            home: [video("shared", isShort: true), video("homeShort1", isShort: true)])
+
+        #expect(vm.shorts.map(\.id) == ["ded1", "shared", "homeShort1"])
+        #expect(mock.calls.map(\.method).contains("fetchChannelShorts"))
+        #expect(vm.error == nil)
+    }
+
+    @Test("no dedicated Shorts (empty result, e.g. no token) falls back to Home Shorts")
+    func emptyDedicatedFallsBackToHome() async {
+        let (vm, _) = await loadedVMWithShorts(
+            dedicated: [], home: [video("homeShort1", isShort: true), video("homeVideo1")])
+
+        #expect(vm.shorts.map(\.id) == ["homeShort1"])
+        #expect(vm.error == nil)
+    }
+
+    @Test("a failing Shorts playlist never reaches the screen: Home Shorts stay, no error")
+    func failingDedicatedShortsFallsBackToHome() async {
+        let (vm, _) = await loadedVMWithShorts(
+            dedicated: [], dedicatedError: FetchFailure(), home: [video("homeShort1", isShort: true)])
+
+        #expect(vm.shorts.map(\.id) == ["homeShort1"])
+        #expect(vm.videos.map(\.id) == ["grid1"])
         #expect(vm.error == nil)
     }
 }

@@ -93,7 +93,12 @@ struct CachedAvatarImage<Placeholder: View>: View {
         }
         .frame(width: size, height: size)
         .task(id: url) {
-            if image == nil { image = await AvatarImageCache.shared.image(for: url) }
+            // A new URL must not keep the previous channel's picture while it loads.
+            image = AvatarImageCache.shared.cached(url)
+            guard image == nil else { return }
+            let loaded = await AvatarImageCache.shared.image(for: url)
+            guard !Task.isCancelled else { return }
+            image = loaded
         }
     }
 }
