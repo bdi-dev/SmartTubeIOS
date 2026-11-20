@@ -824,7 +824,8 @@ public struct TOSPlayerView: View {
             comments: vm.comments.comments,
             isLoading: vm.comments.isLoading,
             onDismiss: { showCommentsSheet = false },
-            accessibilityId: "tosPlayer.commentsOverlay"
+            accessibilityId: "tosPlayer.commentsOverlay",
+            controller: vm.comments
         )
     }
 
