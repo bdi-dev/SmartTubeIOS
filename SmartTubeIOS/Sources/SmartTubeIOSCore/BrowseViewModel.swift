@@ -846,18 +846,41 @@ public final class BrowseViewModel {
 
     private var rankTask: Task<Void, Never>?
 
-    /// Moves the channels the viewer watches most and most recently to the top of the list,
-    /// using local history plus the first page of YouTube history.
+    /// Pages of YouTube history read to rank channels (about 15 videos each).
+    private static let rankingHistoryPages = 6
+
+    /// Moves the channels the viewer watches most and most recently to the top of the list.
+    /// YouTube's own history (several pages, so web and other-device viewing counts) leads;
+    /// videos watched only in this app and not yet in that history follow.
     private func promoteFrequentChannels() async {
-        let local = LocalWatchHistoryStore.shared.entries.compactMap(\.video.channelId)
-        let remote = (try? await api.fetchHistory())?.videos.compactMap(\.channelId) ?? []
+        var remote: [Video] = []
+        var token: String?
+        for _ in 0..<Self.rankingHistoryPages {
+            guard !Task.isCancelled, let page = try? await api.fetchHistory(continuationToken: token) else { break }
+            remote.append(contentsOf: page.videos)
+            token = page.nextPageToken
+            if token == nil { break }
+        }
         guard !Task.isCancelled, !subscribedChannels.isEmpty else { return }
-        let groups = ChannelRanking.split(subscribedChannels, watchedChannelIds: local + remote)
+        let remoteIds = Set(remote.map(\.id))
+        let localOnly = LocalWatchHistoryStore.shared.entries.map(\.video).filter { !remoteIds.contains($0.id) }
+        let watched = remote + localOnly
+
+        // History tiles do not always carry a channel id, so fall back to the channel name.
+        let ids = Set(subscribedChannels.map(\.id))
+        var idByTitle: [String: String] = [:]
+        for c in subscribedChannels where !c.title.isEmpty { idByTitle[c.title.lowercased()] = c.id }
+        let channelIds: [String] = watched.compactMap { v in
+            if let id = v.channelId, ids.contains(id) { return id }
+            return idByTitle[v.channelTitle.lowercased()]
+        }
+        print("[CHANDIAG] ranking remote=\(remote.count) localOnly=\(localOnly.count) resolved=\(channelIds.count) withChannelId=\(watched.filter { $0.channelId != nil }.count)") // CHANDIAG (temporary)
+
+        let split = ChannelRanking.split(subscribedChannels, watchedChannelIds: channelIds)
         // Avatars may have been patched in meanwhile; keep them.
         let latest = Dictionary(uniqueKeysWithValues: subscribedChannels.map { ($0.id, $0) })
-        let frequent = groups.frequent.map { latest[$0.id] ?? $0 }
-        subscribedChannels = frequent + groups.rest.map { latest[$0.id] ?? $0 }
-        frequentChannelCount = frequent.count
+        subscribedChannels = (split.frequent + split.rest).map { latest[$0.id] ?? $0 }
+        frequentChannelCount = split.frequent.count
     }
 
     // MARK: - Channel avatar enrichment
