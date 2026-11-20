@@ -78,4 +78,20 @@ struct LocalWatchHistoryStoreTests {
         #expect(store.videos.first?.title == "Title a")
         #expect(store.videos.first?.notInterestedToken == nil)
     }
+
+    @Test("isShort survives recording and a reload, so Hide Shorts can filter local history")
+    func keepsIsShort() {
+        let (store, defaults, suite) = makeStore()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var short = video("s")
+        short.isShort = true
+        store.record(short)
+        store.record(video("v"))
+        #expect(store.videos.first { $0.id == "s" }?.isShort == true)
+        #expect(store.videos.first { $0.id == "v" }?.isShort == false)
+        let reloaded = LocalWatchHistoryStore(defaults: defaults)
+        #expect(reloaded.videos.first { $0.id == "s" }?.isShort == true)
+        #expect(reloaded.videos.removingShorts(if: true).map(\.id) == ["v"])
+        #expect(reloaded.videos.removingShorts(if: false).count == 2)
+    }
 }

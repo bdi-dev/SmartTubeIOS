@@ -214,21 +214,23 @@ struct HideShortsFilterTests {
 
 extension HideShortsFilterTests {
 
-    /// Mirrors the `applyHideShorts = hideShorts && selectedSection != .history` guard
-    /// added to LibraryView and HomeView.feedContent.
-    private func applyWithHistoryGuard(hideShorts: Bool, isHistory: Bool, to videos: [Video]) -> [Video] {
-        let applyHideShorts = hideShorts && !isHistory
-        return videos.filter { !applyHideShorts || !$0.isShort }
-    }
-
-    @Test("History section: Shorts are NOT filtered even when hideShorts is enabled")
-    func historyShortNotFilteredWhenHideShortsEnabled() {
+    @Test("History: Shorts ARE filtered when hideShorts is enabled (uses the shared helper)")
+    func historyShortFilteredWhenHideShortsEnabled() {
         let videos = [
             makeVideo(id: "regular1", isShort: false),
             makeVideo(id: "short1", isShort: true),
         ]
-        let result = applyWithHistoryGuard(hideShorts: true, isHistory: true, to: videos)
-        #expect(result.count == 2, "History should include Shorts regardless of hideShorts setting")
+        let result = videos.removingShorts(if: true)
+        #expect(result.map(\.id) == ["regular1"], "History must hide Shorts when the setting is on")
+    }
+
+    @Test("History: Shorts are kept when hideShorts is disabled")
+    func historyShortKeptWhenHideShortsDisabled() {
+        let videos = [
+            makeVideo(id: "regular1", isShort: false),
+            makeVideo(id: "short1", isShort: true),
+        ]
+        #expect(videos.removingShorts(if: false).map(\.id) == ["regular1", "short1"])
     }
 
     @Test("Subscriptions section: Shorts ARE filtered when hideShorts is enabled")
@@ -237,7 +239,7 @@ extension HideShortsFilterTests {
             makeVideo(id: "regular1", isShort: false),
             makeVideo(id: "short1", isShort: true),
         ]
-        let result = applyWithHistoryGuard(hideShorts: true, isHistory: false, to: videos)
+        let result = apply(hideShorts: true, to: videos)
         #expect(result.count == 1)
         #expect(result.first?.id == "regular1")
     }

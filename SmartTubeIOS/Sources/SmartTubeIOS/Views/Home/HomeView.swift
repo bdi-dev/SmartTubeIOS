@@ -388,7 +388,8 @@ public struct HomeView: View {
         let hideLiveShorts = store.settings.hideLiveShorts
         let hideVideoPremieres = store.settings.hideVideoPremieres
         let isShorts = selectedSection.type == .shorts
-        let applyHideShorts = hideShorts && selectedSection.type != .history
+        // Hide Shorts applies to History too (the Shorts tab of a channel page is not this feed).
+        let applyHideShorts = hideShorts
         // #121: History is the one place watched videos are the point — never filtered.
         let applyHideWatched = store.settings.hideWatchedVideos && selectedSection.type != .history
         let hideWatchedThreshold = store.settings.hideWatchedThreshold
@@ -627,7 +628,7 @@ public struct HomeView: View {
             // runaway loops — pagination stops when pages are exhausted or a load
             // is already in flight.
             let isShortsSectionActive = selectedSection.type == .shorts
-            let applyHide = store.settings.hideShorts && selectedSection.type != .history
+            let applyHide = store.settings.hideShorts
             guard !applyHide,
                 let trigger = sectionVM.videoGroups.last?.videos.last
             else { return }
