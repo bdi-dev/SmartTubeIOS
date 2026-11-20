@@ -469,9 +469,8 @@ struct MPVPlayerView: View {
             switch direction {
             case .left: vm.seekRelative(seconds: -Double(store.settings.seekBackSeconds))
             case .right: vm.seekRelative(seconds: Double(store.settings.seekForwardSeconds))
-            case .down:
-                // Down opens the related shelf; with nothing to show, it brings up the controls.
-                if vm.relatedVideos.isEmpty { vm.showControls() } else { vm.openRelatedShelf() }
+            // Down, like every other press here, only raises the controls. A second Down from
+            // the transport row (controls visible) opens the related shelf.
             default: vm.showControls()
             }
         }
@@ -853,18 +852,22 @@ struct MPVPlayerView: View {
         Button {
             vm.play(related: related)
         } label: {
-            VStack(alignment: .leading, spacing: 10) {
+            // Same card anatomy as `VideoCardView`: 8 pt thumbnail radius, 6 pt gap, a
+            // semibold-weight title in a reserved two-line box with a small inset.
+            VStack(alignment: .leading, spacing: 6) {
                 AsyncImage(url: related.thumbnailURL) { image in
                     image.resizable().aspectRatio(16 / 9, contentMode: .fill)
                 } placeholder: {
                     Color.white.opacity(0.1)
                 }
                 .frame(width: 320, height: 180)
-                .clipped()
+                .clipShape(RoundedRectangle(cornerRadius: 8))
                 Text(related.title)
-                    .font(.caption)
-                    .lineLimit(2)
-                    .frame(width: 320, alignment: .leading)
+                    .font(.subheadline.weight(.medium))
+                    .lineLimit(2, reservesSpace: true)
+                    .multilineTextAlignment(.leading)
+                    .frame(width: 320, alignment: .topLeading)
+                    .padding(.horizontal, 2)
             }
         }
         .buttonStyle(.card)

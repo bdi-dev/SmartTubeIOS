@@ -720,3 +720,63 @@ final class TVMPVTimelineFocusUITests: XCTestCase {
         XCTAssertTrue(back.hasFocus, "Down after scrubbing must return to Skip Back")
     }
 }
+
+// MARK: - TVMPVRelatedShelfUITests
+//
+// With the controls hidden, Down raises the controls only; a second Down from the transport
+// row (controls visible) raises the related shelf. Needs network (related videos).
+
+final class TVMPVRelatedShelfUITests: XCTestCase {
+
+    private var app: XCUIApplication!
+    private let remote = XCUIRemote.shared
+
+    override func setUpWithError() throws {
+        continueAfterFailure = false
+        app = XCUIApplication()
+        // No `--uitesting-keep-controls`: the overlay must auto-hide so the test starts from
+        // the hidden-controls state.
+        app.launchArguments = ["--uitesting-enable-mpv-player", "--uitesting-deeplink-video=jNQXAC9IVRw"]
+        app.launch()
+        XCTAssertTrue(element("surface").waitForExistence(timeout: 60), "mpv surface did not appear")
+        let hidden = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: element("playPauseButton"))
+        wait(for: [hidden], timeout: 60)
+        pause(1)
+    }
+
+    override func tearDownWithError() throws { app = nil }
+
+    private func pause(_ seconds: TimeInterval) { RunLoop.current.run(until: Date().addingTimeInterval(seconds)) }
+
+    private func element(_ name: String) -> XCUIElement {
+        app.descendants(matching: .any).matching(NSPredicate(format: "identifier == 'mpvPlayer.\(name)'")).firstMatch
+    }
+
+    private func attach(_ name: String) {
+        let a = XCTAttachment(screenshot: app.screenshot())
+        a.name = name
+        a.lifetime = .keepAlways
+        add(a)
+    }
+
+    func testDownOnceShowsControlsNotShelf() {
+        remote.press(.down)
+        pause(1)
+        attach("related-down-once")
+        XCTAssertTrue(element("playPauseButton").waitForExistence(timeout: 3), "first Down must raise the controls")
+        XCTAssertFalse(element("relatedShelf").exists, "first Down must not open the related shelf")
+    }
+
+    func testDownTwiceOpensShelf() {
+        remote.press(.down)
+        pause(1)
+        let playPause = element("playPauseButton")
+        XCTAssertTrue(playPause.waitForExistence(timeout: 3), "first Down must raise the controls")
+        let focused = expectation(for: NSPredicate(format: "hasFocus == true"), evaluatedWith: playPause)
+        wait(for: [focused], timeout: 3)
+        remote.press(.down)
+        pause(1.5)
+        attach("related-down-twice")
+        XCTAssertTrue(element("relatedShelf").waitForExistence(timeout: 3), "second Down from the transport row must open the shelf")
+    }
+}
