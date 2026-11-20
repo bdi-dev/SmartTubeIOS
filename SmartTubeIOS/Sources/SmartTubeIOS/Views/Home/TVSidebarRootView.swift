@@ -116,9 +116,11 @@ struct TVSidebarRootView: View {
         // Back does, so correct the landing row once, right after focus arrives.
         .onChange(of: focusedItem) { old, new in
             guard old == nil, let new else { return }
-            let fromContent = focusCameFromContent
             focusCameFromContent = false
-            if fromContent, new != selection { focusedItem = selection }
+            // Whenever focus enters the sidebar, land on the selected row. This also covers launch
+            // with a signed-in account, where the content has nothing focusable yet and the
+            // engine puts focus on whichever sidebar row it likes (Search).
+            if new != selection { focusedItem = selection }
         }
         .environment(searchVM)
         .environment(\.tvPlayerPresented, $playerPresented)
