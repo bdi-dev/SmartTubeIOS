@@ -292,6 +292,9 @@ private struct TVSidebarRowStyle: ButtonStyle {
             .background(
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .fill(isFocused ? Color.white.opacity(0.92) : (isSelected ? Color.primary.opacity(0.16) : Color.clear))
+                    // The white platter sits on a near-white material in Light mode and loses its
+                    // edge; a soft shadow separates it there (and is barely visible in Dark).
+                    .shadow(color: .black.opacity(isFocused ? 0.25 : 0), radius: 10, y: 4)
             )
             .animation(.easeOut(duration: 0.15), value: isFocused)
     }
