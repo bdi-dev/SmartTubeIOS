@@ -16,3 +16,4 @@ with new evidence. Each ADR is ≤ 40 lines and uses `template.md`'s MADR-minima
 | [0009](0009-docs-live-with-code.md) | Non-secret docs live in the public repo, with code | accepted |
 | [0010](0010-innertubekit-extractor-target.md) | The stream extractor lives in its own package target, `InnerTubeKit` | proposed |
 | [0011](0011-opt-in-mpv-engine-on-tvos.md) | mpv is an opt-in second player engine on tvOS, not a replacement for AVPlayer | proposed |
+| [0012](0012-personal-downloads.md) | Downloads are re-enabled for personal sideloaded builds only | accepted |
