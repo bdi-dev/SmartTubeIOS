@@ -138,9 +138,7 @@ private struct DownloadedVideoRow: View {
 
     private var durationDescription: String {
         guard entry.duration > 0 else { return "" }
-        let mins = Int(entry.duration) / 60
-        let secs = Int(entry.duration) % 60
-        return String(format: "%d:%02d", mins, secs)
+        return formatDuration(entry.duration)
     }
 
     @ViewBuilder private var statusView: some View {
