@@ -48,6 +48,8 @@ public struct RootView: View {
         .preferredColorScheme(store.settings.themeName.colorScheme)
         #if !os(tvOS)
         .onChange(of: cardDownloadService.state) { _, newState in
+            // PlayerView shows (and resets) the alert itself while it is on screen.
+            guard !cardDownloadService.playerOwnsCompletionAlert else { return }
             switch newState {
             case .done:
                 cardDownloadAlertItem = DownloadAlertItem(

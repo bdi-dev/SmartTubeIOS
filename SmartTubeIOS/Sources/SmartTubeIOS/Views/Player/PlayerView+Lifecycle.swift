@@ -873,6 +873,8 @@ extension PlayerView {
                 break
             }
         }
+        .onAppear { downloadService.playerOwnsCompletionAlert = true }
+        .onDisappear { downloadService.playerOwnsCompletionAlert = false }
         .alert(item: $downloadAlertItem) { item in
             Alert(title: Text(item.title), message: Text(item.message), dismissButton: .default(Text("OK")))
         }

@@ -49,6 +49,11 @@ public final class VideoDownloadService {
     /// are momentary results the UI resets via `reset()` after showing an alert.
     public private(set) var state: DownloadState = .idle
 
+    /// `true` while an AVPlayer `PlayerView` is on screen and is showing the completion
+    /// alert itself (with the video's title). `RootView` skips its own alert then, so a
+    /// finished download never produces two alerts.
+    public var playerOwnsCompletionAlert = false
+
     // MARK: - Private
 
     @ObservationIgnored private let store: DownloadStore
