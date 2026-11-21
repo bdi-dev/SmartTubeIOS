@@ -506,6 +506,12 @@ extension PlaybackViewModel {
                                 self.seek(to: pos)
                             }
                             self.loadAudioTracks(from: item)
+                            // Show the real resolution (smaller side, as YouTube labels it), so server
+                            // streams and downloads report their quality like any other source.
+                            let size = item.presentationSize
+                            if size.width > 0, size.height > 0 {
+                                self.qualityManager.pendingQualityLabel = "\(Int(min(size.width, size.height)))p"
+                            }
                             self.isLoading = false
                         case .failed:
                             playerLog.error("❌ local-file AVPlayerItem failed: \(String(describing: item.error))")
