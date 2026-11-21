@@ -11,7 +11,7 @@ import XCTest
 //     Search → long-press a card → "Download".
 //
 // Both end in the same flow: a "Download Complete" alert, then the video appears as a row in
-// Library › Downloads (`downloads.videoRow.<id>`).
+// the Downloads tab (`downloads.videoRow.<id>`).
 //
 // Requirements: network access (downloads real YouTube CDN content). Tests skip gracefully when
 // the network or environment is unavailable. Files go to app storage only — no Photos access.
@@ -60,16 +60,13 @@ final class VideoDownloadUITests: XCTestCase {
         if ok.waitForExistence(timeout: 3) { ok.tap() }
     }
 
-    /// Opens Library › Downloads and asserts the downloaded video is listed as a finished row.
+    /// Opens the Downloads tab and asserts the downloaded video is listed as a finished row.
     private func assertListedInDownloads() throws {
-        UITestHelpers.tapTab(named: "Library", in: app)
-        let picker = app.segmentedControls["library.sectionPicker"]
-        XCTAssertTrue(picker.waitForExistence(timeout: 5), "library.sectionPicker should appear")
-        picker.buttons["Downloads"].tap()
+        UITestHelpers.tapTab(named: "Downloads", in: app)
 
         XCTAssertTrue(
             anyDownloadRow.waitForExistence(timeout: 10),
-            "A completed download must be listed in Library › Downloads")
+            "A completed download must be listed in the Downloads tab")
         XCTAssertFalse(
             app.otherElements["downloads.emptyState"].exists,
             "Empty state must not show once a download is listed")
@@ -135,8 +132,7 @@ final class VideoDownloadUITests: XCTestCase {
             try captureAndSkip("Search field not found", in: app)
         }
         searchField.tap()
-        searchField.typeText("MKBHD")
-        app.keyboards.buttons["search"].firstMatch.tap()
+        searchField.typeText("MKBHD\n")  // "\n" submits; avoids tapping the keyboard's Search key
 
         guard let card = UITestHelpers.waitForVideoCards(in: app, timeout: 30) else {
             try captureAndSkip("No search results — network unavailable", in: app)

@@ -2,12 +2,12 @@ import XCTest
 
 // MARK: - DownloadsPlaybackUITests
 //
-// Verifies the Downloads section appears in the Library picker and that
+// Verifies Downloads is its own tab and that
 // the empty state is shown when no videos have been downloaded.
 //
 // A full playback test (tap row → player opens) requires an actual download,
 // which is performed by VideoDownloadUITests. The test here validates the
-// screen structure only, exercising the new DownloadsView and LibrarySection.downloads.
+// screen structure only, exercising DownloadsView.
 //
 // Launch args: --uitesting
 
@@ -29,61 +29,25 @@ final class DownloadsPlaybackUITests: XCTestCase {
 
     // MARK: - Tests
 
-    /// Downloads segment appears in the Library section picker.
-    func testDownloadsSegmentExistsInLibrary() throws {
-        UITestHelpers.tapTab(named: "Library", in: app)
-        let picker = app.segmentedControls["library.sectionPicker"]
-        guard picker.waitForExistence(timeout: 5) else {
-            try captureAndSkip("library.sectionPicker did not appear", in: app)
-        }
+    /// Downloads is its own tab in the tab bar.
+    func testDownloadsTabExists() throws {
         XCTAssertTrue(
-            picker.buttons["Downloads"].exists,
-            "'Downloads' segment must be present in the library picker"
+            app.tabBars.buttons["Downloads"].waitForExistence(timeout: 5),
+            "'Downloads' must be present in the tab bar"
         )
     }
 
-    /// Tapping Downloads shows the empty state or a list without crashing.
-    func testDownloadsSectionDoesNotCrash() throws {
-        UITestHelpers.tapTab(named: "Library", in: app)
-        let picker = app.segmentedControls["library.sectionPicker"]
-        guard picker.waitForExistence(timeout: 5) else {
-            try captureAndSkip("library.sectionPicker did not appear", in: app)
-        }
-        let downloadsButton = picker.buttons["Downloads"]
-        guard downloadsButton.waitForExistence(timeout: 3) else {
-            try captureAndSkip("Downloads segment not found in library picker", in: app)
-        }
-        downloadsButton.tap()
-        Thread.sleep(forTimeInterval: 1)
-        XCTAssertEqual(
-            app.state, .runningForeground,
-            "App should still be running after opening Downloads in Library"
-        )
-    }
-
-    /// Empty state is shown when no videos are downloaded.
-    func testDownloadsShowsEmptyStateWhenNoDownloads() throws {
-        UITestHelpers.tapTab(named: "Library", in: app)
-        let picker = app.segmentedControls["library.sectionPicker"]
-        guard picker.waitForExistence(timeout: 5) else {
-            try captureAndSkip("library.sectionPicker did not appear", in: app)
-        }
-        let downloadsButton = picker.buttons["Downloads"]
-        guard downloadsButton.waitForExistence(timeout: 3) else {
-            try captureAndSkip("Downloads segment not found", in: app)
-        }
-        downloadsButton.tap()
-        Thread.sleep(forTimeInterval: 1.5)
-
-        // In a clean test environment there are no downloads; expect either the
-        // empty state label or a populated list (if a previous test left downloads).
-        let emptyState = app.otherElements["downloads.emptyState"]
-        let videoRow = app.cells.matching(NSPredicate(format: "identifier BEGINSWITH 'downloads.videoRow.'")).firstMatch
-        let eitherExists = emptyState.waitForExistence(timeout: 3) || videoRow.waitForExistence(timeout: 1)
+    /// Opening the Downloads tab shows the empty state or a list without crashing.
+    func testDownloadsTabDoesNotCrash() throws {
+        UITestHelpers.tapTab(named: "Downloads", in: app)
         XCTAssertTrue(
-            eitherExists,
-            "Downloads section must show either an empty state or a video list"
+            app.otherElements["downloads.emptyState"].waitForExistence(timeout: 5)
+                || app.descendants(matching: .any)
+                    .matching(NSPredicate(format: "identifier BEGINSWITH 'downloads.videoRow.'"))
+                    .firstMatch.waitForExistence(timeout: 2),
+            "Downloads tab must show either an empty state or a video list"
         )
+        XCTAssertEqual(app.state, .runningForeground)
     }
 
     // MARK: - Helpers

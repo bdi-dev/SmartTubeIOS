@@ -32,15 +32,6 @@ public struct LibraryView: View {
         case history = "History"
         case playlists = "Playlists"
         case rss = "RSS Feeds"
-        case downloads = "Downloads"
-
-        #if os(tvOS)
-        // Downloads saves to Photos library — not supported on tvOS, and compiled out of
-        // App Store builds (guideline 5.2.3). Exclude the chip by hiding it from allCases.
-        static var allCases: [LibrarySection] {
-            [.subscriptions, .history, .playlists, .rss]
-        }
-        #endif
 
         var id: String { rawValue }
         var browseSectionType: BrowseSection.SectionType {
@@ -49,7 +40,6 @@ public struct LibraryView: View {
             case .history: return .history
             case .playlists: return .playlists
             case .rss: return .history  // not used — RSS renders its own view
-            case .downloads: return .history  // not used — DownloadsView renders its own content
             }
         }
     }
@@ -133,8 +123,6 @@ public struct LibraryView: View {
             Group {
                 if selectedSection == .rss {
                     RSSFeedsView()
-                } else if selectedSection == .downloads {
-                    downloadsContent
                 } else if !auth.isSignedIn && selectedSection != .subscriptions {
                     segmentSignInPrompt
                 } else if browseVM.isLoading && browseVM.videoGroups.flatMap({ $0.videos }).isEmpty {
@@ -204,7 +192,7 @@ public struct LibraryView: View {
             }
         }
         .onChange(of: selectedSection) { _, section in
-            guard section != .rss && section != .downloads else { return }
+            guard section != .rss else { return }
             browseVM.select(
                 section: BrowseSection(
                     id: section.id,
@@ -235,7 +223,7 @@ public struct LibraryView: View {
             #endif
         }
         .onAppear {
-            guard selectedSection != .rss && selectedSection != .downloads else { return }
+            guard selectedSection != .rss else { return }
             browseVM.select(
                 section: BrowseSection(
                     id: selectedSection.id,
@@ -334,12 +322,5 @@ public struct LibraryView: View {
             .buttonStyle(.borderedProminent)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
-extension LibraryView {
-    @ViewBuilder fileprivate var downloadsContent: some View {
-        DownloadsView()
-            .environment(DownloadStore.shared)
     }
 }
