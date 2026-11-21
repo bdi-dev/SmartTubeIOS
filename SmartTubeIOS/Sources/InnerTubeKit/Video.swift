@@ -57,10 +57,13 @@ public struct Video: Identifiable, Hashable, Codable, Sendable {
         public let userAgent: String
         /// Resolution of the file, e.g. "720p", shown as the player's current quality.
         public let qualityLabel: String
-        public init(url: URL, userAgent: String, qualityLabel: String = "") {
+        /// Extra request headers (a bearer token when the stream comes from the yt-dlp server).
+        public let headers: [String: String]
+        public init(url: URL, userAgent: String, qualityLabel: String = "", headers: [String: String] = [:]) {
             self.url = url
             self.userAgent = userAgent
             self.qualityLabel = qualityLabel
+            self.headers = headers
         }
     }
     public var directStream: DirectStream? = nil

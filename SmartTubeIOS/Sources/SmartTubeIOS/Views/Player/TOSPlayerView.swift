@@ -788,6 +788,14 @@ public struct TOSPlayerView: View {
                 Label("Play 360p Stream", systemImage: "play.square.stack")
             }
             .accessibilityIdentifier("tosPlayer.moreMenu.playStreamRow")
+            if YtDlpServerConfig.current().isConfigured {
+                Button {
+                    playerRouter.playFromServer(video: video)
+                } label: {
+                    Label("Play from yt-dlp Server", systemImage: "server.rack")
+                }
+                .accessibilityIdentifier("tosPlayer.moreMenu.playServerRow")
+            }
             #endif
 
             Button {

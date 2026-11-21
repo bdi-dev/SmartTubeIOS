@@ -55,13 +55,47 @@ public final class PlayerRouter {
         playerState.play(video: video)
     }
 
-    /// `openInStreamPlayer` for button actions: shows a toast when no plain stream exists.
+    /// `openInStreamPlayer` for button actions. When no plain stream exists and the yt-dlp server
+    /// is set up, falls back to it; otherwise shows a toast.
     public func playStream(video: Video, api: InnerTubeAPI) {
         Task { [self] in
             if await openInStreamPlayer(video: video, api: api) { return }
+            if YtDlpServerConfig.current().isConfigured {
+                await playFromServer(video: video)
+                return
+            }
             ToastCenter.shared.show(
                 title: String(localized: "Stream unavailable", bundle: .module),
                 message: String(localized: "No plain video file was available for this video.", bundle: .module))
+        }
+    }
+
+    /// Plays `video` from the user's yt-dlp server: the server fetches it, then the file streams to
+    /// the custom player. Works for videos the app cannot decrypt; waits while the server prepares it.
+    public func playFromServer(video: Video) {
+        Task { [self] in await playFromServer(video: video) }
+    }
+
+    private func playFromServer(video: Video) async {
+        let config = YtDlpServerConfig.current()
+        guard config.isConfigured else {
+            ToastCenter.shared.show(
+                title: String(localized: "yt-dlp server not set up", bundle: .module),
+                message: String(localized: "Add its address and token in Settings > Downloads.", bundle: .module))
+            return
+        }
+        ToastCenter.shared.show(
+            title: String(localized: "Preparing on your server", bundle: .module),
+            message: String(localized: "Playback starts when the server has the video.", bundle: .module))
+        do {
+            var direct = video
+            direct.directStream = try await YtDlpServerStream.resolve(videoId: video.id, config: config)
+            if tosState.presentation != .hidden { tosState.stop() }
+            playerState.play(video: direct)
+        } catch {
+            ToastCenter.shared.show(
+                title: String(localized: "Server could not play this", bundle: .module),
+                message: error.localizedDescription)
         }
     }
 

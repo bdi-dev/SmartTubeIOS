@@ -316,3 +316,31 @@ struct URLSessionYtDlpServerClientTests {
         } catch { #expect(error.localizedDescription.contains("HTTP 500")) }
     }
 }
+
+@Suite("YtDlpServerStream")
+struct YtDlpServerStreamTests {
+    @Test("returns the server file with the bearer header once the job is ready")
+    func streamsServerFile() async throws {
+        let client = FakeClient([.init(status: "queued"), .init(status: "ready", fileSize: 10)])
+        let config = YtDlpServerConfig(mode: .fallback, baseURL: base, token: "tok")
+        let stream = try await YtDlpServerStream.resolve(
+            videoId: "dQw4w9WgXcQ", config: config, client: client, pollInterval: 1, sleep: { _ in })
+        #expect(stream.url == base.appendingPathComponent("v1/files/dQw4w9WgXcQ.mp4"))
+        #expect(stream.headers["Authorization"] == "Bearer tok")
+        #expect(client.created == ["dQw4w9WgXcQ"])
+    }
+
+    @Test("a failed job and a missing token both throw")
+    func failures() async {
+        let failing = FakeClient([.init(status: "failed", error: "boom")])
+        let config = YtDlpServerConfig(mode: .always, baseURL: base, token: "tok")
+        await #expect(throws: DownloadFetchError.self) {
+            try await YtDlpServerStream.resolve(
+                videoId: "dQw4w9WgXcQ", config: config, client: failing, pollInterval: 1, sleep: { _ in })
+        }
+        let noToken = YtDlpServerConfig(mode: .always, baseURL: base, token: nil)
+        await #expect(throws: DownloadFetchError.self) {
+            try await YtDlpServerStream.resolve(videoId: "dQw4w9WgXcQ", config: noToken)
+        }
+    }
+}

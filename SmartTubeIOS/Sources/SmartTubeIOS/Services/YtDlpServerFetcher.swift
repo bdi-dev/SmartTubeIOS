@@ -170,6 +170,46 @@ public final class YtDlpServerFetcher: DownloadFetching {
     }
 }
 
+// MARK: - Streaming from the server
+
+/// Asks the companion server for a video and returns a stream the player can open directly (the
+/// finished file on the server, with the bearer token). Used by "Play from yt-dlp Server" and as
+/// the last resort when no plain stream is available. The server fetches and merges the video
+/// itself, so this is the route to full quality for videos the app cannot decrypt.
+public enum YtDlpServerStream {
+    /// Waits for the server to finish the job, which can take a while for long videos.
+    public static func resolve(
+        videoId: String, config: YtDlpServerConfig,
+        client: (any YtDlpServerClient)? = nil,
+        pollInterval: TimeInterval = YtDlpServerFetcher.pollInterval,
+        sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { try await Task.sleep(for: .seconds($0)) }
+    ) async throws -> Video.DirectStream {
+        guard let baseURL = config.baseURL, let token = config.token, !token.isEmpty else {
+            throw DownloadFetchError(message: "The yt-dlp server is not set up")
+        }
+        let fetcher = YtDlpServerFetcher(
+            client: client ?? URLSessionYtDlpServerClient(baseURL: baseURL, token: token),
+            baseURL: baseURL, token: token, assembler: UnsupportedAssembler(), pollInterval: pollInterval,
+            sleep: sleep)
+        let plan = try await fetcher.resolve(video: Video(id: videoId, title: "", channelTitle: ""))
+        guard let part = plan.parts.first else {
+            throw DownloadFetchError(message: "The yt-dlp server returned no file")
+        }
+        return Video.DirectStream(
+            url: part.url, userAgent: part.userAgent, qualityLabel: "yt-dlp", headers: part.headers)
+    }
+
+    /// Never assembles: streaming plays the server's finished file as is.
+    private struct UnsupportedAssembler: DownloadFetching {
+        func resolve(video: Video) async throws -> DownloadPlan {
+            throw DownloadFetchError(message: "Not supported")
+        }
+        func assemble(videoId: String, stagedParts: [DownloadPart: URL]) async throws -> URL {
+            throw DownloadFetchError(message: "Not supported")
+        }
+    }
+}
+
 // MARK: - ConfigurableDownloadFetcher
 
 /// Chooses, per download, between the app's own extractor and the companion server according to

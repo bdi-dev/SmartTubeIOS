@@ -638,6 +638,21 @@ extension PlayerView {
         .foregroundStyle(.primary)
         .accessibilityIdentifier("player.moreMenu.playStreamButton")
         Divider()
+        if YtDlpServerConfig.current().isConfigured {
+            Button {
+                showMoreMenu = false
+                playerRouter.playFromServer(video: vm.playerInfo?.video ?? video)
+            } label: {
+                Label("Play from yt-dlp Server", systemImage: "server.rack")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding()
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.primary)
+            .accessibilityIdentifier("player.moreMenu.playServerButton")
+            Divider()
+        }
         #endif
     }
 

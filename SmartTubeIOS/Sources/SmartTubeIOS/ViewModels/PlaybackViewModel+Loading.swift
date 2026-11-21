@@ -470,7 +470,10 @@ extension PlaybackViewModel {
                 if let directStream {
                     let asset = AVURLAsset(
                         url: directStream.url,
-                        options: ["AVURLAssetHTTPHeaderFieldsKey": ["User-Agent": directStream.userAgent]])
+                        options: [
+                            "AVURLAssetHTTPHeaderFieldsKey":
+                                directStream.headers.merging(["User-Agent": directStream.userAgent]) { _, ua in ua }
+                        ])
                     item = AVPlayerItem(asset: asset)
                 } else {
                     item = AVPlayerItem(url: localURL)

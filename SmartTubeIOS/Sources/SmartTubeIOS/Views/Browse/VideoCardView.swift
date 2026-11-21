@@ -290,6 +290,14 @@ public struct VideoCardView: View {
                 Label("Play 360p Stream", systemImage: "play.square.stack")
             }
             .accessibilityIdentifier("video.card.playStreamButton")
+            if YtDlpServerConfig.current().isConfigured {
+                Button {
+                    playerRouter.playFromServer(video: video)
+                } label: {
+                    Label("Play from yt-dlp Server", systemImage: "server.rack")
+                }
+                .accessibilityIdentifier("video.card.playServerButton")
+            }
             #endif
             if authService.isSignedIn {
                 Button(role: .destructive) {
