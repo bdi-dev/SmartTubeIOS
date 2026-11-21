@@ -137,10 +137,20 @@ public final class DownloadStore {
         downloadsDirectory.appendingPathComponent("manifest.json")
     }
 
+    /// `Documents/SmartTubeDownloads`. Nonisolated so the background `URLSession` delegate can
+    /// compute the staging directory without hopping to the main actor.
+    public nonisolated static var defaultDirectory: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("SmartTubeDownloads")
+    }
+
     private convenience init() {
-        self.init(
-            directory: FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-                .appendingPathComponent("SmartTubeDownloads"))
+        self.init(directory: Self.defaultDirectory)
+    }
+
+    /// Where finished background transfers and per-video job records wait for post-processing.
+    public var staging: DownloadStaging {
+        DownloadStaging(root: downloadsDirectory.appendingPathComponent("Staging", isDirectory: true))
     }
 
     /// Creates a store rooted at `directory` (tests inject a temp directory).
@@ -239,14 +249,17 @@ public final class DownloadStore {
         if let entry = entry(for: videoId) {
             try? FileManager.default.removeItem(at: fileURL(for: entry))
         }
+        staging.remove(videoId: videoId)
         entries.removeAll { $0.videoId == videoId }
         saveManifest()
     }
 
     // MARK: - Reconcile
 
-    /// Repairs state left over from a previous launch: missing files, interrupted downloads,
-    /// stray `.partial` files.
+    /// Repairs state left over from a previous launch: missing files and stray `.partial` files.
+    /// Queued / downloading / merging entries are deliberately left alone: with a background
+    /// `URLSession` they may still be running or fully staged. `VideoDownloadService` decides
+    /// their fate after asking the session for its live tasks.
     func reconcile() {
         let fm = FileManager.default
         var changed = false
@@ -259,12 +272,7 @@ public final class DownloadStore {
                     entries[i].errorMessage = "File missing"
                     changed = true
                 }
-            case .queued, .downloading, .merging:
-                entries[i].status = .failed
-                entries[i].errorMessage = "Interrupted"
-                entries[i].progress = 0
-                changed = true
-            case .failed:
+            case .queued, .downloading, .merging, .failed:
                 break
             }
         }
