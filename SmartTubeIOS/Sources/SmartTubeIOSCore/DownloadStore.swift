@@ -145,6 +145,9 @@ public final class DownloadStore {
     }
 
     private convenience init() {
+        if ProcessInfo.processInfo.arguments.contains(DownloadTuning.resetLaunchArgument) {
+            try? FileManager.default.removeItem(at: Self.defaultDirectory)
+        }
         self.init(directory: Self.defaultDirectory)
     }
 
