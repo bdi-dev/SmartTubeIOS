@@ -18,7 +18,7 @@ final class DownloadsPlaybackUITests: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false
         app = XCUIApplication()
-        app.launchArguments += ["--uitesting"]
+        app.launchArguments += ["--uitesting", "--uitesting-reset-downloads"]
         app.launch()
     }
 
@@ -41,7 +41,7 @@ final class DownloadsPlaybackUITests: XCTestCase {
     func testDownloadsTabDoesNotCrash() throws {
         UITestHelpers.tapTab(named: "Downloads", in: app)
         XCTAssertTrue(
-            app.otherElements["downloads.emptyState"].waitForExistence(timeout: 5)
+            app.descendants(matching: .any)["downloads.emptyState"].waitForExistence(timeout: 5)
                 || app.descendants(matching: .any)
                     .matching(NSPredicate(format: "identifier BEGINSWITH 'downloads.videoRow.'"))
                     .firstMatch.waitForExistence(timeout: 2),

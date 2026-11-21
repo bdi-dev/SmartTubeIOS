@@ -36,7 +36,8 @@ final class VideoDownloadUITests: XCTestCase {
         app = XCUIApplication()
         // The web (IFrame) player is the default; its menu has a Download item too, but these
         // tests exercise the AVPlayer pipeline so playback of the saved file can be asserted.
-        app.launchArguments = ["--uitesting", "--uitesting-disable-tos-player-on-ios"] + extraArgs
+        app.launchArguments =
+            ["--uitesting", "--uitesting-disable-tos-player-on-ios", "--uitesting-reset-downloads"] + extraArgs
         app.launch()
     }
 
@@ -68,7 +69,7 @@ final class VideoDownloadUITests: XCTestCase {
             anyDownloadRow.waitForExistence(timeout: 10),
             "A completed download must be listed in the Downloads tab")
         XCTAssertFalse(
-            app.otherElements["downloads.emptyState"].exists,
+            app.descendants(matching: .any)["downloads.emptyState"].exists,
             "Empty state must not show once a download is listed")
     }
 
