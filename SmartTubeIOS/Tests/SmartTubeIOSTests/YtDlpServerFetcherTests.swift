@@ -344,3 +344,12 @@ struct YtDlpServerStreamTests {
         }
     }
 }
+
+@Suite("URLSessionYtDlpServerClient token")
+struct YtDlpServerClientTokenTests {
+    @Test("a pasted token with surrounding whitespace is trimmed")
+    func trimsToken() {
+        let client = URLSessionYtDlpServerClient(baseURL: base, token: "  abc123\n")
+        #expect(client.token == "abc123")
+    }
+}

@@ -46,7 +46,8 @@ public struct URLSessionYtDlpServerClient: YtDlpServerClient {
 
     public init(baseURL: URL, token: String, session: URLSession = .shared) {
         self.baseURL = baseURL
-        self.token = token
+        // A pasted token often carries a trailing space or newline, which the server rejects.
+        self.token = token.trimmingCharacters(in: .whitespacesAndNewlines)
         self.session = session
     }
 
