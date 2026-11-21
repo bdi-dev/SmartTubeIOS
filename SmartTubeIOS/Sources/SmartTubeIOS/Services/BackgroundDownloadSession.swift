@@ -30,6 +30,10 @@ public protocol BackgroundTransferring: Sendable {
     func liveTransfers() async -> Set<DownloadTransferID>
     /// Cancels every transfer belonging to `videoId`.
     func cancel(videoId: String) async
+    /// Suspends / resumes every running transfer of `videoId` (user pause). The system keeps the
+    /// partial data, so a resumed transfer continues where it stopped.
+    func pause(videoId: String) async
+    func resume(videoId: String) async
     /// Invokes the completion handler stashed by `handleEventsForBackgroundURLSession`.
     @MainActor func backgroundEventsDidFinish()
 }
@@ -96,6 +100,20 @@ public final class BackgroundDownloadSession: BackgroundTransferring, @unchecked
             if DownloadTransferID(taskDescription: task.taskDescription)?.videoId == videoId {
                 task.cancel()
             }
+        }
+    }
+
+    public func pause(videoId: String) async {
+        for task in await session.allTasks
+        where DownloadTransferID(taskDescription: task.taskDescription)?.videoId == videoId {
+            task.suspend()
+        }
+    }
+
+    public func resume(videoId: String) async {
+        for task in await session.allTasks
+        where DownloadTransferID(taskDescription: task.taskDescription)?.videoId == videoId {
+            task.resume()
         }
     }
 

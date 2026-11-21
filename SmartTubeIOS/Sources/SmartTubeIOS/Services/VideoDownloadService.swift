@@ -162,6 +162,23 @@ public final class VideoDownloadService {
         fail(videoId: videoId, message: Self.cancelledMessage)
     }
 
+    /// Pauses a running download (suspends its transfers; progress is kept). No-op unless the
+    /// entry is `.downloading` with transfers started.
+    public func pause(videoId: String) {
+        guard let entry = store.entry(for: videoId), entry.status == .downloading, !entry.isPaused,
+            jobs[videoId] != nil
+        else { return }
+        store.setPaused(videoId: videoId, true)
+        Task { await transfer.pause(videoId: videoId) }
+    }
+
+    /// Resumes a paused download.
+    public func resume(videoId: String) {
+        guard let entry = store.entry(for: videoId), entry.status == .downloading, entry.isPaused else { return }
+        store.setPaused(videoId: videoId, false)
+        Task { await transfer.resume(videoId: videoId) }
+    }
+
     /// Re-queues a failed download. The stream URLs are resolved again, so an expired link is fine.
     public func retry(videoId: String) {
         guard let entry = store.entry(for: videoId), entry.status == .failed else { return }

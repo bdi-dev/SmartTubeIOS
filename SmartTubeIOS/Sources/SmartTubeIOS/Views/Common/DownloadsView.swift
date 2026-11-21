@@ -45,9 +45,12 @@ struct DownloadsView: View {
             } else {
                 List {
                     ForEach(downloadStore.entries.sorted { $0.downloadedAt > $1.downloadedAt }) { entry in
-                        DownloadedVideoRow(entry: entry) {
-                            downloadService.retry(videoId: entry.videoId)
-                        }
+                        DownloadedVideoRow(
+                            entry: entry,
+                            onRetry: { downloadService.retry(videoId: entry.videoId) },
+                            onPause: { downloadService.pause(videoId: entry.videoId) },
+                            onResume: { downloadService.resume(videoId: entry.videoId) }
+                        )
                         .contentShape(Rectangle())
                         .onTapGesture {
                             if let video = downloadStore.video(for: entry) {
@@ -141,6 +144,8 @@ struct DownloadsView: View {
 private struct DownloadedVideoRow: View {
     let entry: DownloadedVideo
     let onRetry: () -> Void
+    var onPause: () -> Void = {}
+    var onResume: () -> Void = {}
     @Environment(DownloadStore.self) private var downloadStore
 
     private static let dateFormatter: DateFormatter = {
@@ -173,8 +178,25 @@ private struct DownloadedVideoRow: View {
             Text("Queued").font(.caption).foregroundStyle(.secondary)
                 .accessibilityIdentifier("downloads.status.\(entry.videoId)")
         case .downloading:
-            ProgressView(value: entry.progress)
-                .accessibilityIdentifier("downloads.progress.\(entry.videoId)")
+            HStack(spacing: 8) {
+                ProgressView(value: entry.progress)
+                    .tint(entry.isPaused ? .secondary : .accentColor)
+                    .accessibilityIdentifier("downloads.progress.\(entry.videoId)")
+                if entry.isPaused {
+                    Text("Paused").font(.caption).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("downloads.status.\(entry.videoId)")
+                }
+                Button {
+                    entry.isPaused ? onResume() : onPause()
+                } label: {
+                    Image(systemName: entry.isPaused ? "play.fill" : "pause.fill")
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.bordered)
+                .accessibilityLabel(entry.isPaused ? "Resume download" : "Pause download")
+                .accessibilityIdentifier(
+                    entry.isPaused ? "downloads.resume.\(entry.videoId)" : "downloads.pause.\(entry.videoId)")
+            }
         case .merging:
             Text("Merging…").font(.caption).foregroundStyle(.secondary)
                 .accessibilityIdentifier("downloads.status.\(entry.videoId)")
@@ -218,6 +240,8 @@ private struct DownloadedVideoRow: View {
                         Label("Audio", systemImage: AppSymbol.audioDownload)
                             .font(.caption2)
                             .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .fixedSize()
                             .accessibilityIdentifier("downloads.audioBadge.\(entry.videoId)")
                     }
                     if !durationDescription.isEmpty {

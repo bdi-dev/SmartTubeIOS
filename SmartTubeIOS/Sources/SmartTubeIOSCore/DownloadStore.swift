@@ -30,6 +30,8 @@ public struct DownloadedVideo: Codable, Sendable, Identifiable {
     public var progress: Double
     /// `true` for a download that saved only the audio track (smaller; plays as audio).
     public let isAudioOnly: Bool
+    /// `true` while a running download is suspended by the user. Only meaningful for `.downloading`.
+    public var isPaused: Bool
 
     public init(
         videoId: String,
@@ -42,7 +44,8 @@ public struct DownloadedVideo: Codable, Sendable, Identifiable {
         status: Status = .queued,
         errorMessage: String? = nil,
         progress: Double = 0,
-        isAudioOnly: Bool = false
+        isAudioOnly: Bool = false,
+        isPaused: Bool = false
     ) {
         self.videoId = videoId
         self.title = title
@@ -55,11 +58,12 @@ public struct DownloadedVideo: Codable, Sendable, Identifiable {
         self.errorMessage = errorMessage
         self.progress = progress
         self.isAudioOnly = isAudioOnly
+        self.isPaused = isPaused
     }
 
     private enum CodingKeys: String, CodingKey {
         case videoId, title, channelTitle, thumbnailURL, duration, fileName, downloadedAt
-        case status, errorMessage, progress, isAudioOnly
+        case status, errorMessage, progress, isAudioOnly, isPaused
         /// Legacy manifests stored an absolute `fileURL` and had no `status`.
         case fileURL
     }
@@ -75,6 +79,7 @@ public struct DownloadedVideo: Codable, Sendable, Identifiable {
         errorMessage = try c.decodeIfPresent(String.self, forKey: .errorMessage)
         progress = try c.decodeIfPresent(Double.self, forKey: .progress) ?? 0
         isAudioOnly = try c.decodeIfPresent(Bool.self, forKey: .isAudioOnly) ?? false
+        isPaused = try c.decodeIfPresent(Bool.self, forKey: .isPaused) ?? false
         if let name = try c.decodeIfPresent(String.self, forKey: .fileName) {
             fileName = name
             status = try c.decodeIfPresent(Status.self, forKey: .status) ?? .complete
@@ -99,6 +104,7 @@ public struct DownloadedVideo: Codable, Sendable, Identifiable {
         try c.encodeIfPresent(errorMessage, forKey: .errorMessage)
         try c.encode(progress, forKey: .progress)
         try c.encode(isAudioOnly, forKey: .isAudioOnly)
+        try c.encode(isPaused, forKey: .isPaused)
     }
 
     /// Synthesises a `Video` with `localFileURL` resolved against `directory`, suitable for
@@ -216,10 +222,20 @@ public final class DownloadStore {
         entries[i].progress = min(max(progress, 0), 1)
     }
 
+    /// Marks a running download as paused/resumed by the user and persists it.
+    public func setPaused(videoId: String, _ paused: Bool) {
+        guard let i = entries.firstIndex(where: { $0.videoId == videoId }),
+            entries[i].status == .downloading
+        else { return }
+        entries[i].isPaused = paused
+        saveManifest()
+    }
+
     public func setStatus(videoId: String, status: DownloadedVideo.Status, error: String? = nil) {
         guard let i = entries.firstIndex(where: { $0.videoId == videoId }) else { return }
         entries[i].status = status
         entries[i].errorMessage = error
+        if status != .downloading { entries[i].isPaused = false }
         if status == .complete { entries[i].progress = 1 }
         saveManifest()
     }

@@ -84,6 +84,8 @@ private final class FakeTransfer: BackgroundTransferring, @unchecked Sendable {
         var live: Set<DownloadTransferID> = []
         var cancelled: [String] = []
         var eventsFinished = 0
+        var paused: [String] = []
+        var resumed: [String] = []
     }
     private let state = OSAllocatedUnfairLock(initialState: State())
 
@@ -114,6 +116,11 @@ private final class FakeTransfer: BackgroundTransferring, @unchecked Sendable {
             $0.live = $0.live.filter { $0.videoId != videoId }
         }
     }
+
+    func pause(videoId: String) async { state.withLock { $0.paused.append(videoId) } }
+    func resume(videoId: String) async { state.withLock { $0.resumed.append(videoId) } }
+    var paused: [String] { state.withLock { $0.paused } }
+    var resumed: [String] { state.withLock { $0.resumed } }
 
     @MainActor func backgroundEventsDidFinish() { state.withLock { $0.eventsFinished += 1 } }
 
@@ -558,5 +565,61 @@ struct VideoDownloadServiceAudioOnlyTests {
         #expect(entry.isAudioOnly == false)
         let round = try JSONDecoder().decode(DownloadedVideo.self, from: JSONEncoder().encode(entry))
         #expect(round.isAudioOnly == false)
+    }
+}
+
+// MARK: - Pause / resume
+
+@Suite("VideoDownloadService pause/resume")
+@MainActor
+struct VideoDownloadServicePauseTests {
+
+    @Test("Pause suspends the transfers and flags the entry; resume undoes it")
+    func pauseAndResume() async {
+        let h = makeHarness()
+        h.service.enqueue(video: makeVideo("p1"))
+        #expect(await waitUntil { h.transfer.startedVideoIds == ["p1"] })
+
+        h.service.pause(videoId: "p1")
+        #expect(h.store.entry(for: "p1")?.isPaused == true)
+        #expect(await waitUntil { h.transfer.paused == ["p1"] })
+        #expect(h.store.entry(for: "p1")?.status == .downloading)
+
+        h.service.resume(videoId: "p1")
+        #expect(h.store.entry(for: "p1")?.isPaused == false)
+        #expect(await waitUntil { h.transfer.resumed == ["p1"] })
+    }
+
+    @Test("Pause is ignored for a queued or unknown download")
+    func pauseIgnoredWhenNotRunning() async {
+        let h = makeHarness(maxConcurrent: 1)
+        h.service.enqueue(video: makeVideo("run"))
+        h.service.enqueue(video: makeVideo("wait"))
+        #expect(await waitUntil { h.transfer.startedVideoIds == ["run"] })
+        h.service.pause(videoId: "wait")
+        h.service.pause(videoId: "nope")
+        await Task.yield()
+        #expect(h.store.entry(for: "wait")?.isPaused == false)
+        #expect(h.transfer.paused.isEmpty)
+    }
+
+    @Test("Finishing or failing clears the paused flag")
+    func statusChangeClearsPaused() async throws {
+        let h = makeHarness()
+        h.service.enqueue(video: makeVideo("p2"))
+        #expect(await waitUntil { h.transfer.startedVideoIds == ["p2"] })
+        h.service.pause(videoId: "p2")
+        h.store.setStatus(videoId: "p2", status: .failed, error: "x")
+        #expect(h.store.entry(for: "p2")?.isPaused == false)
+    }
+
+    @Test("Old manifests without isPaused decode as not paused")
+    func legacyDecode() throws {
+        let json = """
+            {"videoId":"x","title":"T","channelTitle":"C","duration":1,"fileName":"x.mp4",
+             "downloadedAt":1000,"status":"downloading","progress":0.4}
+            """
+        let entry = try JSONDecoder().decode(DownloadedVideo.self, from: Data(json.utf8))
+        #expect(entry.isPaused == false)
     }
 }
