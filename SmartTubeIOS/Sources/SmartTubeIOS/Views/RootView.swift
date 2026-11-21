@@ -16,9 +16,7 @@ public struct RootView: View {
     @Environment(\.innerTubeAPI) private var api
     /// Shared download service — observed here so the completion alert is shown
     /// at a stable level unaffected by context menu dismiss animations on cards.
-    #if ENABLE_DOWNLOADS
     @Environment(VideoDownloadService.self) private var cardDownloadService
-    #endif
     @State private var cardDownloadAlertItem: DownloadAlertItem?
     @State private var isLandscapeLayout = false
 
@@ -30,9 +28,7 @@ public struct RootView: View {
         // @Observable tracking engine registers this view as a subscriber.
         // Without this, onChange(of: cardDownloadService.state) may not fire
         // when the state changes on an environment-injected @Observable object.
-        #if ENABLE_DOWNLOADS
         let _ = cardDownloadService.state
-        #endif
         Group {
             #if os(tvOS)
             if store.settings.useSidebarHome {
@@ -50,7 +46,7 @@ public struct RootView: View {
         .onGeometryChange(for: Bool.self) { $0.size.width > $0.size.height } action: { isLandscapeLayout = $0 }
         .tint(store.settings.accentColor.color)
         .preferredColorScheme(store.settings.themeName.colorScheme)
-        #if !os(tvOS) && ENABLE_DOWNLOADS
+        #if !os(tvOS)
         .onChange(of: cardDownloadService.state) { _, newState in
             switch newState {
             case .done:

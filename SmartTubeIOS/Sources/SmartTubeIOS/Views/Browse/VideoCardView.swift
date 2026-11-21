@@ -48,9 +48,7 @@ public struct VideoCardView: View {
     /// Index into `video.thumbnailFallbackURLs`. -1 = use primary `thumbnailURL`.
     @State private var thumbnailFallbackIndex: Int = -1
     #if !os(tvOS)
-    #if ENABLE_DOWNLOADS
     @Environment(VideoDownloadService.self) private var downloadService
-    #endif
     #endif
     #if os(tvOS)
     @FocusState private var isFocused: Bool
@@ -315,7 +313,7 @@ public struct VideoCardView: View {
                     }
                 }
             }
-            #if !os(tvOS) && ENABLE_DOWNLOADS
+            #if !os(tvOS)
             Button {
                 downloadService.download(video: video)
             } label: {

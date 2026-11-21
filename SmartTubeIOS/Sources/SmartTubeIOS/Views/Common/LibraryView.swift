@@ -34,7 +34,7 @@ public struct LibraryView: View {
         case rss = "RSS Feeds"
         case downloads = "Downloads"
 
-        #if os(tvOS) || !ENABLE_DOWNLOADS
+        #if os(tvOS)
         // Downloads saves to Photos library — not supported on tvOS, and compiled out of
         // App Store builds (guideline 5.2.3). Exclude the chip by hiding it from allCases.
         static var allCases: [LibrarySection] {
@@ -339,9 +339,7 @@ public struct LibraryView: View {
 
 extension LibraryView {
     @ViewBuilder fileprivate var downloadsContent: some View {
-        #if ENABLE_DOWNLOADS
         DownloadsView()
             .environment(DownloadStore.shared)
-        #endif
     }
 }

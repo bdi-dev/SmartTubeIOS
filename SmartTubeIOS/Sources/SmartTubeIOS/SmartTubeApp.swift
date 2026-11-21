@@ -11,9 +11,7 @@ struct SmartTubeApp: App {
     /// the download task is not orphaned when a card view leaves the hierarchy
     /// (e.g. after a context menu dismiss). PlayerView creates its own isolated
     /// service instance and is unaffected.
-    #if ENABLE_DOWNLOADS
     @State private var cardDownloadService: VideoDownloadService
-    #endif
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
@@ -23,9 +21,7 @@ struct SmartTubeApp: App {
         _browseViewModel = State(initialValue: BrowseViewModel(api: api))
         let settingsStore = SettingsStore()
         _settingsStore = State(initialValue: settingsStore)
-        #if ENABLE_DOWNLOADS
         _cardDownloadService = State(initialValue: VideoDownloadService(api: api))
-        #endif
 
         #if os(iOS)
         // #107: UIKit reads UIDesignRequiresCompatibility once at process launch to
@@ -55,12 +51,8 @@ struct SmartTubeApp: App {
                 .environment(browseViewModel)
                 .environment(settingsStore)
                 .environment(\.innerTubeAPI, api)
-                #if ENABLE_DOWNLOADS
                 .environment(cardDownloadService)
-                #endif
-                #if ENABLE_DOWNLOADS
                 .environment(DownloadStore.shared)
-                #endif
                 // Token and SAPISID are published together, in order, from the current values:
                 // clearing the token also clears the shared SAPISID, so two independent tasks
                 // could leave a signed-in session without its SAPISID depending on scheduling.

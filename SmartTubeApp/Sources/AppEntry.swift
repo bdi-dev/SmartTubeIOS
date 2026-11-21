@@ -32,9 +32,7 @@ struct AppEntry: App {
     @State private var channelDeepLinkConsumed = false
     @State private var queueInjectConsumed = false
     /// Shared download service for video cards. See SmartTubeIOS/RootView.swift.
-    #if ENABLE_DOWNLOADS
     @State private var cardDownloadService: VideoDownloadService
-    #endif
     @Environment(\.scenePhase) private var scenePhase
     #if os(iOS)
     @State private var watchLaterAlert: WatchLaterAlert?
@@ -89,9 +87,7 @@ struct AppEntry: App {
                 settingsStore: settingsStore
             ))
         #endif
-        #if ENABLE_DOWNLOADS
         _cardDownloadService = State(initialValue: VideoDownloadService(api: api))
-        #endif
         #if os(iOS)
         // Task #353: keep the Home Screen widget's snapshot in step with the Home page.
         HomeWidgetPublisher.attach(to: browseViewModel)
@@ -150,9 +146,7 @@ struct AppEntry: App {
                 .environment(browseViewModel)
                 .environment(settingsStore)
                 .environment(\.innerTubeAPI, api)
-                #if ENABLE_DOWNLOADS
                 .environment(cardDownloadService)
-                #endif
                 .onChange(of: authService.accessToken, initial: true) { _, newToken in
                     Task {
                         await api.setAuthToken(newToken)
@@ -207,9 +201,7 @@ struct AppEntry: App {
                 .environment(browseViewModel)
                 .environment(settingsStore)
                 .environment(\.innerTubeAPI, api)
-                #if ENABLE_DOWNLOADS
                 .environment(cardDownloadService)
-                #endif
                 .onChange(of: authService.accessToken, initial: true) { _, newToken in
                     Task {
                         await api.setAuthToken(newToken)
@@ -240,18 +232,14 @@ struct AppEntry: App {
                     .environment(settingsStore)
                     .environment(\.innerTubeAPI, api)
                     .environment(playerStateStore)
-                    #if ENABLE_DOWNLOADS
                     .environment(cardDownloadService)
-                    #endif
             } else {
                 RootView()
                     .environment(authService)
                     .environment(browseViewModel)
                     .environment(settingsStore)
                     .environment(\.innerTubeAPI, api)
-                    #if ENABLE_DOWNLOADS
                     .environment(cardDownloadService)
-                    #endif
                     #if os(iOS)
                 .environment(playerStateStore)
                 .environment(tosPlayerStateStore)

@@ -589,7 +589,7 @@ extension PlayerView {
     }
 
     @ViewBuilder private var moreMenuDownloadRow: some View {
-        #if !os(tvOS) && ENABLE_DOWNLOADS
+        #if !os(tvOS)
         Button {
             showMoreMenu = false
             downloadService.download(video: vm.playerInfo?.video ?? video)

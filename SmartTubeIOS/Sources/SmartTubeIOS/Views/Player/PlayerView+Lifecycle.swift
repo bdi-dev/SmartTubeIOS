@@ -853,7 +853,7 @@ extension PlayerView {
         .navigationDestination(item: $channelDestination) { dest in
             ChannelView(channelId: dest.channelId)
         }
-        #if !os(tvOS) && ENABLE_DOWNLOADS
+        #if !os(tvOS)
         .onChange(of: downloadService.state) { _, newState in
             switch newState {
             case .done:

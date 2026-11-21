@@ -42,9 +42,7 @@ public struct PlayerView: View {
     @State var isTransitioning = false
     @State var channelDestination: ChannelDestination?
     #if !os(tvOS)
-    #if ENABLE_DOWNLOADS
     @State var downloadService: VideoDownloadService
-    #endif
     @State var downloadAlertItem: DownloadAlertItem?
     #endif
     #if os(iOS)
@@ -118,9 +116,7 @@ public struct PlayerView: View {
         _vm = State(initialValue: PlaybackViewModel(api: api))
         #endif
         #if !os(tvOS)
-        #if ENABLE_DOWNLOADS
         _downloadService = State(initialValue: VideoDownloadService(api: api))
-        #endif
         #endif
     }
 
