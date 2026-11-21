@@ -18,6 +18,8 @@ public struct PlayerView: View {
     public let video: Video
     #if os(iOS)
     @Environment(PlayerStateStore.self) var playerState
+    @Environment(PlayerRouter.self) var playerRouter
+    @Environment(\.innerTubeAPI) var innerTubeAPI
     var vm: PlaybackViewModel { playerState.vm }
     #else
     @State var vm: PlaybackViewModel

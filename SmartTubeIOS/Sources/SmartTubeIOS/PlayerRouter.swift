@@ -41,6 +41,13 @@ public final class PlayerRouter {
         playerState.play(video: video)
     }
 
+    /// Plays `video` in the YouTube web player regardless of the setting. Used from the native
+    /// player's error screen when a video can't be played natively (for example an encrypted stream).
+    public func openInWebPlayer(video: Video, api: InnerTubeAPI) {
+        if playerState.presentation != .hidden { playerState.stop() }
+        tosState.play(video: video, api: api, incognito: false)
+    }
+
     /// Open `video` in whichever player pipeline is currently preferred.
     /// `incognito` (#94) skips recording this video to watch history / resume
     /// position — currently only honored by the TOS pipeline (the iOS default);
