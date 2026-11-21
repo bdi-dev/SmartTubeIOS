@@ -464,15 +464,31 @@ extension PlaybackViewModel {
             {
                 let item = AVPlayerItem(url: localURL)
                 item.audioTimePitchAlgorithm = .spectral
+                // Resume where the user left off (position saved by WatchtimeTracker, works offline).
+                let savedLocalPosition = await VideoStateStore.shared.state(for: video.id)?.position
                 // Wire up observers BEFORE replaceCurrentItem (task-80 rule).
                 itemObserverTask?.cancel()
                 itemObserverTask = Task { [weak self] in
+                    var restoredSavedPosition = false
                     for await status in item.statusStream {
                         guard let self, !Task.isCancelled else { return }
                         switch status {
                         case .readyToPlay:
                             playerLog.notice(
                                 "[benchmark] readyToPlay — local-file — videoId=\(video.id) title=\(video.title)")
+                            // The streamed path sets duration here; without it the scrubber is dead and
+                            // WatchtimeTracker (which needs duration > 0) never saves a position.
+                            let itemDur = item.duration.seconds
+                            if itemDur.isFinite, itemDur > 0 {
+                                self.duration = itemDur
+                            } else if let known = video.duration, known > 0 {
+                                self.duration = known
+                            }
+                            if let pos = savedLocalPosition, pos > 5, !restoredSavedPosition {
+                                restoredSavedPosition = true
+                                playerLog.notice("Restoring local position \(Int(pos))s for \(video.id)")
+                                self.seek(to: pos)
+                            }
                             self.loadAudioTracks(from: item)
                             self.isLoading = false
                         case .failed:
