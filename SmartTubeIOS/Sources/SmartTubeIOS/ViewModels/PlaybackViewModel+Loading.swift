@@ -511,6 +511,16 @@ extension PlaybackViewModel {
                             let size = item.presentationSize
                             if size.width > 0, size.height > 0 {
                                 self.qualityManager.pendingQualityLabel = "\(Int(min(size.width, size.height)))p"
+                            } else {
+                                // presentationSize can still be zero at readyToPlay for streamed files;
+                                // the video track knows its size as soon as the header is read.
+                                Task { [weak self] in
+                                    guard let track = try? await item.asset.loadTracks(withMediaType: .video).first,
+                                        let natural = try? await track.load(.naturalSize), natural.width > 0
+                                    else { return }
+                                    self?.qualityManager.pendingQualityLabel =
+                                        "\(Int(min(abs(natural.width), abs(natural.height))))p"
+                                }
                             }
                             self.isLoading = false
                         case .failed:
