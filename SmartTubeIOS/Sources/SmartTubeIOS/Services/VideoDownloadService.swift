@@ -120,7 +120,7 @@ public final class VideoDownloadService {
 
     /// Queues `video` for download. Ignored if it is already queued, downloading, merging or
     /// complete. A previously failed entry is re-queued.
-    public func enqueue(video: Video) {
+    public func enqueue(video: Video, audioOnly: Bool = false) {
         if let existing = store.entry(for: video.id) {
             switch existing.status {
             case .queued, .downloading, .merging, .complete: return
@@ -136,7 +136,8 @@ public final class VideoDownloadService {
                 duration: video.duration ?? 0,
                 fileName: store.fileName(for: video.id),
                 downloadedAt: Date(),
-                status: .queued))
+                status: .queued,
+                isAudioOnly: audioOnly))
         pending.append(video)
         if !state.isActive { state = .fetching }
         pump()
@@ -170,7 +171,8 @@ public final class VideoDownloadService {
                 title: entry.title,
                 channelTitle: entry.channelTitle,
                 thumbnailURL: entry.thumbnailURL,
-                duration: entry.duration))
+                duration: entry.duration),
+            audioOnly: entry.isAudioOnly)
     }
 
     /// Clears a momentary `.done` / `.failed` result after the UI has shown it.
@@ -267,7 +269,8 @@ public final class VideoDownloadService {
         // A cancel followed by a quick retry must not have the old cancel hit the new transfers.
         await cancelling[id]?.value
         do {
-            let plan = try await fetcher.resolve(video: video)
+            let audioOnly = store.entry(for: id)?.isAudioOnly ?? false
+            let plan = try await fetcher.resolve(video: video, audioOnly: audioOnly)
             try Task.checkCancellation()
             let job = DownloadJob(videoId: id, plan: plan)
             try staging.save(job)
@@ -384,7 +387,8 @@ public final class VideoDownloadService {
         var stagedParts: [DownloadPart: URL] = [:]
         for part in job.expectedParts { stagedParts[part] = staging.stagedFile(videoId: id, part: part) }
         do {
-            let tempURL = try await fetcher.assemble(videoId: id, stagedParts: stagedParts)
+            let audioOnly = store.entry(for: id)?.isAudioOnly ?? false
+            let tempURL = try await fetcher.assemble(videoId: id, stagedParts: stagedParts, audioOnly: audioOnly)
             guard !Task.isCancelled, store.entry(for: id)?.status == .merging else {
                 try? FileManager.default.removeItem(at: tempURL)
                 return

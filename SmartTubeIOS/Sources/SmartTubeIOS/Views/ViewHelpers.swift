@@ -166,6 +166,7 @@ enum AppSymbol {
     static let copyDoc = "doc.on.doc"
     static let download = "arrow.down.to.line"
     static let downloaded = "arrow.down.circle.fill"
+    static let audioDownload = "music.note"
     static let watchLater = "clock.badge"
     static let audioOnly = "waveform.circle"
 

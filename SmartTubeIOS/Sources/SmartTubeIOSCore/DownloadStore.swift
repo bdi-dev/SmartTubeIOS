@@ -28,6 +28,8 @@ public struct DownloadedVideo: Codable, Sendable, Identifiable {
     public var errorMessage: String?
     /// 0…1. Only meaningful while `status == .downloading`.
     public var progress: Double
+    /// `true` for a download that saved only the audio track (smaller; plays as audio).
+    public let isAudioOnly: Bool
 
     public init(
         videoId: String,
@@ -39,7 +41,8 @@ public struct DownloadedVideo: Codable, Sendable, Identifiable {
         downloadedAt: Date,
         status: Status = .queued,
         errorMessage: String? = nil,
-        progress: Double = 0
+        progress: Double = 0,
+        isAudioOnly: Bool = false
     ) {
         self.videoId = videoId
         self.title = title
@@ -51,11 +54,12 @@ public struct DownloadedVideo: Codable, Sendable, Identifiable {
         self.status = status
         self.errorMessage = errorMessage
         self.progress = progress
+        self.isAudioOnly = isAudioOnly
     }
 
     private enum CodingKeys: String, CodingKey {
         case videoId, title, channelTitle, thumbnailURL, duration, fileName, downloadedAt
-        case status, errorMessage, progress
+        case status, errorMessage, progress, isAudioOnly
         /// Legacy manifests stored an absolute `fileURL` and had no `status`.
         case fileURL
     }
@@ -70,6 +74,7 @@ public struct DownloadedVideo: Codable, Sendable, Identifiable {
         downloadedAt = try c.decode(Date.self, forKey: .downloadedAt)
         errorMessage = try c.decodeIfPresent(String.self, forKey: .errorMessage)
         progress = try c.decodeIfPresent(Double.self, forKey: .progress) ?? 0
+        isAudioOnly = try c.decodeIfPresent(Bool.self, forKey: .isAudioOnly) ?? false
         if let name = try c.decodeIfPresent(String.self, forKey: .fileName) {
             fileName = name
             status = try c.decodeIfPresent(Status.self, forKey: .status) ?? .complete
@@ -93,6 +98,7 @@ public struct DownloadedVideo: Codable, Sendable, Identifiable {
         try c.encode(status, forKey: .status)
         try c.encodeIfPresent(errorMessage, forKey: .errorMessage)
         try c.encode(progress, forKey: .progress)
+        try c.encode(isAudioOnly, forKey: .isAudioOnly)
     }
 
     /// Synthesises a `Video` with `localFileURL` resolved against `directory`, suitable for

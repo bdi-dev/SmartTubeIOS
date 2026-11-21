@@ -16,6 +16,14 @@ enum DownloadActionLabel {
         }
     }
 
+    static func audioTitle(for status: DownloadedVideo.Status?) -> LocalizedStringKey {
+        switch status {
+        case .complete: return "Downloaded"
+        case .queued, .downloading, .merging: return "Downloading…"
+        case .failed, nil: return "Download Audio Only"
+        }
+    }
+
     static func isEnabled(for status: DownloadedVideo.Status?) -> Bool {
         switch status {
         case .complete, .queued, .downloading, .merging: return false
@@ -34,6 +42,22 @@ struct DownloadActionButton: View {
             downloadService.enqueue(video: video)
         } label: {
             Label(DownloadActionLabel.title(for: status), systemImage: AppSymbol.download)
+        }
+        .disabled(!DownloadActionLabel.isEnabled(for: status))
+    }
+}
+
+/// Menu item that downloads only the audio track (smaller; for music and talks).
+struct DownloadAudioActionButton: View {
+    let video: Video
+    @Environment(VideoDownloadService.self) private var downloadService
+
+    var body: some View {
+        let status = downloadService.status(for: video.id)
+        Button {
+            downloadService.enqueue(video: video, audioOnly: true)
+        } label: {
+            Label(DownloadActionLabel.audioTitle(for: status), systemImage: AppSymbol.audioDownload)
         }
         .disabled(!DownloadActionLabel.isEnabled(for: status))
     }

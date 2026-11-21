@@ -15,9 +15,27 @@ public protocol DownloadFetching: Sendable {
     /// Resolves signed CDN URLs (and the User-Agent each needs). Throws if nothing is downloadable.
     func resolve(video: Video) async throws -> DownloadPlan
 
+    /// Like `resolve(video:)`, but when `audioOnly` is true the plan carries only the audio track.
+    /// Fetchers that cannot do audio-only inherit a default that ignores the flag.
+    func resolve(video: Video, audioOnly: Bool) async throws -> DownloadPlan
+
     /// Merges (video + audio) and passthrough-remuxes the staged files into a finished MP4 temp
     /// file owned by the caller. Must not delete the staged inputs; honours task cancellation.
     func assemble(videoId: String, stagedParts: [DownloadPart: URL]) async throws -> URL
+
+    /// Like `assemble(videoId:stagedParts:)`; when `audioOnly` is true and the staged file also
+    /// carries video (a muxed fallback), only the audio track is kept.
+    func assemble(videoId: String, stagedParts: [DownloadPart: URL], audioOnly: Bool) async throws -> URL
+}
+
+extension DownloadFetching {
+    public func resolve(video: Video, audioOnly: Bool) async throws -> DownloadPlan {
+        try await resolve(video: video)
+    }
+
+    public func assemble(videoId: String, stagedParts: [DownloadPart: URL], audioOnly: Bool) async throws -> URL {
+        try await assemble(videoId: videoId, stagedParts: stagedParts)
+    }
 }
 
 struct DownloadFetchError: LocalizedError {
@@ -63,6 +81,42 @@ public final class InnerTubeDownloadFetcher: DownloadFetching {
 
     // MARK: Stream resolution
 
+    public func resolve(video: Video, audioOnly: Bool) async throws -> DownloadPlan {
+        guard audioOnly else { return try await resolve(video: video) }
+        for (label, clientUA, fetch) in clientCandidates(videoId: video.id) {
+            if Task.isCancelled { throw CancellationError() }
+            guard let info = try? await fetch(), let audioURL = info.bestAdaptiveAudioURL else {
+                fetchLog.notice("[download] \(label) — no audio stream, trying next")
+                continue
+            }
+            guard await Self.probe(url: audioURL, userAgent: clientUA) else {
+                fetchLog.notice("[download] \(label) — CDN rejected audio URL, trying next")
+                continue
+            }
+            fetchLog.notice("[download] \(label) ✅ audio URL accepted")
+            return DownloadPlan(parts: [.init(part: .audio, url: audioURL, userAgent: clientUA)])
+        }
+        // No direct audio-only URL (YouTube often serves only muxed streams with usable URLs):
+        // fetch the muxed file and keep just its audio track at assembly time.
+        fetchLog.notice("[download] no audio-only stream, falling back to muxed + extract")
+        if let plan = await resolveMuxed(videoId: video.id) { return plan }
+        throw DownloadFetchError(message: "No audio stream found for this video")
+    }
+
+    /// Clients to try, in order: Web first (its CDN URLs download reliably), then Android.
+    private func clientCandidates(videoId: String) -> [(String, String, () async throws -> PlayerInfo)] {
+        [
+            (
+                "Web", InnerTubeClients.Web.userAgent,
+                { [api] in try await api.fetchPlayerInfoForDownload(videoId: videoId) }
+            ),
+            (
+                "Android", InnerTubeClients.Android.userAgent,
+                { [api] in try await api.fetchPlayerInfoAndroid(videoId: videoId) }
+            ),
+        ]
+    }
+
     public func resolve(video: Video) async throws -> DownloadPlan {
         let videoId = video.id
         if let plan = await resolveMuxed(videoId: videoId) { return plan }
@@ -89,17 +143,7 @@ public final class InnerTubeDownloadFetcher: DownloadFetching {
     /// Note: TVHTML5-signed CDN URLs always return 403 when fetched without session cookies,
     /// so the Android client (c=ANDROID URLs) is used as the reliable fallback.
     private func resolveMuxed(videoId: String) async -> DownloadPlan? {
-        let candidates: [(String, String, () async throws -> PlayerInfo)] = [
-            (
-                "Web", InnerTubeClients.Web.userAgent,
-                { [api] in try await api.fetchPlayerInfoForDownload(videoId: videoId) }
-            ),
-            (
-                "Android", InnerTubeClients.Android.userAgent,
-                { [api] in try await api.fetchPlayerInfoAndroid(videoId: videoId) }
-            ),
-        ]
-        for (label, clientUA, fetch) in candidates {
+        for (label, clientUA, fetch) in clientCandidates(videoId: videoId) {
             if Task.isCancelled { return nil }
             guard let info = try? await fetch() else {
                 fetchLog.notice("[download] \(label) client failed or UNPLAYABLE, trying next")
@@ -131,11 +175,56 @@ public final class InnerTubeDownloadFetcher: DownloadFetching {
 
     // MARK: Assemble
 
+    public func assemble(videoId: String, stagedParts: [DownloadPart: URL], audioOnly: Bool) async throws -> URL {
+        guard audioOnly, let muxed = stagedParts[.muxed] else {
+            return try await assemble(videoId: videoId, stagedParts: stagedParts)
+        }
+        let input = try Self.linkAsMP4(muxed, videoId: videoId, suffix: "mux-audio-in")
+        defer { try? FileManager.default.removeItem(at: input) }
+        return try await extractAudio(inputURL: input, videoId: videoId)
+    }
+
+    /// Writes an audio-only MP4 containing just the audio track of `inputURL`, without re-encoding.
+    private func extractAudio(inputURL: URL, videoId: String) async throws -> URL {
+        let asset = AVURLAsset(url: inputURL)
+        guard let audioTrack = try await asset.loadTracks(withMediaType: .audio).first else {
+            throw DownloadFetchError(message: "This video has no audio track")
+        }
+        let duration = try await asset.load(.duration)
+        let composition = AVMutableComposition()
+        guard
+            let track = composition.addMutableTrack(
+                withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
+        else { throw URLError(.cannotCreateFile) }
+        try track.insertTimeRange(CMTimeRange(start: .zero, duration: duration), of: audioTrack, at: .zero)
+
+        let destURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(videoId)-audio-extract.mp4")
+        try? FileManager.default.removeItem(at: destURL)
+        guard let session = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetPassthrough) else {
+            throw URLError(.badServerResponse)
+        }
+        session.outputURL = destURL
+        session.outputFileType = .mp4
+        session.shouldOptimizeForNetworkUse = true
+        await session.export()
+        if let error = session.error {
+            try? FileManager.default.removeItem(at: destURL)
+            throw error
+        }
+        return destURL
+    }
+
     public func assemble(videoId: String, stagedParts: [DownloadPart: URL]) async throws -> URL {
         if let muxed = stagedParts[.muxed] {
             let input = try Self.linkAsMP4(muxed, videoId: videoId, suffix: "muxed-in")
             defer { try? FileManager.default.removeItem(at: input) }
             return try await passthroughRemux(inputURL: input, videoId: videoId, suffix: "muxed")
+        }
+        if stagedParts.count == 1, let audio = stagedParts[.audio] {
+            // Audio-only download: the staged file is an AAC-in-MP4 track.
+            let input = try Self.linkAsMP4(audio, videoId: videoId, suffix: "audio-in")
+            defer { try? FileManager.default.removeItem(at: input) }
+            return try await passthroughRemux(inputURL: input, videoId: videoId, suffix: "audio")
         }
         guard let video = stagedParts[.video], let audio = stagedParts[.audio] else {
             throw DownloadFetchError(message: "Downloaded files are incomplete")

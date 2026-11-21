@@ -312,6 +312,7 @@ public struct VideoCardView: View {
             }
             #if !os(tvOS)
             DownloadActionButton(video: video)
+            DownloadAudioActionButton(video: video)
             #endif
         } preview: {
             Group {

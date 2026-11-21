@@ -21,6 +21,7 @@ private final class FakeFetcher: DownloadFetching, @unchecked Sendable {
         var plans: [String: Plan] = [:]
         var resolved: [String] = []
         var assembled: [(videoId: String, parts: Set<DownloadPart>)] = []
+        var audioOnlyRequests: [String: Bool] = [:]
     }
 
     private let state = OSAllocatedUnfairLock(initialState: State())
@@ -28,6 +29,16 @@ private final class FakeFetcher: DownloadFetching, @unchecked Sendable {
     func setPlan(_ plan: Plan, for id: String) { state.withLock { $0.plans[id] = plan } }
     var resolved: [String] { state.withLock { $0.resolved } }
     var assembled: [(videoId: String, parts: Set<DownloadPart>)] { state.withLock { $0.assembled } }
+
+    var audioOnlyRequests: [String: Bool] { state.withLock { $0.audioOnlyRequests } }
+
+    func resolve(video: Video, audioOnly: Bool) async throws -> DownloadPlan {
+        state.withLock { $0.audioOnlyRequests[video.id] = audioOnly }
+        guard audioOnly else { return try await resolve(video: video) }
+        return DownloadPlan(parts: [
+            .init(part: .audio, url: URL(string: "https://cdn.test/\(video.id)/audio")!, userAgent: "UA/1")
+        ])
+    }
 
     func resolve(video: Video) async throws -> DownloadPlan {
         let plan = state.withLock { s -> Plan in
@@ -39,7 +50,9 @@ private final class FakeFetcher: DownloadFetching, @unchecked Sendable {
         case .resolveFails(let message):
             throw DownloadFetchError(message: message)
         case .muxed:
-            return DownloadPlan(parts: [.init(part: .muxed, url: URL(string: "https://cdn.test/\(video.id)")!, userAgent: ua)])
+            return DownloadPlan(parts: [
+                .init(part: .muxed, url: URL(string: "https://cdn.test/\(video.id)")!, userAgent: ua)
+            ])
         case .adaptive:
             return DownloadPlan(parts: [
                 .init(part: .video, url: URL(string: "https://cdn.test/\(video.id)/v")!, userAgent: ua),
@@ -409,7 +422,9 @@ struct VideoDownloadServiceRecoveryTests {
 
     private func plan(_ id: String, _ parts: [DownloadPart]) -> DownloadPlan {
         DownloadPlan(
-            parts: parts.map { .init(part: $0, url: URL(string: "https://cdn.test/\(id)/\($0.rawValue)")!, userAgent: "UA") })
+            parts: parts.map {
+                .init(part: $0, url: URL(string: "https://cdn.test/\(id)/\($0.rawValue)")!, userAgent: "UA")
+            })
     }
 
     @Test("A live task keeps the entry downloading and its completion finishes the download")
@@ -488,5 +503,60 @@ struct VideoDownloadServiceRecoveryTests {
         await h.service.recoverInterruptedDownloads()  // must be a no-op now
         #expect(h.store.entry(for: "early")?.status == .complete)
         #expect(h.fetcher.assembled.count == 1)
+    }
+}
+
+// MARK: - Audio-only
+
+@Suite("VideoDownloadService audio-only")
+@MainActor
+struct VideoDownloadServiceAudioOnlyTests {
+
+    @Test("An audio-only enqueue resolves audio-only, transfers one audio part and completes")
+    func audioOnlyCompletes() async throws {
+        let h = makeHarness()
+        h.service.enqueue(video: makeVideo("aud1"), audioOnly: true)
+        #expect(await waitUntil { h.transfer.startedVideoIds == ["aud1"] })
+        #expect(h.fetcher.audioOnlyRequests["aud1"] == true)
+        #expect(h.transfer.started.map(\.part) == [.audio])
+        #expect(h.store.entry(for: "aud1")?.isAudioOnly == true)
+
+        try h.transfer.finish(tid("aud1", .audio))
+        #expect(await waitUntil { h.store.entry(for: "aud1")?.status == .complete })
+        #expect(h.fetcher.assembled.first?.parts == [.audio])
+    }
+
+    @Test("A normal enqueue is not audio-only")
+    func normalIsNotAudioOnly() async {
+        let h = makeHarness()
+        h.service.enqueue(video: makeVideo("vid1"))
+        #expect(await waitUntil { h.transfer.startedVideoIds == ["vid1"] })
+        #expect(h.fetcher.audioOnlyRequests["vid1"] == false)
+        #expect(h.store.entry(for: "vid1")?.isAudioOnly == false)
+    }
+
+    @Test("Retrying a failed audio-only download stays audio-only")
+    func retryKeepsAudioOnly() async {
+        let h = makeHarness()
+        h.service.enqueue(video: makeVideo("aud2"), audioOnly: true)
+        #expect(await waitUntil { h.transfer.startedVideoIds == ["aud2"] })
+        h.transfer.emit(.failed(tid("aud2", .audio), message: "expired"))
+        #expect(await waitUntil { h.store.entry(for: "aud2")?.status == .failed })
+
+        h.service.retry(videoId: "aud2")
+        #expect(await waitUntil { h.store.entry(for: "aud2")?.status == .downloading })
+        #expect(h.store.entry(for: "aud2")?.isAudioOnly == true)
+    }
+
+    @Test("Old manifests without isAudioOnly decode as video downloads")
+    func legacyManifestDecodes() throws {
+        let json = """
+            {"videoId":"x","title":"T","channelTitle":"C","duration":1,"fileName":"x.mp4",
+             "downloadedAt":1000,"status":"complete","progress":1}
+            """
+        let entry = try JSONDecoder().decode(DownloadedVideo.self, from: Data(json.utf8))
+        #expect(entry.isAudioOnly == false)
+        let round = try JSONDecoder().decode(DownloadedVideo.self, from: JSONEncoder().encode(entry))
+        #expect(round.isAudioOnly == false)
     }
 }

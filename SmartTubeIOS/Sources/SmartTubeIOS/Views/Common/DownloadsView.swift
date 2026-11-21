@@ -214,6 +214,12 @@ private struct DownloadedVideoRow: View {
                     .foregroundStyle(.secondary)
                 statusView
                 HStack(spacing: 8) {
+                    if entry.isAudioOnly {
+                        Label("Audio", systemImage: AppSymbol.audioDownload)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .accessibilityIdentifier("downloads.audioBadge.\(entry.videoId)")
+                    }
                     if !durationDescription.isEmpty {
                         Text(durationDescription)
                             .font(.caption2)
