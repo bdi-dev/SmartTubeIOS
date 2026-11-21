@@ -45,7 +45,7 @@ Lower value / not planned: CarPlay audio (needs an Apple-approved entitlement).
 | 3 | Offline awareness | Done: opens on Downloads when offline (if something is saved) and shows a banner. |
 | 4 | Watch position for downloads | Partly: downloaded videos now get a duration (the scrubber was dead) and resume where you left off. Account-side reporting is **not** done: YouTube ignores watch pings without account-bound tracking URLs, which local files never have. |
 | 5 | Files export, friendly names | Done: Share / Save to Files from a download's context menu, named `<title>.mp4/.m4a`. |
-| 6 | Companion server | Phase 0 done: `tools/ytdlp-server/` (stdlib server + tests + README). Phases 1-3 (app fetcher, fallback wiring) not started. |
+| 6 | Companion server | Done through Phase 2: `tools/ytdlp-server/` plus the app side (Settings, server fetcher, Off/Fallback/Always routing). Verified end to end on the simulator against a local server using a fake yt-dlp (byte-identical, playable file). Not verified against real yt-dlp. Phase 3 (delete the server copy after a download, ADR) not done. |
 
 Also done: `scripts/free-account.sh` switches the paid-only iCloud entitlement off without removing it
 ([how-to](../how-to/free-account-build.md)).

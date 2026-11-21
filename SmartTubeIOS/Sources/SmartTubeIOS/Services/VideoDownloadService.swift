@@ -98,7 +98,7 @@ public final class VideoDownloadService {
         autoRecover: Bool = true
     ) {
         self.store = store
-        self.fetcher = fetcher ?? InnerTubeDownloadFetcher(api: api)
+        self.fetcher = fetcher ?? ConfigurableDownloadFetcher(native: InnerTubeDownloadFetcher(api: api))
         self.transfer = transfer ?? BackgroundDownloadSession.shared
         self.workScope = workScope ?? SystemBackgroundWorkScope()
         self.maxConcurrent = max(1, maxConcurrent)
@@ -296,7 +296,8 @@ public final class VideoDownloadService {
             starting[id] = nil
             for part in plan.parts {
                 transfer.start(
-                    DownloadTransferID(videoId: id, part: part.part), url: part.url, userAgent: part.userAgent)
+                    DownloadTransferID(videoId: id, part: part.part), url: part.url, userAgent: part.userAgent,
+                    headers: part.headers)
             }
         } catch is CancellationError {
             // `cancel` already cleaned up.

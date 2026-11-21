@@ -101,7 +101,7 @@ private final class FakeTransfer: BackgroundTransferring, @unchecked Sendable {
 
     func setLive(_ ids: Set<DownloadTransferID>) { state.withLock { $0.live = ids } }
 
-    func start(_ id: DownloadTransferID, url: URL, userAgent: String) {
+    func start(_ id: DownloadTransferID, url: URL, userAgent: String, headers: [String: String]) {
         state.withLock {
             $0.started.append(id)
             $0.live.insert(id)

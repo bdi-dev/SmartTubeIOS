@@ -25,7 +25,7 @@ public protocol BackgroundTransferring: Sendable {
     /// Where `didFinishDownloadingTo` stages finished files.
     var staging: DownloadStaging { get }
     /// Starts (or enqueues) a CDN transfer for `id`.
-    func start(_ id: DownloadTransferID, url: URL, userAgent: String)
+    func start(_ id: DownloadTransferID, url: URL, userAgent: String, headers: [String: String])
     /// Transfers the system still considers unfinished (running or suspended).
     func liveTransfers() async -> Set<DownloadTransferID>
     /// Cancels every transfer belonging to `videoId`.
@@ -82,9 +82,17 @@ public final class BackgroundDownloadSession: BackgroundTransferring, @unchecked
 
     // MARK: BackgroundTransferring
 
-    public func start(_ id: DownloadTransferID, url: URL, userAgent: String) {
+    public func start(_ id: DownloadTransferID, url: URL, userAgent: String, headers: [String: String]) {
         // Headers must be on the request: the User-Agent has to match the client that signed the URL.
-        let request = InnerTubeDownloadFetcher.cdnRequest(for: url, userAgent: userAgent)
+        // Parts with their own headers (the companion server) are plain requests: no CDN `alr` tweak.
+        var request =
+            headers.isEmpty
+            ? InnerTubeDownloadFetcher.cdnRequest(for: url, userAgent: userAgent)
+            : URLRequest(url: url)
+        if !headers.isEmpty {
+            request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+            for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
+        }
         let task = session.downloadTask(with: request)
         task.taskDescription = id.taskDescription
         task.resume()
@@ -158,7 +166,8 @@ public final class BackgroundDownloadSession: BackgroundTransferring, @unchecked
             totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64
         ) {
             guard let id = DownloadTransferID(taskDescription: downloadTask.taskDescription) else { return }
-            let fraction = totalBytesExpectedToWrite > 0 ? Double(totalBytesWritten) / Double(totalBytesExpectedToWrite) : 0
+            let fraction =
+                totalBytesExpectedToWrite > 0 ? Double(totalBytesWritten) / Double(totalBytesExpectedToWrite) : 0
             let shouldForward = lastFraction.withLock { map -> Bool in
                 let previous = map[downloadTask.taskIdentifier] ?? -1
                 guard fraction - previous >= 0.005 else { return false }

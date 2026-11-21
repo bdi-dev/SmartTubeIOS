@@ -173,6 +173,12 @@ public struct AppSettings: Codable {
     /// When `true`, automatic downloads only run on an unmetered connection (not cellular / hotspot).
     public var autoDownloadOnlyOnWiFi: Bool
 
+    // MARK: yt-dlp companion server
+    /// When the app asks the user's own yt-dlp server to fetch a download (see
+    /// docs/features/ytdlp-companion-server.md). The bearer token lives in the Keychain, not here.
+    public var ytDlpMode: YtDlpMode
+    public var ytDlpServerURL: URL?
+
     // MARK: Alerts
     /// When `true`, followed channels are checked periodically and a local notification is shown
     /// for new uploads. Uses local notifications only (no push, no paid capability). Opt-in.
@@ -336,6 +342,8 @@ public struct AppSettings: Codable {
         autoDownloadWatchLater = false
         autoDownloadOnlyOnWiFi = true
         notifyNewUploads = false
+        ytDlpMode = .off
+        ytDlpServerURL = nil
         #if os(macOS)
         useTOSPlayerOnMac = true
         #else
@@ -423,6 +431,8 @@ extension AppSettings {
         case autoDownloadWatchLater
         case autoDownloadOnlyOnWiFi
         case notifyNewUploads
+        case ytDlpMode
+        case ytDlpServerURL
         case useTOSPlayerOnMac
         case useMPVPlayerOnTV
         case useTOSPlayerOnIOS
@@ -502,9 +512,27 @@ extension AppSettings {
         autoDownloadOnlyOnWiFi = c.safeDecode(
             Bool.self, forKey: .autoDownloadOnlyOnWiFi, default: d.autoDownloadOnlyOnWiFi)
         notifyNewUploads = c.safeDecode(Bool.self, forKey: .notifyNewUploads, default: d.notifyNewUploads)
+        ytDlpMode = c.safeDecode(YtDlpMode.self, forKey: .ytDlpMode, default: d.ytDlpMode)
+        ytDlpServerURL = c.safeDecode(URL?.self, forKey: .ytDlpServerURL, default: d.ytDlpServerURL)
         useTOSPlayerOnMac = c.safeDecode(Bool.self, forKey: .useTOSPlayerOnMac, default: d.useTOSPlayerOnMac)
         useMPVPlayerOnTV = c.safeDecode(Bool.self, forKey: .useMPVPlayerOnTV, default: d.useMPVPlayerOnTV)
         useTOSPlayerOnIOS = c.safeDecode(Bool.self, forKey: .useTOSPlayerOnIOS, default: d.useTOSPlayerOnIOS)
         useSidebarHome = c.safeDecode(Bool.self, forKey: .useSidebarHome, default: d.useSidebarHome)
+    }
+}
+
+// MARK: - Persistence helper
+
+extension AppSettings {
+    /// The `UserDefaults` key the settings JSON is stored under.
+    public static let persistenceKey = "smarttube_app_settings"
+
+    /// The settings as last saved by the app (defaults if none or unreadable). Lets code that runs
+    /// outside the SwiftUI environment, such as the download fetcher, see current values.
+    public static func loadPersisted(defaults: UserDefaults = .standard) -> AppSettings {
+        guard let data = defaults.data(forKey: persistenceKey),
+            let decoded = try? JSONDecoder().decode(AppSettings.self, from: data)
+        else { return AppSettings() }
+        return decoded
     }
 }

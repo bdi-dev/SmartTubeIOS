@@ -1,6 +1,6 @@
 # Feature spec — yt-dlp companion server (download fallback)
 
-- **Status:** proposed, not started
+- **Status:** Phases 0-2 built (server, app fetcher, settings, fallback routing); Phase 3 (delete after finalize, ADR) not done
 - **Date:** 2026-11-21
 - **Scope:** personal sideloaded build only (same constraint as [ADR-0012](../adr/0012-personal-downloads.md))
 - **Related:** [ADR-0010](../adr/0010-innertubekit-extractor-target.md) (extractor), [ADR-0012](../adr/0012-personal-downloads.md) (downloads)

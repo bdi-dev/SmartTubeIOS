@@ -42,11 +42,26 @@ public struct DownloadPlan: Codable, Sendable, Equatable {
         public let part: DownloadPart
         public let url: URL
         public let userAgent: String
+        /// Extra request headers (e.g. a bearer token for the yt-dlp companion server). Empty for
+        /// YouTube CDN URLs, which are authorised by the signed URL itself.
+        public let headers: [String: String]
 
-        public init(part: DownloadPart, url: URL, userAgent: String) {
+        public init(part: DownloadPart, url: URL, userAgent: String, headers: [String: String] = [:]) {
             self.part = part
             self.url = url
             self.userAgent = userAgent
+            self.headers = headers
+        }
+
+        private enum CodingKeys: String, CodingKey { case part, url, userAgent, headers }
+
+        /// Tolerant: job records written before `headers` existed decode with no headers.
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            part = try c.decode(DownloadPart.self, forKey: .part)
+            url = try c.decode(URL.self, forKey: .url)
+            userAgent = try c.decode(String.self, forKey: .userAgent)
+            headers = try c.decodeIfPresent([String: String].self, forKey: .headers) ?? [:]
         }
     }
 

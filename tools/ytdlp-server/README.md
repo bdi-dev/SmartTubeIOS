@@ -1,11 +1,15 @@
-# SmartTube yt-dlp companion server (Phase 0)
+# SmartTube yt-dlp companion server
 
 A small, **dependency-free** (Python 3.9+ standard library) HTTP service that runs `yt-dlp` on your
 always-on machine so the app can fetch videos its own extractor cannot. Design and rollout plan:
 [docs/features/ytdlp-companion-server.md](../../docs/features/ytdlp-companion-server.md).
 
-Status: **Phase 0 — the server only.** The app does not call it yet (Phase 1 adds
-`YtDlpServerFetcher` and the Settings entries).
+Status: server (Phase 0) and app side (Phase 1) are built. In the app: Settings > Downloads >
+**yt-dlp server** (Off / Fallback / Always), the server URL, the token (kept in the Keychain) and a
+"Test connection" button that also checks the token. *Fallback* tries the app's own extractor first
+and only asks the server when that fails; *Always* always asks the server. Use an `https://` address
+(Tailscale gives you one); plain `http://` only works for IP addresses such as `127.0.0.1` because of
+App Transport Security.
 
 ## Set up
 

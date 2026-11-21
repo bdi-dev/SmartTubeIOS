@@ -33,7 +33,7 @@ public final class SettingsStore {
         set { settings.useTOSPlayerOnIOS = newValue }
     }
 
-    private static let key = "smarttube_app_settings"
+    private static let key = AppSettings.persistenceKey
 
     public init() {
         if let data = UserDefaults.standard.data(forKey: Self.key),
