@@ -513,9 +513,8 @@ public struct TOSPlayerView: View {
                 vm.handleForeground()
             }
             #endif
-            .alert(item: $reportSegmentAlert) { item in
-                Alert(title: Text(item.title), message: Text(item.message), dismissButton: .default(Text("OK")))
-            }
+            .toast(item: $reportSegmentAlert)
+            .toastHost()
         )
     }
 

@@ -169,8 +169,6 @@ struct ShortsCardView: View {
             DownloadActionButton(video: video)
             #endif
         }
-        .alert(item: $watchLaterAlert) { item in
-            Alert(title: Text(item.title), message: Text(item.message), dismissButton: .default(Text("OK")))
-        }
+        .toast(item: $watchLaterAlert)
     }
 }

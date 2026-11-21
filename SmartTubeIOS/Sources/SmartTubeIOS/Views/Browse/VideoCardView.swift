@@ -375,9 +375,7 @@ public struct VideoCardView: View {
             .scaleEffect(isFocused ? 1.08 : 1.0)
             .zIndex(isFocused ? 1 : 0)
             .animation(.easeInOut(duration: 0.15), value: isFocused)
-            .alert(item: $watchLaterAlert) { item in
-                Alert(title: Text(item.title), message: Text(item.message), dismissButton: .default(Text("OK")))
-            }
+            .toast(item: $watchLaterAlert)
             .sheet(item: $playlistPickerMode) { mode in
                 PlaylistPickerSheet(
                     mode: mode, video: video, sourcePlaylistId: effectivePlaylistId, api: api,
@@ -387,9 +385,7 @@ public struct VideoCardView: View {
         #else
         cardContent
             .onAppear { feedLog.info("[feed] id=\(self.video.id) title=\(self.video.title)") }
-            .alert(item: $watchLaterAlert) { item in
-                Alert(title: Text(item.title), message: Text(item.message), dismissButton: .default(Text("OK")))
-            }
+            .toast(item: $watchLaterAlert)
             .sheet(item: $playlistPickerMode) { mode in
                 PlaylistPickerSheet(
                     mode: mode, video: video, sourcePlaylistId: effectivePlaylistId, api: api,

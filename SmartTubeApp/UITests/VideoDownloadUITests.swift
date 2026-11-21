@@ -48,18 +48,16 @@ final class VideoDownloadUITests: XCTestCase {
             .firstMatch
     }
 
-    /// Waits for the completion/failure alert and returns it, or nil on timeout.
+    /// Waits for the completion/failure toast (a quiet pill, no buttons) and returns it, or nil on timeout.
     private func waitForDownloadAlert(timeout: TimeInterval) -> XCUIElement? {
-        let alert = app.alerts.containing(
-            NSPredicate(format: "label CONTAINS 'Download'")
+        let toast = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier == 'toast.message' AND label CONTAINS[c] 'Download'")
         ).firstMatch
-        return alert.waitForExistence(timeout: timeout) ? alert : nil
+        return toast.waitForExistence(timeout: timeout) ? toast : nil
     }
 
-    private func dismissAlert() {
-        let ok = app.alerts.buttons["OK"].firstMatch
-        if ok.waitForExistence(timeout: 3) { ok.tap() }
-    }
+    /// Toasts dismiss themselves; nothing to tap.
+    private func dismissAlert() {}
 
     /// Opens the Downloads tab and asserts the downloaded video is listed as a finished row.
     private func assertListedInDownloads() throws {
@@ -117,8 +115,8 @@ final class VideoDownloadUITests: XCTestCase {
             try captureAndSkip("Download failed (network/CDN or restricted content): \(alert.label)", in: app)
         }
         XCTAssertEqual(
-            app.alerts.containing(NSPredicate(format: "label CONTAINS 'Download'")).count, 1,
-            "Exactly one completion alert must be shown, not one per host view")
+            app.descendants(matching: .any).matching(identifier: "toast.message").count, 1,
+            "Exactly one completion toast must be shown, not one per host view")
         dismissAlert()
     }
 
@@ -154,8 +152,8 @@ final class VideoDownloadUITests: XCTestCase {
             try captureAndSkip("Download failed (network/CDN or restricted content): \(alert.label)", in: app)
         }
         XCTAssertEqual(
-            app.alerts.containing(NSPredicate(format: "label CONTAINS 'Download'")).count, 1,
-            "Exactly one completion alert must be shown")
+            app.descendants(matching: .any).matching(identifier: "toast.message").count, 1,
+            "Exactly one completion toast must be shown")
         dismissAlert()
 
         try assertListedInDownloads()

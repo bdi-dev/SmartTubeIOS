@@ -38,14 +38,6 @@ struct AppEntry: App {
     @State private var newUploadNotifier: NewUploadNotifier
     #endif
     @Environment(\.scenePhase) private var scenePhase
-    #if os(iOS)
-    @State private var watchLaterAlert: WatchLaterAlert?
-    private struct WatchLaterAlert: Identifiable {
-        let id = UUID()
-        let title: String
-        let message: String
-    }
-    #endif
 
     private static let appGroup = "group.com.void.smarttube"
     private static let pendingKey = "pendingVideoID"
@@ -341,15 +333,6 @@ struct AppEntry: App {
                         enableShortsIfNeeded()
                         signOutIfNeeded()
                     }
-                    #if os(iOS)
-                .alert(item: $watchLaterAlert) { item in
-                    Alert(
-                        title: Text(item.title),
-                        message: Text(item.message),
-                        dismissButton: .default(Text("OK"))
-                    )
-                }
-                #endif
             }
         }
         #endif
@@ -478,10 +461,7 @@ struct AppEntry: App {
         defaults.synchronize()
         let token = authService.accessToken
         guard token != nil else {
-            watchLaterAlert = WatchLaterAlert(
-                title: "Sign In Required",
-                message: "Please sign in to save videos to Watch Later."
-            )
+            ToastCenter.shared.show(title: "Sign In Required", message: "Please sign in to save videos to Watch Later.")
             return
         }
         Task {
@@ -491,15 +471,9 @@ struct AppEntry: App {
             await api.setAuthToken(token)
             do {
                 try await api.addToWatchLater(videoId: videoID)
-                watchLaterAlert = WatchLaterAlert(
-                    title: "Saved to Watch Later",
-                    message: "The video was added to your Watch Later playlist."
-                )
+                ToastCenter.shared.show(title: "Saved to Watch Later", message: "The video was added to your Watch Later playlist.")
             } catch {
-                watchLaterAlert = WatchLaterAlert(
-                    title: "Could Not Save",
-                    message: error.localizedDescription
-                )
+                ToastCenter.shared.show(title: "Could Not Save", message: error.localizedDescription)
             }
         }
     }

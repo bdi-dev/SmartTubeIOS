@@ -71,19 +71,9 @@ public struct RootView: View {
                 break
             }
         }
-        .alert(
-            cardDownloadAlertItem?.title ?? "",
-            isPresented: Binding(
-                get: { cardDownloadAlertItem != nil },
-                set: { if !$0 { cardDownloadAlertItem = nil } }
-            ),
-            presenting: cardDownloadAlertItem
-        ) { _ in
-            Button("OK") { cardDownloadAlertItem = nil }
-        } message: { item in
-            Text(item.message)
-        }
+        .toast(item: $cardDownloadAlertItem)
         #endif
+        .toastHost()
         .sheet(isPresented: .constant(!auth.isSignedIn && requiresAuth)) {
             // Sign-in prompt is shown as a dismissible sheet so users
             // can still browse without being signed in.
