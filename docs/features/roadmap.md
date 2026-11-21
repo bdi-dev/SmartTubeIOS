@@ -36,6 +36,16 @@
 
 Lower value / not planned: CarPlay audio (needs an Apple-approved entitlement).
 
-## Status
+## Status (2026-11-21)
 
-See the git log for what has landed; this table is the plan, not a record.
+| # | Feature | State |
+|---|---|---|
+| 1 | Download management | Done: used/free readout + low-space note, "Downloaded" badge, audio-only downloads, pause/resume, opt-in auto-download of Watch Later (Wi-Fi only option). No auto-delete anywhere. Auto-download needs a signed-in account to try live; covered by unit tests. |
+| 2 | New-upload notifications | Done for locally followed channels: local notifications, baseline-silent first check, foreground + BGAppRefresh. Verified end to end on the simulator; **background refresh only works on a real device** (the simulator has no BGTaskScheduler). Signed-in subscriptions are not covered yet. |
+| 3 | Offline awareness | Done: opens on Downloads when offline (if something is saved) and shows a banner. |
+| 4 | Watch position for downloads | Partly: downloaded videos now get a duration (the scrubber was dead) and resume where you left off. Account-side reporting is **not** done: YouTube ignores watch pings without account-bound tracking URLs, which local files never have. |
+| 5 | Files export, friendly names | Done: Share / Save to Files from a download's context menu, named `<title>.mp4/.m4a`. |
+| 6 | Companion server | Phase 0 done: `tools/ytdlp-server/` (stdlib server + tests + README). Phases 1-3 (app fetcher, fallback wiring) not started. |
+
+Also done: `scripts/free-account.sh` switches the paid-only iCloud entitlement off without removing it
+([how-to](../how-to/free-account-build.md)).
