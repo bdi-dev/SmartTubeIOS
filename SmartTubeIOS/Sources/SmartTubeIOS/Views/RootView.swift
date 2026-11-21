@@ -158,6 +158,8 @@ struct MainTabView: View {
     @State private var searchVM = SearchViewModel()
     @State private var selectedTab: AppSection = .home
     @State private var tabBarBottomInset: CGFloat = 0
+    @State private var connectivity = ConnectivityMonitor.shared
+    @State private var offlineLaunchApplied = false
     @Environment(\.innerTubeAPI) private var api
     @Environment(SettingsStore.self) private var store
     #if os(iOS)
@@ -166,6 +168,28 @@ struct MainTabView: View {
     @Environment(PlayerRouter.self) private var playerRouter
     @Environment(BrowseViewModel.self) private var browseVM
     @State private var showSrcSwapSpike = false
+    #endif
+
+    #if !os(tvOS)
+    private static let offlineBannerHeight: CGFloat = 32
+
+    /// Shown while the device is offline; tapping it jumps to the Downloads tab.
+    @ViewBuilder private var offlineBanner: some View {
+        if connectivity.isOnline == false {
+            Button {
+                selectedTab = .downloads
+            } label: {
+                Label("You're offline — tap to see your downloads", systemImage: "wifi.slash")
+                    .font(.footnote)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: Self.offlineBannerHeight)
+                    .background(Color.orange.opacity(0.9), ignoresSafeAreaEdges: [])
+                    .foregroundStyle(.black)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("offline.banner")
+        }
+    }
     #endif
 
     var body: some View {
@@ -225,6 +249,18 @@ struct MainTabView: View {
             }
         }
         .onPreferenceChange(TabBarBottomInsetKey.self) { tabBarBottomInset = $0 }
+        #if !os(tvOS)
+        .onChange(of: connectivity.isOnline, initial: true) { _, isOnline in
+            guard
+                OfflineLaunchPolicy.shouldOpenDownloads(
+                    isOnline: isOnline,
+                    hasCompleteDownloads: DownloadStore.shared.entries.contains { $0.status == .complete },
+                    alreadyApplied: offlineLaunchApplied)
+            else { return }
+            offlineLaunchApplied = true
+            selectedTab = .downloads
+        }
+        #endif
         #if os(iOS)
         .background(TabBarLiquidGlassConfigurator(disableLiquidGlass: store.settings.disableLiquidGlass))
         #endif
@@ -253,10 +289,30 @@ struct MainTabView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             // Reserve vertical space for whichever mini-player is visible so
             // scrollable content is not obscured (only one can be active at a time).
-            if playerState.presentation == .miniPlayer || tosState.presentation == .miniPlayer {
-                Color.clear.frame(height: 62)
+            // The offline banner (drawn by the overlay below) needs room above that as well.
+            VStack(spacing: 0) {
+                #if !os(tvOS)
+                if connectivity.isOnline == false { Color.clear.frame(height: Self.offlineBannerHeight) }
+                #endif
+                if playerState.presentation == .miniPlayer || tosState.presentation == .miniPlayer {
+                    Color.clear.frame(height: 62)
+                }
             }
         }
+        #if !os(tvOS)
+        // Offline banner: sits just above the tab bar (and above the mini player when it is showing).
+        .overlay(alignment: .bottom) {
+            VStack(spacing: 0) {
+                offlineBanner
+                Color.clear
+                .frame(
+                    height: tabBarBottomInset
+                        + (playerState.presentation == .miniPlayer || tosState.presentation == .miniPlayer ? 62 : 0)
+                )
+                .allowsHitTesting(false)
+            }
+        }
+        #endif
         // Render the single visible MiniPlayerView above the tab bar.
         // tabBarBottomInset = tab-bar height + home-indicator (e.g. 83 pt on Face ID
         // iPhones), read from inside the NavigationStack where UITabBarController has
