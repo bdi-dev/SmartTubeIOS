@@ -189,6 +189,7 @@ extension PlayerView {
             #endif
             moreMenuQueueShuffleRow
             moreMenuDownloadRow
+            moreMenuYouTubePlayerRow
             moreMenuCaptionsRow
             moreMenuAudioTrackRow
             moreMenuDescriptionRow
@@ -604,6 +605,25 @@ extension PlayerView {
         .foregroundStyle(.primary)
         .disabled(!DownloadActionLabel.isEnabled(for: downloadStatus))
         .accessibilityIdentifier("player.moreMenu.downloadButton")
+        Divider()
+        #endif
+    }
+
+    /// Re-opens the current video in the YouTube web player (e.g. for higher quality than the plain MP4).
+    @ViewBuilder private var moreMenuYouTubePlayerRow: some View {
+        #if os(iOS)
+        Button {
+            showMoreMenu = false
+            playerRouter.openInWebPlayer(video: vm.playerInfo?.video ?? video, api: innerTubeAPI)
+        } label: {
+            Label("Play in YouTube Player", systemImage: "play.rectangle")
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding()
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.primary)
+        .accessibilityIdentifier("player.moreMenu.playWebButton")
         Divider()
         #endif
     }

@@ -55,9 +55,12 @@ public struct Video: Identifiable, Hashable, Codable, Sendable {
     public struct DirectStream: Sendable, Hashable {
         public let url: URL
         public let userAgent: String
-        public init(url: URL, userAgent: String) {
+        /// Resolution of the file, e.g. "720p", shown as the player's current quality.
+        public let qualityLabel: String
+        public init(url: URL, userAgent: String, qualityLabel: String = "") {
             self.url = url
             self.userAgent = userAgent
+            self.qualityLabel = qualityLabel
         }
     }
     public var directStream: DirectStream? = nil

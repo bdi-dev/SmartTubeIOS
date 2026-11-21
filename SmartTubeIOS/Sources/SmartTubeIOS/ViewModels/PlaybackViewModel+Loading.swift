@@ -476,6 +476,7 @@ extension PlaybackViewModel {
                     item = AVPlayerItem(url: localURL)
                 }
                 item.audioTimePitchAlgorithm = .spectral
+                if let directStream { qualityManager.pendingQualityLabel = directStream.qualityLabel }
                 // Resume where the user left off (position saved by WatchtimeTracker, works offline).
                 let savedLocalPosition = await VideoStateStore.shared.state(for: video.id)?.position
                 // Wire up observers BEFORE replaceCurrentItem (task-80 rule).

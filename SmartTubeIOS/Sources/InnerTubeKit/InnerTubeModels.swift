@@ -165,11 +165,14 @@ public struct PlayerInfo: Sendable {
     /// Muxed formats list two codecs separated by ", " (e.g. "avc1.xxx, mp4a.xxx"),
     /// unlike adaptive streams which have a single codec.
     /// Returns nil if no muxed MP4 with a plain URL is available.
-    public var bestMuxedDownloadURL: URL? {
+    public var bestMuxedDownloadURL: URL? { bestMuxedFormat?.url }
+
+    /// The highest-bitrate muxed MP4 format with a plain URL (see `bestMuxedDownloadURL`).
+    public var bestMuxedFormat: VideoFormat? {
         let muxed = formats.filter {
             $0.mimeType.hasPrefix("video/mp4") && $0.mimeType.contains(", ") && $0.url != nil
         }
-        return muxed.sorted { ($0.bitrate ?? 0) > ($1.bitrate ?? 0) }.first?.url
+        return muxed.sorted { ($0.bitrate ?? 0) > ($1.bitrate ?? 0) }.first
     }
 
     /// Best adaptive video-only MP4 URL (single codec, no audio).

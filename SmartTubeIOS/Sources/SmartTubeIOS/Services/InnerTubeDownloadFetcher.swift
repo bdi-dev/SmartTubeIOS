@@ -168,7 +168,7 @@ public final class InnerTubeDownloadFetcher: DownloadFetching {
                 continue
             }
             fetchLog.notice("[stream] \(label) formats=\(info.formats.count) hlsURL=\(info.hlsURL != nil)")
-            guard let muxedURL = info.bestMuxedDownloadURL else {
+            guard let muxedFormat = info.bestMuxedFormat, let muxedURL = muxedFormat.url else {
                 fetchLog.notice("[stream] \(label) — no muxed MP4, trying next")
                 continue
             }
@@ -177,7 +177,7 @@ public final class InnerTubeDownloadFetcher: DownloadFetching {
                 continue
             }
             fetchLog.notice("[stream] \(label) ✅ muxed URL accepted")
-            return Video.DirectStream(url: muxedURL, userAgent: clientUA)
+            return Video.DirectStream(url: muxedURL, userAgent: clientUA, qualityLabel: muxedFormat.qualityLabel)
         }
         return nil
     }
