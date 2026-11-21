@@ -859,8 +859,8 @@ extension PlayerView {
             case .done:
                 let title = vm.playerInfo?.video.title ?? video.title
                 downloadAlertItem = DownloadAlertItem(
-                    title: String(localized: "Saved to Gallery", bundle: .module),
-                    message: String(localized: "\"\(title)\" has been saved to your Photos library.", bundle: .module)
+                    title: String(localized: "Download Complete", bundle: .module),
+                    message: String(localized: "\"\(title)\" has been saved to Downloads.", bundle: .module)
                 )
                 downloadService.reset()
             case .failed(let reason):

@@ -12,7 +12,8 @@ struct DownloadsView: View {
     @Environment(DownloadStore.self) private var downloadStore
 
     #if os(iOS)
-    @Environment(PlayerStateStore.self) private var playerState
+    @Environment(PlayerRouter.self) private var playerRouter
+    @Environment(VideoDownloadService.self) private var downloadService
     #else
     @State private var selectedVideo: Video?
     #endif
@@ -43,14 +44,16 @@ struct DownloadsView: View {
             } else {
                 List {
                     ForEach(downloadStore.entries.sorted { $0.downloadedAt > $1.downloadedAt }) { entry in
-                        DownloadedVideoRow(entry: entry)
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                if let video = downloadStore.video(for: entry) {
-                                    playerState.play(video: video)
-                                }
+                        DownloadedVideoRow(entry: entry) {
+                            downloadService.retry(videoId: entry.videoId)
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            if let video = downloadStore.video(for: entry) {
+                                playerRouter.openLocal(video: video)
                             }
-                            .accessibilityIdentifier("downloads.videoRow.\(entry.videoId)")
+                        }
+                        .accessibilityIdentifier("downloads.videoRow.\(entry.videoId)")
                     }
                     .onDelete { indexSet in
                         let sorted = downloadStore.entries.sorted { $0.downloadedAt > $1.downloadedAt }
@@ -71,6 +74,7 @@ struct DownloadsView: View {
         ) {
             Button("Delete", role: .destructive) {
                 if let vid = deleteConfirmationVideoId {
+                    downloadService.cancel(videoId: vid)
                     downloadStore.remove(videoId: vid)
                 }
                 deleteConfirmationVideoId = nil
@@ -112,6 +116,7 @@ struct DownloadsView: View {
 
 private struct DownloadedVideoRow: View {
     let entry: DownloadedVideo
+    let onRetry: () -> Void
     @Environment(DownloadStore.self) private var downloadStore
 
     private static let dateFormatter: DateFormatter = {
@@ -138,6 +143,33 @@ private struct DownloadedVideoRow: View {
         return String(format: "%d:%02d", mins, secs)
     }
 
+    @ViewBuilder private var statusView: some View {
+        switch entry.status {
+        case .complete:
+            EmptyView()
+        case .queued:
+            Text("Queued").font(.caption).foregroundStyle(.secondary)
+                .accessibilityIdentifier("downloads.status.\(entry.videoId)")
+        case .downloading:
+            ProgressView(value: entry.progress)
+                .accessibilityIdentifier("downloads.progress.\(entry.videoId)")
+        case .merging:
+            Text("Merging…").font(.caption).foregroundStyle(.secondary)
+                .accessibilityIdentifier("downloads.status.\(entry.videoId)")
+        case .failed:
+            HStack(spacing: 8) {
+                Text(entry.errorMessage ?? String(localized: "Download failed", bundle: .module))
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .lineLimit(2)
+                Button("Retry", action: onRetry)
+                    .font(.caption)
+                    .buttonStyle(.bordered)
+                    .accessibilityIdentifier("downloads.retry.\(entry.videoId)")
+            }
+        }
+    }
+
     var body: some View {
         HStack(spacing: 12) {
             AsyncImage(url: entry.thumbnailURL) { phase in
@@ -158,13 +190,14 @@ private struct DownloadedVideoRow: View {
                 Text(entry.channelTitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                statusView
                 HStack(spacing: 8) {
                     if !durationDescription.isEmpty {
                         Text(durationDescription)
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
-                    if !fileSizeDescription.isEmpty {
+                    if entry.status == .complete, !fileSizeDescription.isEmpty {
                         Text(fileSizeDescription)
                             .font(.caption2)
                             .foregroundStyle(.secondary)

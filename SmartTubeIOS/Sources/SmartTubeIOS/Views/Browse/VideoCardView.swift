@@ -47,9 +47,6 @@ public struct VideoCardView: View {
     @State private var playlistPickerMode: PlaylistPickerSheet.Mode?
     /// Index into `video.thumbnailFallbackURLs`. -1 = use primary `thumbnailURL`.
     @State private var thumbnailFallbackIndex: Int = -1
-    #if !os(tvOS)
-    @Environment(VideoDownloadService.self) private var downloadService
-    #endif
     #if os(tvOS)
     @FocusState private var isFocused: Bool
     #endif
@@ -314,16 +311,7 @@ public struct VideoCardView: View {
                 }
             }
             #if !os(tvOS)
-            Button {
-                downloadService.download(video: video)
-            } label: {
-                if downloadService.state.isActive {
-                    Label("Downloading…", systemImage: AppSymbol.download)
-                } else {
-                    Label("Download to Gallery", systemImage: AppSymbol.download)
-                }
-            }
-            .disabled(downloadService.state.isActive)
+            DownloadActionButton(video: video)
             #endif
         } preview: {
             Group {

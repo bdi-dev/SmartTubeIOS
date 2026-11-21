@@ -15,9 +15,6 @@ struct ShortsCardView: View {
     @Environment(SettingsStore.self) private var store
     @Environment(\.innerTubeAPI) private var api
     @State private var watchLaterAlert: DownloadAlertItem?
-    #if !os(tvOS)
-    @Environment(VideoDownloadService.self) private var downloadService
-    #endif
 
     /// Primary thumbnail URL: portrait oardefault.jpg when the API provided one
     /// (reelItemRenderer), landscape thumbnailURL otherwise.
@@ -169,16 +166,7 @@ struct ShortsCardView: View {
                 }
             }
             #if !os(tvOS)
-            Button {
-                downloadService.download(video: video)
-            } label: {
-                if downloadService.state.isActive {
-                    Label("Downloading…", systemImage: AppSymbol.download)
-                } else {
-                    Label("Download to Gallery", systemImage: AppSymbol.download)
-                }
-            }
-            .disabled(downloadService.state.isActive)
+            DownloadActionButton(video: video)
             #endif
         }
         .alert(item: $watchLaterAlert) { item in

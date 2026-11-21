@@ -51,8 +51,8 @@ public struct RootView: View {
             switch newState {
             case .done:
                 cardDownloadAlertItem = DownloadAlertItem(
-                    title: String(localized: "Saved to Gallery", bundle: .module),
-                    message: String(localized: "Video has been saved to your Photos library.", bundle: .module)
+                    title: String(localized: "Download Complete", bundle: .module),
+                    message: String(localized: "Video has been saved to Downloads.", bundle: .module)
                 )
                 cardDownloadService.reset()
             case .failed(let reason):

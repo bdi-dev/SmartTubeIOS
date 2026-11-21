@@ -100,6 +100,11 @@ public final class VideoDownloadService {
         pump()
     }
 
+    /// Current download status of `videoId`, or `nil` if it was never queued.
+    public func status(for videoId: String) -> DownloadedVideo.Status? {
+        store.entry(for: videoId)?.status
+    }
+
     /// Compatibility shim for call sites written against the single-download API.
     public func download(video: Video) {
         enqueue(video: video)

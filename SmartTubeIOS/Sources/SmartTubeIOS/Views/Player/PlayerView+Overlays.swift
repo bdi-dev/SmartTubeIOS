@@ -590,24 +590,19 @@ extension PlayerView {
 
     @ViewBuilder private var moreMenuDownloadRow: some View {
         #if !os(tvOS)
+        let downloadStatus = downloadService.status(for: (vm.playerInfo?.video ?? video).id)
         Button {
             showMoreMenu = false
-            downloadService.download(video: vm.playerInfo?.video ?? video)
+            downloadService.enqueue(video: vm.playerInfo?.video ?? video)
         } label: {
-            Group {
-                if downloadService.state.isActive {
-                    Label("Downloading…", systemImage: AppSymbol.download)
-                } else {
-                    Label("Download to Gallery", systemImage: AppSymbol.download)
-                }
-            }
+            Label(DownloadActionLabel.title(for: downloadStatus), systemImage: AppSymbol.download)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding()
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .foregroundStyle(.primary)
-        .disabled(downloadService.state.isActive)
+        .disabled(!DownloadActionLabel.isEnabled(for: downloadStatus))
         .accessibilityIdentifier("player.moreMenu.downloadButton")
         Divider()
         #endif

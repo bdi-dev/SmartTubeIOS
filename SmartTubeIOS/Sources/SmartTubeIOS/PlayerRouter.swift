@@ -34,6 +34,13 @@ public final class PlayerRouter {
         self.settingsStore = settingsStore
     }
 
+    /// Plays a downloaded video (`video.localFileURL` set). Local files always use the AVPlayer
+    /// pipeline, never the web player; any active web-player session is stopped first.
+    public func openLocal(video: Video) {
+        if tosState.presentation != .hidden { tosState.stop() }
+        playerState.play(video: video)
+    }
+
     /// Open `video` in whichever player pipeline is currently preferred.
     /// `incognito` (#94) skips recording this video to watch history / resume
     /// position — currently only honored by the TOS pipeline (the iOS default);

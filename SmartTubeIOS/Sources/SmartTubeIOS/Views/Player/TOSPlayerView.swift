@@ -769,6 +769,9 @@ public struct TOSPlayerView: View {
                 .accessibilityIdentifier("tosPlayer.moreMenu.shareRow")
             }
 
+            DownloadActionButton(video: video)
+                .accessibilityIdentifier("tosPlayer.moreMenu.downloadRow")
+
             Button {
                 showCommentsSheet = true
                 vm.loadComments()
