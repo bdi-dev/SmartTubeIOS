@@ -46,7 +46,9 @@ struct DownloadsView: View {
                         DownloadedVideoRow(entry: entry)
                             .contentShape(Rectangle())
                             .onTapGesture {
-                                playerState.play(video: entry.video)
+                                if let video = downloadStore.video(for: entry) {
+                                    playerState.play(video: video)
+                                }
                             }
                             .accessibilityIdentifier("downloads.videoRow.\(entry.videoId)")
                     }
@@ -110,6 +112,7 @@ struct DownloadsView: View {
 
 private struct DownloadedVideoRow: View {
     let entry: DownloadedVideo
+    @Environment(DownloadStore.self) private var downloadStore
 
     private static let dateFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -119,7 +122,7 @@ private struct DownloadedVideoRow: View {
     }()
 
     private var fileSizeDescription: String {
-        guard let attrs = try? FileManager.default.attributesOfItem(atPath: entry.fileURL.path),
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: downloadStore.fileURL(for: entry).path),
             let bytes = attrs[.size] as? Int64
         else { return "" }
         let gb = Double(bytes) / 1_000_000_000

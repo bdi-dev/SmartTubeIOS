@@ -489,31 +489,32 @@ public final class VideoDownloadService {
         #endif
     }
 
-    /// Copies `mergedFileURL` to the DownloadStore destination and registers the download.
-    /// If the copy fails (e.g. disk full) the Photos save is unaffected — this is best-effort.
+    /// Registers the download and moves a copy of `mergedFileURL` into the DownloadStore.
+    /// Task 3 reworks this into the queued downloader.
     private func storeInDownloadStore(video: Video, mergedFileURL: URL) {
-        let destURL = DownloadStore.shared.destinationURL(for: video.id)
-        let fm = FileManager.default
-        try? fm.createDirectory(at: destURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let store = DownloadStore.shared
+        let copyURL = mergedFileURL.deletingLastPathComponent()
+            .appendingPathComponent("store-\(UUID().uuidString).mp4")
         do {
-            // Remove a stale file from a previous download of the same video.
-            try? fm.removeItem(at: destURL)
-            try fm.copyItem(at: mergedFileURL, to: destURL)
+            try FileManager.default.copyItem(at: mergedFileURL, to: copyURL)
         } catch {
             downloadLog.notice("[download] DownloadStore copy failed for \(video.id): \(error.localizedDescription)")
             return
         }
-        DownloadStore.shared.add(
+        store.upsert(
             DownloadedVideo(
                 videoId: video.id,
                 title: video.title,
                 channelTitle: video.channelTitle,
                 thumbnailURL: video.thumbnailURL,
                 duration: video.duration ?? 0,
-                fileURL: destURL,
-                downloadedAt: Date()
+                fileName: store.fileName(for: video.id),
+                downloadedAt: Date(),
+                status: .merging
             ))
-        downloadLog.notice("[download] registered in DownloadStore \(video.id)")
+        if store.finalize(videoId: video.id, from: copyURL) {
+            downloadLog.notice("[download] registered in DownloadStore \(video.id)")
+        }
     }
 
     private func downloadToTemp(
