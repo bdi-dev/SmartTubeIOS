@@ -3,9 +3,11 @@
 A native Swift/SwiftUI YouTube client for **iPhone**, **iPad**, **macOS**, and **Apple TV**.  
 Zero ads. SponsorBlock auto-skip. DeArrow community titles. Google sign-in. Up to 8K.
 
-[![iOS 17+](https://img.shields.io/badge/iOS-17%2B-black?logo=apple)](https://apps.apple.com/us/app/smart-tube-bdp/id6761388918) [![tvOS 17+](https://img.shields.io/badge/tvOS-17%2B-black?logo=apple)](https://apps.apple.com/us/app/smart-tube-bdp/id6761388918) [![macOS 14+](https://img.shields.io/badge/macOS-14%2B-black?logo=apple)](https://apps.apple.com/us/app/smart-tube-bdp/id6761388918) [![Swift 6.0](https://img.shields.io/badge/Swift-6.0-orange?logo=swift)](https://swift.org) [![Ko-fi](https://img.shields.io/badge/Ko--fi-support-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/milikadelic)
+[![iOS 17+](https://img.shields.io/badge/iOS-17%2B-black?logo=apple)](#requirements) [![tvOS 17+](https://img.shields.io/badge/tvOS-17%2B-black?logo=apple)](#requirements) [![macOS 14+](https://img.shields.io/badge/macOS-14%2B-black?logo=apple)](#requirements) [![Swift 6.0](https://img.shields.io/badge/Swift-6.0-orange?logo=swift)](https://swift.org) [![Ko-fi](https://img.shields.io/badge/Ko--fi-support-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/milikadelic)
 
-[![Download on the App Store](https://developer.apple.com/assets/elements/badges/download-on-the-app-store.svg)](https://apps.apple.com/us/app/smart-tube-bdp/id6761388918)
+> **Personal build.** SmartTube is built and sideloaded with your own Apple Developer account. It is
+> not on the App Store and is not intended for submission, which is why features such as
+> [offline downloads](docs/adr/0012-personal-downloads.md) are included.
 
 Inspired by the original [SmartTube Android app](https://github.com/yuliskov/SmartTube).
 
@@ -58,7 +60,8 @@ Inspired by the original [SmartTube Android app](https://github.com/yuliskov/Sma
 - Google OAuth sign-in (YouTube TV device-code flow)
 - Safari Web Extension — auto-redirects YouTube, Shorts, and Music links to SmartTube
 - Share Extension — share YouTube links from any app directly into SmartTube
-- Video downloads with live-activity progress; Downloads screen in Library
+- Offline downloads: queued, background-capable transfers saved to app storage (no Photos), with a
+  Downloads tab, live-activity progress, relaunch recovery, and playback through the normal player
 - WatchTime reporting and Like / Dislike support
 - VPN / IP-block detection with a clear, non-retrying error banner
 - Comments, Stats for Nerds
@@ -93,6 +96,9 @@ SmartTube.xcworkspace/ Xcode workspace (references both above)
 ---
 
 ## Getting Started
+
+This is a personal, sideloaded app: build it with your own signing team and install it on your own
+devices (it is not distributed through the App Store or TestFlight).
 
 ```bash
 git clone https://github.com/milika/SmartTubeIOS
