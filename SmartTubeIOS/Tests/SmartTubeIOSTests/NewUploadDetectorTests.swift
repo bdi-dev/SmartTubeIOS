@@ -42,22 +42,22 @@ struct SeenUploadsStoreTests {
     func persists() async {
         let suite = "test-\(UUID().uuidString)"
         let store = SeenUploadsStore(suiteName: suite)
-        #expect(await store.hasBaseline == false)
+        #expect(await store.hasBaseline() == false)
         await store.markSeen(["a", "b", "a"])
-        #expect(await store.hasBaseline)
+        #expect(await store.hasBaseline())
         #expect(await store.seenIds() == ["a", "b"])
         let reopened = SeenUploadsStore(suiteName: suite)
         #expect(await reopened.seenIds() == ["a", "b"])
-        #expect(await reopened.hasBaseline)
+        #expect(await reopened.hasBaseline())
     }
 
     @Test("an empty feed does not establish the baseline")
     func emptyFeedIsNotABaseline() async {
         let store = SeenUploadsStore(suiteName: "test-\(UUID().uuidString)")
         await store.markSeen([])
-        #expect(await store.hasBaseline == false)
+        #expect(await store.hasBaseline() == false)
         await store.markSeen(["a"])
-        #expect(await store.hasBaseline)
+        #expect(await store.hasBaseline())
     }
 
     @Test("the list is capped, dropping the oldest ids")
@@ -68,5 +68,27 @@ struct SeenUploadsStoreTests {
         #expect(seen.count == SeenUploadsStore.maxEntries)
         #expect(!seen.contains("id0"))
         #expect(seen.contains("id\(SeenUploadsStore.maxEntries + 4)"))
+    }
+}
+
+@Suite("SeenUploadsStore sources")
+struct SeenUploadsStoreSourceTests {
+    @Test("baselines are tracked per source")
+    func perSource() async {
+        let store = SeenUploadsStore(suiteName: "test-\(UUID().uuidString)")
+        await store.markSeen(["a"], source: "local")
+        #expect(await store.hasBaseline(for: "local"))
+        #expect(await store.hasBaseline(for: "subscriptions") == false)
+    }
+
+    @Test("the earlier single-baseline format decodes as the local source")
+    func legacyDecode() async throws {
+        let suite = "test-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.set(Data(#"{"seen":["x"],"hasBaseline":true}"#.utf8), forKey: "st_seen_uploads")
+        let store = SeenUploadsStore(suiteName: suite)
+        #expect(await store.hasBaseline(for: "local"))
+        #expect(await store.hasBaseline(for: "subscriptions") == false)
+        #expect(await store.seenIds() == ["x"])
     }
 }

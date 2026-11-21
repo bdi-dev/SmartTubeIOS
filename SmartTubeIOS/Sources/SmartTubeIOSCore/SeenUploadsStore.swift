@@ -12,7 +12,26 @@ public actor SeenUploadsStore: UserDefaultsBackedStore {
 
     struct Value: Codable, Sendable {
         var seen: [String] = []
-        var hasBaseline = false
+        /// Sources (e.g. "local", "subscriptions") whose first check has already been recorded.
+        var baselines: Set<String> = []
+
+        init() {}
+
+        private enum CodingKeys: String, CodingKey { case seen, baselines, hasBaseline }
+
+        /// Tolerant of the earlier shape (`hasBaseline: Bool`, one source): that meant "local".
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            seen = try c.decodeIfPresent([String].self, forKey: .seen) ?? []
+            baselines = try c.decodeIfPresent(Set<String>.self, forKey: .baselines) ?? []
+            if try c.decodeIfPresent(Bool.self, forKey: .hasBaseline) == true { baselines.insert("local") }
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(seen, forKey: .seen)
+            try c.encode(baselines, forKey: .baselines)
+        }
     }
 
     static let defaultsKey = "st_seen_uploads"
@@ -38,22 +57,28 @@ public actor SeenUploadsStore: UserDefaultsBackedStore {
 
     // MARK: Public API
 
-    public var hasBaseline: Bool { value.hasBaseline }
+    /// Whether `source`'s first check has been recorded.
+    public func hasBaseline(for source: String = SeenUploadsStore.localSource) -> Bool {
+        value.baselines.contains(source)
+    }
+
+    public static let localSource = "local"
+    public static let subscriptionsSource = "subscriptions"
 
     public func seenIds() -> Set<String> { Set(value.seen) }
 
-    /// Records `ids` as seen (oldest dropped past `maxEntries`) and marks the baseline as taken.
-    /// Ignored when `ids` is empty.
-    public func markSeen(_ ids: [String]) {
-        // An empty feed (nothing followed yet, or a failed fetch) must not count as the baseline,
-        // or the first real feed would announce everything already in it.
+    /// Records `ids` as seen (oldest dropped past `maxEntries`) and marks `source`'s baseline as
+    /// taken. Ignored when `ids` is empty: an empty feed (nothing followed yet, signed out, or a
+    /// failed fetch) must not count as the baseline, or the first real feed would announce
+    /// everything already in it.
+    public func markSeen(_ ids: [String], source: String = SeenUploadsStore.localSource) {
         guard !ids.isEmpty else { return }
         let existing = Set(value.seen)
         value.seen.append(contentsOf: ids.filter { !existing.contains($0) })
         if value.seen.count > Self.maxEntries {
             value.seen.removeFirst(value.seen.count - Self.maxEntries)
         }
-        value.hasBaseline = true
+        value.baselines.insert(source)
         persist()
     }
 

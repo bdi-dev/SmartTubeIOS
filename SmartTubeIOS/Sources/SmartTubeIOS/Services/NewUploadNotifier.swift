@@ -29,6 +29,15 @@ struct LocalFollowsUploadSource: UploadFeedSource {
     }
 }
 
+/// The signed-in account's subscription feed. Empty when signed out or on any error, so a failed
+/// fetch never looks like "no new videos" to the baseline logic (empty feeds record nothing).
+struct SubscriptionsUploadSource: UploadFeedSource {
+    let api: any InnerTubeAPIProtocol
+    func latestUploads() async -> [Video] {
+        (try? await api.fetchSubscriptions(continuationToken: nil).videos) ?? []
+    }
+}
+
 /// Local (not push) notifications: no entitlement or paid membership involved. Tapping one opens
 /// the video through the app's `smarttube://` URL scheme.
 struct SystemUploadNotificationPoster: UploadNotificationPosting {
@@ -70,26 +79,41 @@ public final class NewUploadNotifier {
     /// Minimum gap between checks, whether triggered by foregrounding or by background refresh.
     public static let minInterval: TimeInterval = 15 * 60
 
-    private let source: any UploadFeedSource
+    /// Feeds to check, each with its own baseline tag.
+    private let sources: [(tag: String, source: any UploadFeedSource)]
     private let poster: any UploadNotificationPosting
     private let seen: SeenUploadsStore
     private let now: @Sendable () -> Date
     private var lastCheck: Date?
 
     init(
-        source: any UploadFeedSource,
+        sources: [(tag: String, source: any UploadFeedSource)],
         poster: any UploadNotificationPosting = SystemUploadNotificationPoster(),
         seen: SeenUploadsStore = .shared,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
-        self.source = source
+        self.sources = sources
         self.poster = poster
         self.seen = seen
         self.now = now
     }
 
+    /// A single local feed (used by tests).
+    convenience init(
+        source: any UploadFeedSource,
+        poster: any UploadNotificationPosting = SystemUploadNotificationPoster(),
+        seen: SeenUploadsStore = .shared,
+        now: @escaping @Sendable () -> Date = { Date() }
+    ) {
+        self.init(sources: [(SeenUploadsStore.localSource, source)], poster: poster, seen: seen, now: now)
+    }
+
+    /// Production: the channels followed locally plus the signed-in account's subscriptions.
     public convenience init(api: any InnerTubeAPIProtocol) {
-        self.init(source: LocalFollowsUploadSource(api: api))
+        self.init(sources: [
+            (SeenUploadsStore.localSource, LocalFollowsUploadSource(api: api)),
+            (SeenUploadsStore.subscriptionsSource, SubscriptionsUploadSource(api: api)),
+        ])
     }
 
     /// Asks for permission (the system prompt appears once). `true` if alerts can be shown.
@@ -107,20 +131,26 @@ public final class NewUploadNotifier {
         lastCheck = now()
         guard await poster.isAuthorized() else { return 0 }
 
-        let feed = await source.latestUploads()
         let blocked = Set(settings.blockedChannels.keys)
-        let knownIds = await seen.seenIds()
-        let baseline = await seen.hasBaseline
-        let result = NewUploadDetector.evaluate(
-            feed: feed, seenIds: knownIds, hasBaseline: baseline,
-            isMuted: { video in video.channelId.map(blocked.contains) ?? false })
-        await seen.markSeen(result.allIds)
-        for video in result.toNotify { await poster.post(video) }
-        let unseen = feed.filter { !knownIds.contains($0.id) }.count
+        var knownIds = await seen.seenIds()
+        var toNotify: [Video] = []
+        var checked = 0
+        for (tag, source) in sources {
+            let feed = await source.latestUploads()
+            checked += feed.count
+            let result = NewUploadDetector.evaluate(
+                feed: feed, seenIds: knownIds, hasBaseline: await seen.hasBaseline(for: tag),
+                isMuted: { video in video.channelId.map(blocked.contains) ?? false })
+            await seen.markSeen(result.allIds, source: tag)
+            knownIds.formUnion(result.allIds)  // a video in two feeds is announced once
+            toNotify.append(contentsOf: result.toNotify)
+        }
+        toNotify = Array(toNotify.prefix(NewUploadDetector.maxAlertsPerCheck))
+        for video in toNotify { await poster.post(video) }
         uploadLog.notice(
-            "checked \(feed.count, privacy: .public) uploads (baseline \(baseline, privacy: .public), unseen \(unseen, privacy: .public)), announced \(result.toNotify.count, privacy: .public)"
+            "checked \(checked, privacy: .public) uploads from \(self.sources.count, privacy: .public) sources, announced \(toNotify.count, privacy: .public)"
         )
-        return result.toNotify.count
+        return toNotify.count
     }
 
     // MARK: Background refresh

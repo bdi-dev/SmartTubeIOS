@@ -21,7 +21,16 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         UNUserNotificationCenter.current().delegate = self
         // New-upload alerts: the BGAppRefresh handler must be registered before launch finishes.
         NewUploadNotifier.registerBackgroundRefresh {
-            let notifier = NewUploadNotifier(api: InnerTubeAPI())
+            // A background launch has no signed-in API yet: load the stored session, renew it if
+            // it is about to expire, and hand it to a fresh API so subscriptions can be checked.
+            let auth = AuthService()
+            await auth.refreshIfNeeded()
+            let api = InnerTubeAPI()
+            if let token = auth.accessToken {
+                await api.setAuthToken(token)
+                await api.setSAPISID(auth.sapisid)
+            }
+            let notifier = NewUploadNotifier(api: api)
             await notifier.checkIfDue(settings: SettingsStore().settings, force: true)
         }
         return true

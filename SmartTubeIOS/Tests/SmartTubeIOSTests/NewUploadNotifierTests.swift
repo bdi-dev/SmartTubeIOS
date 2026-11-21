@@ -75,7 +75,7 @@ struct NewUploadNotifierTests {
         let (denied, p2, seen) = make(feed: [video("a")], poster: FakePoster(authorized: false))
         #expect(await denied.checkIfDue(settings: settings()) == 0)
         #expect(p2.posted.isEmpty)
-        #expect(await seen.hasBaseline == false)
+        #expect(await seen.hasBaseline() == false)
     }
 
     @Test("checks are throttled; force bypasses the throttle")
@@ -97,6 +97,47 @@ struct NewUploadNotifierTests {
             now: { clock.date })
         #expect(await notifier.checkIfDue(settings: settings(blocked: ["bad": "Bad"])) == 1)
         #expect(poster.posted == ["y"])
+    }
+
+    @Test("signing in later records a separate baseline instead of flooding alerts")
+    func signedInBaselineIsSeparate() async {
+        let clock = Clock()
+        let seen = SeenUploadsStore(suiteName: "test-\(UUID().uuidString)")
+        let poster = FakePoster()
+        let local = FeedBox([video("l1")])
+        let subs = FeedBox([])  // signed out: empty
+        let notifier = NewUploadNotifier(
+            sources: [("local", FakeFeedBox(local)), ("subscriptions", FakeFeedBox(subs))],
+            poster: poster, seen: seen, now: { clock.date })
+        #expect(await notifier.checkIfDue(settings: settings()) == 0)  // local baseline only
+
+        subs.videos = [video("s1", channel: "c9"), video("s2", channel: "c9")]  // user signs in
+        clock.date.addTimeInterval(NewUploadNotifier.minInterval + 1)
+        #expect(await notifier.checkIfDue(settings: settings()) == 0)  // subscriptions baseline, silent
+        #expect(poster.posted.isEmpty)
+
+        subs.videos = [video("s3", channel: "c9")] + subs.videos
+        clock.date.addTimeInterval(NewUploadNotifier.minInterval + 1)
+        #expect(await notifier.checkIfDue(settings: settings()) == 1)
+        #expect(poster.posted == ["s3"])
+    }
+
+    @Test("a video present in both feeds is announced once, and the total is capped")
+    func dedupedAndCapped() async {
+        let clock = Clock()
+        let seen = SeenUploadsStore(suiteName: "test-\(UUID().uuidString)")
+        await seen.markSeen(["old"], source: "local")
+        await seen.markSeen(["old"], source: "subscriptions")
+        let poster = FakePoster()
+        let both = [video("dup")]
+        let many = (0..<8).map { video("m\($0)") }
+        let notifier = NewUploadNotifier(
+            sources: [
+                ("local", FakeFeed(videos: both)), ("subscriptions", FakeFeed(videos: both + many)),
+            ], poster: poster, seen: seen, now: { clock.date })
+        #expect(await notifier.checkIfDue(settings: settings()) == NewUploadDetector.maxAlertsPerCheck)
+        #expect(poster.posted.filter { $0 == "dup" }.count == 1)
+        #expect(poster.posted.count == NewUploadDetector.maxAlertsPerCheck)
     }
 
     @Test("enable() requests authorisation when needed")

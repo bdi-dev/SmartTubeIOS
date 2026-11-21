@@ -311,7 +311,7 @@ public struct SettingsView: View {
             Text("Downloads")
         } footer: {
             Text(
-                "New Watch Later videos (up to 5 at a time, under 3 hours) are downloaded when you open the app. New upload alerts are local notifications for channels you follow in SmartTube. The optional yt-dlp server is your own machine running tools/ytdlp-server; use an https:// address (for example from Tailscale). Downloads are never deleted automatically."
+                "New Watch Later videos (up to 5 at a time, under 3 hours) are downloaded when you open the app. New upload alerts are local notifications for channels you follow in SmartTube and for your signed-in subscriptions. The optional yt-dlp server is your own machine running tools/ytdlp-server; use an https:// address (for example from Tailscale). Downloads are never deleted automatically."
             )
         }
     }
