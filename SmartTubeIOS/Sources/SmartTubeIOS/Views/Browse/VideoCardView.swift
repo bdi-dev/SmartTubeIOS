@@ -440,6 +440,11 @@ public struct VideoCardView: View {
                 .overlay(alignment: .topTrailing) {
                     if WatchLaterMembershipStore.shared.contains(video.id) { watchLaterSavedBadge }
                 }
+                #if !os(tvOS)
+            .overlay(alignment: .topLeading) {
+                if isDownloaded { downloadedBadge }
+            }
+                #endif
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(displayTitle)
@@ -498,6 +503,11 @@ public struct VideoCardView: View {
                 .overlay(alignment: .topTrailing) {
                     if WatchLaterMembershipStore.shared.contains(video.id) { watchLaterSavedBadge }
                 }
+                #if !os(tvOS)
+            .overlay(alignment: .topLeading) {
+                if isDownloaded { downloadedBadge }
+            }
+                #endif
             VStack(alignment: .leading, spacing: 3) {
                 Text(displayTitle)
                     .font(.subheadline)
@@ -702,6 +712,23 @@ public struct VideoCardView: View {
     /// #39: shown when this video was saved to Watch Later via this app. See
     /// WatchLaterMembershipStore's doc comment for why this can't reflect Watch
     /// Later state from other clients.
+    #if !os(tvOS)
+    /// `true` when a finished offline copy of this video exists (see `DownloadStore`).
+    private var isDownloaded: Bool { DownloadStore.shared.entry(for: video.id)?.status == .complete }
+
+    private var downloadedBadge: some View {
+        Image(systemName: AppSymbol.downloaded)
+            .font(.caption2)
+            .padding(5)
+            .background(.black.opacity(0.75))
+            .foregroundStyle(.green)
+            .clipShape(Circle())
+            .padding(4)
+            .accessibilityLabel(Text("Downloaded"))
+            .accessibilityIdentifier("video.card.downloadedBadge")
+    }
+    #endif
+
     private var watchLaterSavedBadge: some View {
         Image(systemName: "bookmark.fill")
             .font(.caption2)

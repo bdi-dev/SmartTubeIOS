@@ -35,6 +35,7 @@ struct DownloadsView: View {
                 Text("Downloads")
                     .font(.headline)
                 Spacer()
+                storageSummary
             }
             .padding(.horizontal)
             .padding(.vertical, 12)
@@ -84,6 +85,29 @@ struct DownloadsView: View {
             }
         } message: {
             Text("This video will be removed from your device. You can re-download it from the player.")
+        }
+    }
+
+    /// "2.6 GB used · 45 GB free", turning orange with a note when space is low. Informational only:
+    /// the app never deletes downloads by itself.
+    private var storageSummary: some View {
+        let used = downloadStore.totalBytes()
+        let free = DownloadStore.availableBytes(at: downloadStore.downloadsDirectory)
+        let low = downloadStore.isLowOnDisk()
+        return VStack(alignment: .trailing, spacing: 2) {
+            Text(
+                free.map { "\(formatByteCount(used)) used · \(formatByteCount($0)) free" }
+                    ?? "\(formatByteCount(used)) used"
+            )
+            .font(.caption)
+            .foregroundStyle(low ? Color.orange : Color.secondary)
+            .accessibilityIdentifier("downloads.storageSummary")
+            if low {
+                Text("Low storage — new downloads may fail")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .accessibilityIdentifier("downloads.lowStorageWarning")
+            }
         }
     }
     #else
