@@ -70,6 +70,9 @@ public final class VideoDownloadService {
     @ObservationIgnored private var cancelling: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private var jobs: [String: DownloadJob] = [:]
     @ObservationIgnored private var fractions: [String: [DownloadPart: Double]] = [:]
+    /// Bytes received / expected per part, and the speed estimate, for the row's "3.1 MB/s".
+    @ObservationIgnored private var partBytes: [String: [DownloadPart: (written: Int64, expected: Int64)]] = [:]
+    @ObservationIgnored private var speedTrackers: [String: DownloadSpeedTracker] = [:]
     /// The item whose progress drives the aggregate state and the Live Activity.
     @ObservationIgnored private var leadVideoId: String?
     @ObservationIgnored private var eventTask: Task<Void, Never>?
@@ -169,6 +172,7 @@ public final class VideoDownloadService {
             jobs[videoId] != nil
         else { return }
         store.setPaused(videoId: videoId, true)
+        speedTrackers[videoId]?.reset()
         Task { await transfer.pause(videoId: videoId) }
     }
 
@@ -176,6 +180,7 @@ public final class VideoDownloadService {
     public func resume(videoId: String) {
         guard let entry = store.entry(for: videoId), entry.status == .downloading, entry.isPaused else { return }
         store.setPaused(videoId: videoId, false)
+        speedTrackers[videoId]?.reset()
         Task { await transfer.resume(videoId: videoId) }
     }
 
@@ -317,6 +322,8 @@ public final class VideoDownloadService {
                 store.entry(for: id.videoId)?.status == .downloading
             else { return }
             fractions[id.videoId, default: [:]][id.part] = min(Double(written) / Double(expected), 1)
+            partBytes[id.videoId, default: [:]][id.part] = (written, expected)
+            publishTransferStats(videoId: id.videoId)
             let parts = job.expectedParts
             let sum = parts.reduce(0.0) { $0 + (fractions[id.videoId]?[$1] ?? 0) }
             applyProgress(videoId: id.videoId, progress: sum / Double(max(parts.count, 1)))
@@ -356,6 +363,7 @@ public final class VideoDownloadService {
         jobs[videoId] = job
         try? staging.save(job)
         fractions[videoId, default: [:]][id.part] = 1
+        if let known = partBytes[videoId]?[id.part] { partBytes[videoId]?[id.part] = (known.expected, known.expected) }
         if job.isComplete {
             startPostProcessing(videoId: videoId)
         } else {
@@ -363,6 +371,19 @@ public final class VideoDownloadService {
             let sum = parts.reduce(0.0) { $0 + (fractions[videoId]?[$1] ?? 0) }
             applyProgress(videoId: videoId, progress: sum / Double(max(parts.count, 1)))
         }
+    }
+
+    /// Totals the parts' bytes and updates the row's size and speed readout.
+    private func publishTransferStats(videoId: String) {
+        let parts = partBytes[videoId]?.values ?? [:].values
+        let received = parts.reduce(Int64(0)) { $0 + $1.written }
+        let expected = parts.reduce(Int64(0)) { $0 + $1.expected }
+        var tracker = speedTrackers[videoId] ?? DownloadSpeedTracker()
+        let speed = tracker.record(totalBytes: received, at: Date())
+        speedTrackers[videoId] = tracker
+        let paused = store.entry(for: videoId)?.isPaused ?? false
+        store.setTransferStats(
+            videoId: videoId, bytesPerSecond: paused ? 0 : speed, received: received, expected: expected)
     }
 
     private func applyProgress(videoId: String, progress p: Double) {
@@ -433,6 +454,8 @@ public final class VideoDownloadService {
         postProcessing[id] = nil
         jobs[id] = nil
         fractions[id] = nil
+        partBytes[id] = nil
+        speedTrackers[id] = nil
         staging.remove(videoId: id)
         active.remove(id)
         finish(videoId: id, failure: nil)
@@ -450,6 +473,8 @@ public final class VideoDownloadService {
         staging.remove(videoId: id)
         jobs[id] = nil
         fractions[id] = nil
+        partBytes[id] = nil
+        speedTrackers[id] = nil
         pending.removeAll { $0.id == id }
         let wasActive = active.remove(id) != nil
         store.setStatus(videoId: id, status: .failed, error: message)

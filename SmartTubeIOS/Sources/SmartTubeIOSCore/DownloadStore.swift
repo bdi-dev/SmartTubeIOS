@@ -32,6 +32,10 @@ public struct DownloadedVideo: Codable, Sendable, Identifiable {
     public let isAudioOnly: Bool
     /// `true` while a running download is suspended by the user. Only meaningful for `.downloading`.
     public var isPaused: Bool
+    /// Live transfer figures for the row (not persisted; zero when unknown or not downloading).
+    public var bytesPerSecond: Double = 0
+    public var bytesReceived: Int64 = 0
+    public var bytesExpected: Int64 = 0
 
     public init(
         videoId: String,
@@ -222,12 +226,21 @@ public final class DownloadStore {
         entries[i].progress = min(max(progress, 0), 1)
     }
 
+    /// Updates the live transfer figures shown on the row. Not persisted.
+    public func setTransferStats(videoId: String, bytesPerSecond: Double, received: Int64, expected: Int64) {
+        guard let i = entries.firstIndex(where: { $0.videoId == videoId }) else { return }
+        entries[i].bytesPerSecond = bytesPerSecond
+        entries[i].bytesReceived = received
+        entries[i].bytesExpected = expected
+    }
+
     /// Marks a running download as paused/resumed by the user and persists it.
     public func setPaused(videoId: String, _ paused: Bool) {
         guard let i = entries.firstIndex(where: { $0.videoId == videoId }),
             entries[i].status == .downloading
         else { return }
         entries[i].isPaused = paused
+        if paused { entries[i].bytesPerSecond = 0 }
         saveManifest()
     }
 
@@ -235,7 +248,10 @@ public final class DownloadStore {
         guard let i = entries.firstIndex(where: { $0.videoId == videoId }) else { return }
         entries[i].status = status
         entries[i].errorMessage = error
-        if status != .downloading { entries[i].isPaused = false }
+        if status != .downloading {
+            entries[i].isPaused = false
+            entries[i].bytesPerSecond = 0
+        }
         if status == .complete { entries[i].progress = 1 }
         saveManifest()
     }

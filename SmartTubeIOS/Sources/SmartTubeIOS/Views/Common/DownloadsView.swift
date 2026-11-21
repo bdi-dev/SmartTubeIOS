@@ -183,6 +183,22 @@ private struct DownloadedVideoRow: View {
         return formatDuration(entry.duration)
     }
 
+    private var percentText: String { "\(Int((entry.progress * 100).rounded()))%" }
+
+    /// "Paused", or "34 MB of 80 MB · 3.1 MB/s" while data is flowing.
+    private var transferDetail: String {
+        if entry.isPaused { return String(localized: "Paused", bundle: .module) }
+        var parts: [String] = []
+        if entry.bytesExpected > 0 {
+            parts.append(
+                "\(formatByteCount(entry.bytesReceived)) of \(formatByteCount(entry.bytesExpected))")
+        }
+        if entry.bytesPerSecond > 0 {
+            parts.append("\(formatByteCount(Int64(entry.bytesPerSecond)))/s")
+        }
+        return parts.isEmpty ? String(localized: "Starting…", bundle: .module) : parts.joined(separator: " · ")
+    }
+
     @ViewBuilder private var statusView: some View {
         switch entry.status {
         case .complete:
@@ -191,24 +207,30 @@ private struct DownloadedVideoRow: View {
             Text("Queued").font(.caption).foregroundStyle(.secondary)
                 .accessibilityIdentifier("downloads.status.\(entry.videoId)")
         case .downloading:
-            HStack(spacing: 8) {
-                ProgressView(value: entry.progress)
-                    .tint(entry.isPaused ? .secondary : .accentColor)
-                    .accessibilityIdentifier("downloads.progress.\(entry.videoId)")
-                if entry.isPaused {
-                    Text("Paused").font(.caption).foregroundStyle(.secondary)
-                        .accessibilityIdentifier("downloads.status.\(entry.videoId)")
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 8) {
+                    ProgressView(value: entry.progress)
+                        .tint(entry.isPaused ? .secondary : .accentColor)
+                        .accessibilityIdentifier("downloads.progress.\(entry.videoId)")
+                    Text(percentText)
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("downloads.percent.\(entry.videoId)")
+                    Button {
+                        entry.isPaused ? onResume() : onPause()
+                    } label: {
+                        Image(systemName: entry.isPaused ? "play.fill" : "pause.fill")
+                            .frame(width: 28, height: 28)
+                    }
+                    .buttonStyle(.bordered)
+                    .accessibilityLabel(entry.isPaused ? "Resume download" : "Pause download")
+                    .accessibilityIdentifier(
+                        entry.isPaused ? "downloads.resume.\(entry.videoId)" : "downloads.pause.\(entry.videoId)")
                 }
-                Button {
-                    entry.isPaused ? onResume() : onPause()
-                } label: {
-                    Image(systemName: entry.isPaused ? "play.fill" : "pause.fill")
-                        .frame(width: 28, height: 28)
-                }
-                .buttonStyle(.bordered)
-                .accessibilityLabel(entry.isPaused ? "Resume download" : "Pause download")
-                .accessibilityIdentifier(
-                    entry.isPaused ? "downloads.resume.\(entry.videoId)" : "downloads.pause.\(entry.videoId)")
+                Text(transferDetail)
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("downloads.status.\(entry.videoId)")
             }
         case .merging:
             Text("Merging…").font(.caption).foregroundStyle(.secondary)
