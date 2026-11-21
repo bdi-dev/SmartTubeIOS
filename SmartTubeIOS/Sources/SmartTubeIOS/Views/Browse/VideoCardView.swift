@@ -273,18 +273,11 @@ public struct VideoCardView: View {
                 Label("Play Incognito", systemImage: "eyeglasses")
             }
             Button {
-                Task {
-                    let played = await playerRouter.openInNativePlayer(video: video, api: api)
-                    if !played {
-                        ToastCenter.shared.show(
-                            title: String(localized: "Native player unavailable", bundle: .module),
-                            message: String(localized: "No plain video file was available for this video.", bundle: .module))
-                    }
-                }
+                playerRouter.openInWebPlayer(video: video, api: api)
             } label: {
-                Label("Play in Native Player", systemImage: "play.rectangle")
+                Label("Play in YouTube Player", systemImage: "play.rectangle")
             }
-            .accessibilityIdentifier("video.card.playNativeButton")
+            .accessibilityIdentifier("video.card.playWebButton")
             #endif
             if authService.isSignedIn {
                 Button(role: .destructive) {

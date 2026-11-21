@@ -141,7 +141,7 @@ public struct SettingsView: View {
         @Bindable var store = store
         return Section("Player") {
             #if os(iOS)
-            Toggle("YouTube Web Player", isOn: $store.settings.useTOSPlayerOnIOS)
+            Toggle("Native Player First (YouTube Player fallback)", isOn: $store.settings.useTOSPlayerOnIOS)
                 .accessibilityIdentifier("settings.useTOSPlayerOnIOSToggle")
             #endif
 

@@ -15,7 +15,9 @@ import SmartTubeIOSCore
 //
 // Routing rules:
 //   - If `settingsStore.useTOSPlayerOnIOS` is true (the default — always on except
-//     for UI tests that opt out) and this video hasn't previously hit a fatal embed
+//     for UI tests that opt out), try the native player on a plain MP4 first and fall
+//     back to the web player when none exists (incognito goes straight to the web
+//     player, which honours it). The fallback applies when this video hasn't previously hit a fatal embed
 //     error (TOSPlayerStateStore.fallbackVideoId), present the WKWebView-based
 //     TOS-compliant player.
 //   - Otherwise present the AVPlayer-based pipeline.
@@ -70,6 +72,14 @@ public final class PlayerRouter {
     /// the legacy AVPlayer pipeline's history recording isn't wired to it yet.
     public func open(video: Video, api: InnerTubeAPI, incognito: Bool = false) {
         if settingsStore.useTOSPlayerOnIOS && tosState.fallbackVideoId != video.id {
+            if !incognito {
+                // Native player first; fall back to the web player when no plain stream exists.
+                Task { [self] in
+                    if await openInNativePlayer(video: video, api: api) { return }
+                    openInWebPlayer(video: video, api: api)
+                }
+                return
+            }
             if playerState.presentation != .hidden { playerState.stop() }
             tosState.play(video: video, api: api, incognito: incognito)
             return
