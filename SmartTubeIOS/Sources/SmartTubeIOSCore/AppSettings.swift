@@ -166,6 +166,13 @@ public struct AppSettings: Codable {
     /// decoder issues. Defaults to `false` (all codecs allowed).
     public var preferH264: Bool
 
+    // MARK: Downloads
+    /// When `true` (and signed in), videos newly added to Watch Later are downloaded automatically.
+    /// Defaults to `false` (opt-in). Never deletes anything.
+    public var autoDownloadWatchLater: Bool
+    /// When `true`, automatic downloads only run on an unmetered connection (not cellular / hotspot).
+    public var autoDownloadOnlyOnWiFi: Bool
+
     // MARK: iCloud sync
     /// When `true`, local user data (subscriptions, RSS feeds, video state, queue) is
     /// synced to iCloud via `NSUbiquitousKeyValueStore`. Defaults to `false` (opt-in).
@@ -321,6 +328,8 @@ public struct AppSettings: Codable {
         audioOnlyMode = false
         preferH264 = false
         iCloudSyncEnabled = false
+        autoDownloadWatchLater = false
+        autoDownloadOnlyOnWiFi = true
         #if os(macOS)
         useTOSPlayerOnMac = true
         #else
@@ -405,6 +414,8 @@ extension AppSettings {
         case audioOnlyMode
         case preferH264
         case iCloudSyncEnabled
+        case autoDownloadWatchLater
+        case autoDownloadOnlyOnWiFi
         case useTOSPlayerOnMac
         case useMPVPlayerOnTV
         case useTOSPlayerOnIOS
@@ -475,6 +486,10 @@ extension AppSettings {
         audioOnlyMode = c.safeDecode(Bool.self, forKey: .audioOnlyMode, default: d.audioOnlyMode)
         preferH264 = c.safeDecode(Bool.self, forKey: .preferH264, default: d.preferH264)
         iCloudSyncEnabled = c.safeDecode(Bool.self, forKey: .iCloudSyncEnabled, default: d.iCloudSyncEnabled)
+        autoDownloadWatchLater = c.safeDecode(
+            Bool.self, forKey: .autoDownloadWatchLater, default: d.autoDownloadWatchLater)
+        autoDownloadOnlyOnWiFi = c.safeDecode(
+            Bool.self, forKey: .autoDownloadOnlyOnWiFi, default: d.autoDownloadOnlyOnWiFi)
         useTOSPlayerOnMac = c.safeDecode(Bool.self, forKey: .useTOSPlayerOnMac, default: d.useTOSPlayerOnMac)
         useMPVPlayerOnTV = c.safeDecode(Bool.self, forKey: .useMPVPlayerOnTV, default: d.useMPVPlayerOnTV)
         useTOSPlayerOnIOS = c.safeDecode(Bool.self, forKey: .useTOSPlayerOnIOS, default: d.useTOSPlayerOnIOS)

@@ -43,6 +43,9 @@ public struct SettingsView: View {
             accountSection
             playerSection
             generalSection
+            #if !os(tvOS)
+            downloadsSection
+            #endif
             uiSection
             sponsorBlockSection
             deArrowSection
@@ -267,6 +270,27 @@ public struct SettingsView: View {
 
     /// `true` when this device/build can use iCloud key-value sync.
     private static var iCloudAvailable: Bool { FileManager.default.ubiquityIdentityToken != nil }
+
+    // MARK: - Downloads
+
+    #if !os(tvOS)
+    private var downloadsSection: some View {
+        @Bindable var store = store
+        return Section {
+            Toggle("Auto-download Watch Later", isOn: $store.settings.autoDownloadWatchLater)
+                .accessibilityIdentifier("settings.autoDownloadWatchLaterToggle")
+            Toggle("Only on Wi-Fi", isOn: $store.settings.autoDownloadOnlyOnWiFi)
+                .disabled(!store.settings.autoDownloadWatchLater)
+                .accessibilityIdentifier("settings.autoDownloadWiFiOnlyToggle")
+        } header: {
+            Text("Downloads")
+        } footer: {
+            Text(
+                "New Watch Later videos (up to 5 at a time, under 3 hours) are downloaded when you open the app. Downloads are never deleted automatically."
+            )
+        }
+    }
+    #endif
 
     // MARK: - UI
 

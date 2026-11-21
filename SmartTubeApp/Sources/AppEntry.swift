@@ -33,6 +33,9 @@ struct AppEntry: App {
     @State private var queueInjectConsumed = false
     /// Shared download service for video cards. See SmartTubeIOS/RootView.swift.
     @State private var cardDownloadService: VideoDownloadService
+    #if os(iOS)
+    @State private var watchLaterAutoDownloader: WatchLaterAutoDownloader
+    #endif
     @Environment(\.scenePhase) private var scenePhase
     #if os(iOS)
     @State private var watchLaterAlert: WatchLaterAlert?
@@ -88,6 +91,11 @@ struct AppEntry: App {
             ))
         #endif
         _cardDownloadService = State(initialValue: VideoDownloadService(api: api))
+        #if os(iOS)
+        _watchLaterAutoDownloader = State(
+            initialValue: WatchLaterAutoDownloader(
+                source: api, network: SystemNetworkConditions(), store: .shared, service: _cardDownloadService.wrappedValue))
+        #endif
         #if os(iOS)
         // Task #353: keep the Home Screen widget's snapshot in step with the Home page.
         HomeWidgetPublisher.attach(to: browseViewModel)
@@ -304,6 +312,12 @@ struct AppEntry: App {
                             consumeBotGuardProbeFromLaunchArgs()
                             authService.handleForeground()
                             browseViewModel.refreshIfStale()
+                            #if os(iOS)
+                            Task {
+                                await watchLaterAutoDownloader.syncIfDue(
+                                    settings: settingsStore.settings, isSignedIn: authService.isSignedIn)
+                            }
+                            #endif
                             consumePendingRSSFeedURL()
                             #if os(iOS)
                             consumePendingWatchLaterID()
