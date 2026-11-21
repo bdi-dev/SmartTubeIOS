@@ -93,6 +93,8 @@ public final class BackgroundDownloadSession: BackgroundTransferring, @unchecked
             request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
             for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
         }
+        // New transfers honour "Enable cellular" from the first byte; running ones are held by the service.
+        request.allowsCellularAccess = AppSettings.loadPersisted().allowCellularDownloads
         let task = session.downloadTask(with: request)
         task.taskDescription = id.taskDescription
         task.resume()

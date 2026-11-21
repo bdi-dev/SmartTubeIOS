@@ -14,6 +14,8 @@ public final class ConnectivityMonitor {
     public static let shared = ConnectivityMonitor()
 
     public private(set) var isOnline: Bool?
+    /// `true` when the only usable route is mobile data (no Wi-Fi or Ethernet).
+    public private(set) var isCellularOnly = false
 
     @ObservationIgnored private let monitor: NWPathMonitor?
 
@@ -30,7 +32,13 @@ public final class ConnectivityMonitor {
         self.monitor = monitor
         monitor.pathUpdateHandler = { [weak self] path in
             let online = path.status == .satisfied
-            Task { @MainActor in self?.isOnline = online }
+            let cellularOnly =
+                online && path.usesInterfaceType(.cellular) && !path.usesInterfaceType(.wifi)
+                && !path.usesInterfaceType(.wiredEthernet)
+            Task { @MainActor in
+                self?.isOnline = online
+                self?.isCellularOnly = cellularOnly
+            }
         }
         // NWPathMonitor.start(queue:) is the API's only entry point in our deployment target.
         monitor.start(queue: DispatchQueue(label: "com.void.smarttube.connectivity"))

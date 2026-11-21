@@ -94,6 +94,7 @@ public final class WatchLaterAutoDownloader {
     @discardableResult
     public func syncIfDue(settings: AppSettings, isSignedIn: Bool) async -> Int {
         guard settings.autoDownloadWatchLater, isSignedIn else { return 0 }
+        if !settings.downloadsEnabled { return 0 }
         if settings.autoDownloadOnlyOnWiFi, !network.isUnmetered { return 0 }
         if let last = lastSync, now().timeIntervalSince(last) < DownloadTuning.autoDownloadMinInterval { return 0 }
         lastSync = now()

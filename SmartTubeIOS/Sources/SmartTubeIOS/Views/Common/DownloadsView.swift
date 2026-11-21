@@ -10,6 +10,7 @@ import SwiftUI
 
 struct DownloadsView: View {
     @Environment(DownloadStore.self) private var downloadStore
+    @Environment(SettingsStore.self) private var settingsStore
 
     #if os(iOS)
     @Environment(PlayerRouter.self) private var playerRouter
@@ -29,6 +30,23 @@ struct DownloadsView: View {
     }
 
     #if os(iOS)
+    /// The two download switches, always visible at the top.
+    private var downloadToggles: some View {
+        @Bindable var settings = settingsStore
+        return VStack(spacing: 0) {
+            Toggle("Enable downloads", isOn: $settings.settings.downloadsEnabled)
+                .accessibilityIdentifier("downloads.enableToggle")
+                .onChange(of: settings.settings.downloadsEnabled) { _, _ in downloadService.refreshPolicy() }
+            Divider().padding(.vertical, 6)
+            Toggle("Enable cellular", isOn: $settings.settings.allowCellularDownloads)
+                .accessibilityIdentifier("downloads.cellularToggle")
+                .disabled(!settings.settings.downloadsEnabled)
+                .onChange(of: settings.settings.allowCellularDownloads) { _, _ in downloadService.refreshPolicy() }
+        }
+        .padding(.horizontal)
+        .padding(.bottom, 10)
+    }
+
     private var iOSBody: some View {
         VStack(spacing: 0) {
             HStack {
@@ -40,6 +58,8 @@ struct DownloadsView: View {
             .padding(.horizontal)
             .padding(.vertical, 12)
 
+            downloadToggles
+
             if downloadStore.entries.isEmpty {
                 emptyState
             } else {
@@ -47,6 +67,7 @@ struct DownloadsView: View {
                     ForEach(downloadStore.entries.sorted { $0.downloadedAt > $1.downloadedAt }) { entry in
                         DownloadedVideoRow(
                             entry: entry,
+                            holdReason: downloadService.holdReason,
                             onRetry: { downloadService.retry(videoId: entry.videoId) },
                             onPause: { downloadService.pause(videoId: entry.videoId) },
                             onResume: { downloadService.resume(videoId: entry.videoId) }
@@ -156,6 +177,7 @@ struct DownloadsView: View {
 
 private struct DownloadedVideoRow: View {
     let entry: DownloadedVideo
+    var holdReason: DownloadHoldReason?
     let onRetry: () -> Void
     var onPause: () -> Void = {}
     var onResume: () -> Void = {}
@@ -188,6 +210,11 @@ private struct DownloadedVideoRow: View {
     /// "Paused", or "34 MB of 80 MB · 3.1 MB/s" while data is flowing.
     private var transferDetail: String {
         if entry.isPaused { return String(localized: "Paused", bundle: .module) }
+        switch holdReason {
+        case .disabled: return String(localized: "Downloads are off", bundle: .module)
+        case .waitingForWiFi: return String(localized: "Waiting for Wi-Fi", bundle: .module)
+        case nil: break
+        }
         var parts: [String] = []
         if entry.bytesExpected > 0 {
             parts.append(

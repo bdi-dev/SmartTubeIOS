@@ -172,6 +172,10 @@ public struct AppSettings: Codable {
     public var autoDownloadWatchLater: Bool
     /// When `true`, automatic downloads only run on an unmetered connection (not cellular / hotspot).
     public var autoDownloadOnlyOnWiFi: Bool
+    /// Master switch for downloads: off refuses new downloads and holds running ones.
+    public var downloadsEnabled: Bool
+    /// When off, downloads wait for Wi-Fi (or Ethernet) instead of using mobile data.
+    public var allowCellularDownloads: Bool
 
     // MARK: yt-dlp companion server
     /// When the app asks the user's own yt-dlp server to fetch a download (see
@@ -341,6 +345,8 @@ public struct AppSettings: Codable {
         iCloudSyncEnabled = false
         autoDownloadWatchLater = false
         autoDownloadOnlyOnWiFi = true
+        downloadsEnabled = true
+        allowCellularDownloads = true
         notifyNewUploads = false
         ytDlpMode = .off
         ytDlpServerURL = nil
@@ -430,6 +436,7 @@ extension AppSettings {
         case iCloudSyncEnabled
         case autoDownloadWatchLater
         case autoDownloadOnlyOnWiFi
+        case downloadsEnabled, allowCellularDownloads
         case notifyNewUploads
         case ytDlpMode
         case ytDlpServerURL
@@ -511,6 +518,9 @@ extension AppSettings {
             Bool.self, forKey: .autoDownloadWatchLater, default: d.autoDownloadWatchLater)
         autoDownloadOnlyOnWiFi = c.safeDecode(
             Bool.self, forKey: .autoDownloadOnlyOnWiFi, default: d.autoDownloadOnlyOnWiFi)
+        downloadsEnabled = c.safeDecode(Bool.self, forKey: .downloadsEnabled, default: d.downloadsEnabled)
+        allowCellularDownloads = c.safeDecode(
+            Bool.self, forKey: .allowCellularDownloads, default: d.allowCellularDownloads)
         notifyNewUploads = c.safeDecode(Bool.self, forKey: .notifyNewUploads, default: d.notifyNewUploads)
         ytDlpMode = c.safeDecode(YtDlpMode.self, forKey: .ytDlpMode, default: d.ytDlpMode)
         ytDlpServerURL = c.safeDecode(URL?.self, forKey: .ytDlpServerURL, default: d.ytDlpServerURL)

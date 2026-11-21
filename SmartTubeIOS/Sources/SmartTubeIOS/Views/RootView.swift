@@ -153,6 +153,7 @@ struct MainTabView: View {
     @Environment(\.innerTubeAPI) private var api
     @Environment(SettingsStore.self) private var store
     #if os(iOS)
+    @Environment(VideoDownloadService.self) private var downloadService
     @Environment(PlayerStateStore.self) private var playerState
     @Environment(TOSPlayerStateStore.self) private var tosState
     @Environment(PlayerRouter.self) private var playerRouter
@@ -240,6 +241,9 @@ struct MainTabView: View {
         }
         .onPreferenceChange(TabBarBottomInsetKey.self) { tabBarBottomInset = $0 }
         #if !os(tvOS)
+        .onChange(of: connectivity.isCellularOnly, initial: true) { _, cellularOnly in
+            downloadService.refreshPolicy(cellularOnly: cellularOnly)
+        }
         .onChange(of: connectivity.isOnline, initial: true) { _, isOnline in
             guard
                 OfflineLaunchPolicy.shouldOpenDownloads(

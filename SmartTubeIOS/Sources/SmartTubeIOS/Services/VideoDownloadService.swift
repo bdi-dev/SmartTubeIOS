@@ -73,6 +73,10 @@ public final class VideoDownloadService {
     /// Bytes received / expected per part, and the speed estimate, for the row's "3.1 MB/s".
     @ObservationIgnored private var partBytes: [String: [DownloadPart: (written: Int64, expected: Int64)]] = [:]
     @ObservationIgnored private var speedTrackers: [String: DownloadSpeedTracker] = [:]
+    /// Transfers suspended by the policy (downloads off / waiting for Wi-Fi), as opposed to the user.
+    @ObservationIgnored private var policySuspended: Set<String> = []
+    /// Set while running downloads are held by the "Enable downloads" / "Enable cellular" settings.
+    public private(set) var holdReason: DownloadHoldReason?
     /// The item whose progress drives the aggregate state and the Live Activity.
     @ObservationIgnored private var leadVideoId: String?
     @ObservationIgnored private var eventTask: Task<Void, Never>?
@@ -124,6 +128,12 @@ public final class VideoDownloadService {
     /// Queues `video` for download. Ignored if it is already queued, downloading, merging or
     /// complete. A previously failed entry is re-queued.
     public func enqueue(video: Video, audioOnly: Bool = false) {
+        guard AppSettings.loadPersisted().downloadsEnabled else {
+            ToastCenter.shared.show(
+                title: String(localized: "Downloads are off", bundle: .module),
+                message: String(localized: "Turn them on at the top of Downloads.", bundle: .module))
+            return
+        }
         if let existing = store.entry(for: video.id) {
             switch existing.status {
             case .queued, .downloading, .merging, .complete: return
@@ -180,8 +190,44 @@ public final class VideoDownloadService {
     public func resume(videoId: String) {
         guard let entry = store.entry(for: videoId), entry.status == .downloading, entry.isPaused else { return }
         store.setPaused(videoId: videoId, false)
+        if currentHoldReason() != nil {
+            // Still held by the settings: it will start when they allow it.
+            policySuspended.insert(videoId)
+            return
+        }
         speedTrackers[videoId]?.reset()
         Task { await transfer.resume(videoId: videoId) }
+    }
+
+    // MARK: - Settings policy
+
+    private func currentHoldReason(cellularOnly: Bool? = nil) -> DownloadHoldReason? {
+        let settings = AppSettings.loadPersisted()
+        return DownloadNetworkPolicy.holdReason(
+            downloadsEnabled: settings.downloadsEnabled, allowCellular: settings.allowCellularDownloads,
+            onCellularOnly: cellularOnly ?? ConnectivityMonitor.shared.isCellularOnly)
+    }
+
+    /// Re-applies "Enable downloads" / "Enable cellular" to running transfers. Call when either
+    /// setting changes or the connection changes.
+    public func refreshPolicy(cellularOnly: Bool? = nil) {
+        let reason = currentHoldReason(cellularOnly: cellularOnly)
+        holdReason = reason
+        let running = store.entries.filter { $0.status == .downloading && jobs[$0.videoId] != nil }.map(\.videoId)
+        for id in running {
+            if reason != nil {
+                guard !policySuspended.contains(id), store.entry(for: id)?.isPaused == false else { continue }
+                policySuspended.insert(id)
+                speedTrackers[id]?.reset()
+                store.setTransferStats(
+                    videoId: id, bytesPerSecond: 0, received: store.entry(for: id)?.bytesReceived ?? 0,
+                    expected: store.entry(for: id)?.bytesExpected ?? 0)
+                Task { await transfer.pause(videoId: id) }
+            } else if policySuspended.remove(id) != nil, store.entry(for: id)?.isPaused == false {
+                Task { await transfer.resume(videoId: id) }
+            }
+        }
+        if reason == nil { policySuspended = policySuspended.filter { id in running.contains(id) } }
     }
 
     /// Re-queues a failed download. The stream URLs are resolved again, so an expired link is fine.
@@ -303,6 +349,10 @@ public final class VideoDownloadService {
                 transfer.start(
                     DownloadTransferID(videoId: id, part: part.part), url: part.url, userAgent: part.userAgent,
                     headers: part.headers)
+            }
+            if currentHoldReason() != nil {
+                policySuspended.insert(id)
+                await transfer.pause(videoId: id)
             }
         } catch is CancellationError {
             // `cancel` already cleaned up.
