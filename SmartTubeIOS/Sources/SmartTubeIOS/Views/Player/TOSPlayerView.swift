@@ -777,18 +777,17 @@ public struct TOSPlayerView: View {
 
             #if os(iOS)
             Button {
-                Task {
-                    let played = await playerRouter.openInNativePlayer(video: video, api: innerTubeAPI)
-                    if !played {
-                        ToastCenter.shared.show(
-                            title: String(localized: "Native player unavailable", bundle: .module),
-                            message: String(localized: "No plain video file was available for this video.", bundle: .module))
-                    }
-                }
+                playerRouter.openInNativePlayer(video: video)
             } label: {
-                Label("Play in Native Player", systemImage: "play.rectangle")
+                Label("Play in Native Player", systemImage: "play.square")
             }
             .accessibilityIdentifier("tosPlayer.moreMenu.playNativeRow")
+            Button {
+                playerRouter.playStream(video: video, api: innerTubeAPI)
+            } label: {
+                Label("Play 360p Stream", systemImage: "play.square.stack")
+            }
+            .accessibilityIdentifier("tosPlayer.moreMenu.playStreamRow")
             #endif
 
             Button {

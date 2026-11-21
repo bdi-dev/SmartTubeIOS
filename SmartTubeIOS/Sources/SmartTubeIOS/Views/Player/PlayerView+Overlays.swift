@@ -625,6 +625,19 @@ extension PlayerView {
         .foregroundStyle(.primary)
         .accessibilityIdentifier("player.moreMenu.playWebButton")
         Divider()
+        Button {
+            showMoreMenu = false
+            playerRouter.playStream(video: vm.playerInfo?.video ?? video, api: innerTubeAPI)
+        } label: {
+            Label("Play 360p Stream", systemImage: "play.square.stack")
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding()
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.primary)
+        .accessibilityIdentifier("player.moreMenu.playStreamButton")
+        Divider()
         #endif
     }
 

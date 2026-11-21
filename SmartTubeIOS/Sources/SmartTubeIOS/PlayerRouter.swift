@@ -15,9 +15,7 @@ import SmartTubeIOSCore
 //
 // Routing rules:
 //   - If `settingsStore.useTOSPlayerOnIOS` is true (the default — always on except
-//     for UI tests that opt out), try the native player on a plain MP4 first and fall
-//     back to the web player when none exists (incognito goes straight to the web
-//     player, which honours it). The fallback applies when this video hasn't previously hit a fatal embed
+//     for UI tests that opt out) and this video hasn't previously hit a fatal embed
 //     error (TOSPlayerStateStore.fallbackVideoId), present the WKWebView-based
 //     TOS-compliant player.
 //   - Otherwise present the AVPlayer-based pipeline.
@@ -50,12 +48,29 @@ public final class PlayerRouter {
         tosState.play(video: video, api: api, incognito: false)
     }
 
+    /// Plays `video` in the native AVPlayer pipeline (adaptive streams, quality picker). Fails on
+    /// encrypted streams, in which case its error screen offers the web player.
+    public func openInNativePlayer(video: Video) {
+        if tosState.presentation != .hidden { tosState.stop() }
+        playerState.play(video: video)
+    }
+
+    /// `openInStreamPlayer` for button actions: shows a toast when no plain stream exists.
+    public func playStream(video: Video, api: InnerTubeAPI) {
+        Task { [self] in
+            if await openInStreamPlayer(video: video, api: api) { return }
+            ToastCenter.shared.show(
+                title: String(localized: "Stream unavailable", bundle: .module),
+                message: String(localized: "No plain video file was available for this video.", bundle: .module))
+        }
+    }
+
     /// Plays `video` in the custom native player by streaming a plain MP4 (the same lookup the
     /// downloader uses). Quality is limited to that file's (often 360p-720p), and live streams and
     /// some videos have none. Returns `false`, leaving whatever is playing untouched, when no
     /// stream is available.
     @discardableResult
-    public func openInNativePlayer(video: Video, api: InnerTubeAPI) async -> Bool {
+    public func openInStreamPlayer(video: Video, api: InnerTubeAPI) async -> Bool {
         guard let stream = await InnerTubeDownloadFetcher.muxedStream(api: api, videoId: video.id) else {
             return false
         }
@@ -72,14 +87,6 @@ public final class PlayerRouter {
     /// the legacy AVPlayer pipeline's history recording isn't wired to it yet.
     public func open(video: Video, api: InnerTubeAPI, incognito: Bool = false) {
         if settingsStore.useTOSPlayerOnIOS && tosState.fallbackVideoId != video.id {
-            if !incognito {
-                // Native player first; fall back to the web player when no plain stream exists.
-                Task { [self] in
-                    if await openInNativePlayer(video: video, api: api) { return }
-                    openInWebPlayer(video: video, api: api)
-                }
-                return
-            }
             if playerState.presentation != .hidden { playerState.stop() }
             tosState.play(video: video, api: api, incognito: incognito)
             return

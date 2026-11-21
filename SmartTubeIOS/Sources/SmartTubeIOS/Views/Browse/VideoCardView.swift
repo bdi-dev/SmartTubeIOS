@@ -278,6 +278,18 @@ public struct VideoCardView: View {
                 Label("Play in YouTube Player", systemImage: "play.rectangle")
             }
             .accessibilityIdentifier("video.card.playWebButton")
+            Button {
+                playerRouter.openInNativePlayer(video: video)
+            } label: {
+                Label("Play in Native Player", systemImage: "play.square")
+            }
+            .accessibilityIdentifier("video.card.playNativeButton")
+            Button {
+                playerRouter.playStream(video: video, api: api)
+            } label: {
+                Label("Play 360p Stream", systemImage: "play.square.stack")
+            }
+            .accessibilityIdentifier("video.card.playStreamButton")
             #endif
             if authService.isSignedIn {
                 Button(role: .destructive) {
