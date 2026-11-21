@@ -455,14 +455,26 @@ extension PlaybackViewModel {
         // Local-file fast path — bypass all network fetches for downloaded videos.
         // The path must be inside Documents/SmartTubeDownloads/ to prevent path-traversal
         // from a crafted Video object.
-        if let localURL = video.localFileURL {
+        // A `directStream` (Play in Native Player) takes the same fast path: a ready MP4 URL that
+        // AVPlayer streams directly, with the User-Agent it was signed for.
+        let directStream = video.localFileURL == nil ? video.directStream : nil
+        if let localURL = video.localFileURL ?? directStream?.url {
             let downloadsDir = FileManager.default
                 .urls(for: .documentDirectory, in: .userDomainMask)[0]
                 .appendingPathComponent("SmartTubeDownloads").path
-            if localURL.path.hasPrefix(downloadsDir),
-                FileManager.default.fileExists(atPath: localURL.path)
+            if directStream != nil
+                || (localURL.path.hasPrefix(downloadsDir)
+                    && FileManager.default.fileExists(atPath: localURL.path))
             {
-                let item = AVPlayerItem(url: localURL)
+                let item: AVPlayerItem
+                if let directStream {
+                    let asset = AVURLAsset(
+                        url: directStream.url,
+                        options: ["AVURLAssetHTTPHeaderFieldsKey": ["User-Agent": directStream.userAgent]])
+                    item = AVPlayerItem(asset: asset)
+                } else {
+                    item = AVPlayerItem(url: localURL)
+                }
                 item.audioTimePitchAlgorithm = .spectral
                 // Resume where the user left off (position saved by WatchtimeTracker, works offline).
                 let savedLocalPosition = await VideoStateStore.shared.state(for: video.id)?.position

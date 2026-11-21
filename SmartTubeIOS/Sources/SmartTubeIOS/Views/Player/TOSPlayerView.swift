@@ -62,6 +62,10 @@ public struct TOSPlayerView: View {
     /// below and passes the unwrapped vm to all helper view-builders, so
     /// there is no force-unwrap anywhere in this file.
     @Environment(TOSPlayerStateStore.self) private var tosState
+    #if os(iOS)
+    @Environment(PlayerRouter.self) private var playerRouter
+    @Environment(\.innerTubeAPI) private var innerTubeAPI
+    #endif
     #endif
 
     /// Drives `commentsOverlay` (see moreButton's Comments row). Plain view state —
@@ -770,6 +774,22 @@ public struct TOSPlayerView: View {
 
             DownloadActionButton(video: video)
                 .accessibilityIdentifier("tosPlayer.moreMenu.downloadRow")
+
+            #if os(iOS)
+            Button {
+                Task {
+                    let played = await playerRouter.openInNativePlayer(video: video, api: innerTubeAPI)
+                    if !played {
+                        ToastCenter.shared.show(
+                            title: String(localized: "Native player unavailable", bundle: .module),
+                            message: String(localized: "No plain video file was available for this video.", bundle: .module))
+                    }
+                }
+            } label: {
+                Label("Play in Native Player", systemImage: "play.rectangle")
+            }
+            .accessibilityIdentifier("tosPlayer.moreMenu.playNativeRow")
+            #endif
 
             Button {
                 showCommentsSheet = true

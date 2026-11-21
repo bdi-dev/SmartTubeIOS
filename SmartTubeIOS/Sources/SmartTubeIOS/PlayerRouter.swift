@@ -48,6 +48,22 @@ public final class PlayerRouter {
         tosState.play(video: video, api: api, incognito: false)
     }
 
+    /// Plays `video` in the custom native player by streaming a plain MP4 (the same lookup the
+    /// downloader uses). Quality is limited to that file's (often 360p-720p), and live streams and
+    /// some videos have none. Returns `false`, leaving whatever is playing untouched, when no
+    /// stream is available.
+    @discardableResult
+    public func openInNativePlayer(video: Video, api: InnerTubeAPI) async -> Bool {
+        guard let stream = await InnerTubeDownloadFetcher.muxedStream(api: api, videoId: video.id) else {
+            return false
+        }
+        var direct = video
+        direct.directStream = stream
+        if tosState.presentation != .hidden { tosState.stop() }
+        playerState.play(video: direct)
+        return true
+    }
+
     /// Open `video` in whichever player pipeline is currently preferred.
     /// `incognito` (#94) skips recording this video to watch history / resume
     /// position — currently only honored by the TOS pipeline (the iOS default);

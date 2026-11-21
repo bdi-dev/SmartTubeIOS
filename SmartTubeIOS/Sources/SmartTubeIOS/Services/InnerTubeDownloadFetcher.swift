@@ -143,23 +143,41 @@ public final class InnerTubeDownloadFetcher: DownloadFetching {
     /// Note: TVHTML5-signed CDN URLs always return 403 when fetched without session cookies,
     /// so the Android client (c=ANDROID URLs) is used as the reliable fallback.
     private func resolveMuxed(videoId: String) async -> DownloadPlan? {
-        for (label, clientUA, fetch) in clientCandidates(videoId: videoId) {
+        guard let stream = await Self.muxedStream(api: api, videoId: videoId) else { return nil }
+        return DownloadPlan(parts: [.init(part: .muxed, url: stream.url, userAgent: stream.userAgent)])
+    }
+
+    /// The best plain MP4 (video + audio in one file) YouTube will serve for `videoId`, with the
+    /// User-Agent its URL was signed for. Tries the Web client then Android and accepts a URL only
+    /// if the CDN answers a one-byte range probe. Shared by downloads and "Play in Native Player".
+    public static func muxedStream(api: InnerTubeAPI, videoId: String) async -> Video.DirectStream? {
+        let candidates: [(String, String, () async throws -> PlayerInfo)] = [
+            (
+                "Web", InnerTubeClients.Web.userAgent,
+                { try await api.fetchPlayerInfoForDownload(videoId: videoId) }
+            ),
+            (
+                "Android", InnerTubeClients.Android.userAgent,
+                { try await api.fetchPlayerInfoAndroid(videoId: videoId) }
+            ),
+        ]
+        for (label, clientUA, fetch) in candidates {
             if Task.isCancelled { return nil }
             guard let info = try? await fetch() else {
-                fetchLog.notice("[download] \(label) client failed or UNPLAYABLE, trying next")
+                fetchLog.notice("[stream] \(label) client failed or UNPLAYABLE, trying next")
                 continue
             }
-            fetchLog.notice("[download] \(label) formats=\(info.formats.count) hlsURL=\(info.hlsURL != nil)")
+            fetchLog.notice("[stream] \(label) formats=\(info.formats.count) hlsURL=\(info.hlsURL != nil)")
             guard let muxedURL = info.bestMuxedDownloadURL else {
-                fetchLog.notice("[download] \(label) — no muxed MP4, trying next")
+                fetchLog.notice("[stream] \(label) — no muxed MP4, trying next")
                 continue
             }
-            guard await Self.probe(url: muxedURL, userAgent: clientUA) else {
-                fetchLog.notice("[download] \(label) — CDN rejected URL, trying next")
+            guard await probe(url: muxedURL, userAgent: clientUA) else {
+                fetchLog.notice("[stream] \(label) — CDN rejected URL, trying next")
                 continue
             }
-            fetchLog.notice("[download] \(label) ✅ muxed URL accepted")
-            return DownloadPlan(parts: [.init(part: .muxed, url: muxedURL, userAgent: clientUA)])
+            fetchLog.notice("[stream] \(label) ✅ muxed URL accepted")
+            return Video.DirectStream(url: muxedURL, userAgent: clientUA)
         }
         return nil
     }

@@ -49,6 +49,19 @@ public struct Video: Identifiable, Hashable, Codable, Sendable {
     /// `true` when this video refers to a local downloaded file rather than a remote stream.
     public var isDownloaded: Bool { localFileURL != nil }
 
+    /// A ready-to-play remote MP4 (used by "Play in Native Player"): the native player streams it
+    /// directly with the User-Agent the URL was signed for, skipping stream extraction.
+    /// Runtime only, never persisted.
+    public struct DirectStream: Sendable, Hashable {
+        public let url: URL
+        public let userAgent: String
+        public init(url: URL, userAgent: String) {
+            self.url = url
+            self.userAgent = userAgent
+        }
+    }
+    public var directStream: DirectStream? = nil
+
     private enum CodingKeys: String, CodingKey {
         case id, title, channelTitle, channelId, description, thumbnailURL, duration
         case viewCount, publishedAt, publishedTimeText, isLive, isUpcoming, isShort, hasPortraitThumbnail
