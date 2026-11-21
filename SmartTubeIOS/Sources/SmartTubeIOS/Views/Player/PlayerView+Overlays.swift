@@ -596,9 +596,9 @@ extension PlayerView {
             downloadService.enqueue(video: vm.playerInfo?.video ?? video)
         } label: {
             Label(DownloadActionLabel.title(for: downloadStatus), systemImage: AppSymbol.download)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding()
-            .contentShape(Rectangle())
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding()
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .foregroundStyle(.primary)
