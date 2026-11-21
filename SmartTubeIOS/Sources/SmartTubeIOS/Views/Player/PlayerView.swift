@@ -42,7 +42,8 @@ public struct PlayerView: View {
     @State var isTransitioning = false
     @State var channelDestination: ChannelDestination?
     #if !os(tvOS)
-    @State var downloadService: VideoDownloadService
+    /// The app-wide service: there must be exactly one consumer of the background session's events.
+    @Environment(VideoDownloadService.self) var downloadService
     @State var downloadAlertItem: DownloadAlertItem?
     #endif
     #if os(iOS)
@@ -114,9 +115,6 @@ public struct PlayerView: View {
         self.video = video
         #if !os(iOS)
         _vm = State(initialValue: PlaybackViewModel(api: api))
-        #endif
-        #if !os(tvOS)
-        _downloadService = State(initialValue: VideoDownloadService(api: api))
         #endif
     }
 

@@ -31,5 +31,19 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         )
         return mask
     }
+
+    /// The system relaunched (or woke) the app because background downloads have events for us.
+    /// Touching `shared` re-creates the background session with the stored identifier, which makes
+    /// the system deliver those events to its delegate; the handler is stashed and called once
+    /// `urlSessionDidFinishEvents(forBackgroundURLSession:)` has been relayed to the service.
+    func application(
+        _ application: UIApplication,
+        handleEventsForBackgroundURLSession identifier: String,
+        completionHandler: @escaping () -> Void
+    ) {
+        appDelegateLog.notice("[AppDelegate] handleEventsForBackgroundURLSession id=\(identifier, privacy: .public)")
+        BackgroundDownloadSession.shared.handleEventsForBackgroundSession(
+            identifier: identifier, completionHandler: completionHandler)
+    }
 }
 #endif

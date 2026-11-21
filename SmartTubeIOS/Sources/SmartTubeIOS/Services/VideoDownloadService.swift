@@ -13,7 +13,14 @@ private let downloadLog = CrashlyticsLogger(category: "Download")
 //
 // FIFO download queue for the personal downloads library. Files land in app storage only
 // (`DownloadStore`); there is no Photos export. Per-item progress and status live in
-// `DownloadStore.entries`; the network work is delegated to a `DownloadFetching` seam.
+// `DownloadStore.entries`.
+//
+// Pipeline per video: `DownloadFetching.resolve` (foreground, quick) -> a persisted
+// `DownloadJob` + one background `URLSession` transfer per part -> the transfer layer stages
+// each finished part under `Staging/<videoId>` and reports it -> when every part is staged,
+// `DownloadFetching.assemble` (merge + remux, inside a UIKit background task) ->
+// `DownloadStore.finalize`. Transfers keep running while the app is suspended or not running;
+// `recoverInterruptedDownloads()` re-attaches on the next launch.
 // At most `DownloadTuning.maxConcurrent` items run at once.
 
 @MainActor
@@ -46,12 +53,22 @@ public final class VideoDownloadService {
 
     @ObservationIgnored private let store: DownloadStore
     @ObservationIgnored private let fetcher: any DownloadFetching
+    @ObservationIgnored private let transfer: any BackgroundTransferring
+    @ObservationIgnored private let workScope: any BackgroundWorkScope
     @ObservationIgnored private let maxConcurrent: Int
     @ObservationIgnored private let liveActivitiesEnabled: Bool
     @ObservationIgnored private var pending: [Video] = []
-    @ObservationIgnored private var running: [String: Task<Void, Never>] = [:]
+    /// Videos occupying a concurrency slot (resolving, transferring or post-processing).
+    @ObservationIgnored private var active: Set<String> = []
+    @ObservationIgnored private var starting: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored private var postProcessing: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored private var cancelling: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored private var jobs: [String: DownloadJob] = [:]
+    @ObservationIgnored private var fractions: [String: [DownloadPart: Double]] = [:]
     /// The item whose progress drives the aggregate state and the Live Activity.
     @ObservationIgnored private var leadVideoId: String?
+    @ObservationIgnored private var eventTask: Task<Void, Never>?
+    @ObservationIgnored private var recoveryTask: Task<Void, Never>?
 
     #if os(iOS)
     @available(iOS 16.1, *)
@@ -59,19 +76,39 @@ public final class VideoDownloadService {
     private var liveActivity: Activity<DownloadActivityAttributes>?
     #endif
 
+    private var staging: DownloadStaging { transfer.staging }
+
     // MARK: - Init
 
+    /// - Parameter autoRecover: re-attach to background transfers left over from a previous
+    ///   launch right away. Tests pass `false` and call `recoverInterruptedDownloads()` themselves.
     public init(
         api: InnerTubeAPI = InnerTubeAPI(),
         store: DownloadStore = .shared,
         fetcher: (any DownloadFetching)? = nil,
+        transfer: (any BackgroundTransferring)? = nil,
+        workScope: (any BackgroundWorkScope)? = nil,
         maxConcurrent: Int = DownloadTuning.maxConcurrent,
-        liveActivitiesEnabled: Bool = true
+        liveActivitiesEnabled: Bool = true,
+        autoRecover: Bool = true
     ) {
         self.store = store
         self.fetcher = fetcher ?? InnerTubeDownloadFetcher(api: api)
+        self.transfer = transfer ?? BackgroundDownloadSession.shared
+        self.workScope = workScope ?? SystemBackgroundWorkScope()
         self.maxConcurrent = max(1, maxConcurrent)
         self.liveActivitiesEnabled = liveActivitiesEnabled
+
+        let events = self.transfer.events
+        eventTask = Task { [weak self] in
+            for await event in events {
+                guard let self else { break }
+                self.handle(event)
+            }
+        }
+        if autoRecover {
+            recoveryTask = Task { [weak self] in await self?.recoverInterruptedDownloads() }
+        }
     }
 
     // MARK: - Public
@@ -110,19 +147,16 @@ public final class VideoDownloadService {
         enqueue(video: video)
     }
 
-    /// Cancels a queued or running download. The entry is kept (as failed "Cancelled") so the
-    /// user can retry; call `DownloadStore.remove` to delete it.
+    /// Cancels a queued or running download: stops its transfers and deletes its staging data.
+    /// The entry is kept (as failed "Cancelled") so the user can retry; call
+    /// `DownloadStore.remove` to delete it.
     public func cancel(videoId: String) {
         pending.removeAll { $0.id == videoId }
-        if let task = running[videoId] {
-            task.cancel()
-        } else if store.entry(for: videoId)?.status == .queued {
-            store.setStatus(videoId: videoId, status: .failed, error: "Cancelled")
-            refreshAggregate()
-        }
+        guard let entry = store.entry(for: videoId), Self.isInFlight(entry.status) else { return }
+        fail(videoId: videoId, message: Self.cancelledMessage)
     }
 
-    /// Re-queues a failed download.
+    /// Re-queues a failed download. The stream URLs are resolved again, so an expired link is fine.
     public func retry(videoId: String) {
         guard let entry = store.entry(for: videoId), entry.status == .failed else { return }
         enqueue(
@@ -139,104 +173,302 @@ public final class VideoDownloadService {
         if !state.isActive { state = .idle }
     }
 
-    // MARK: - Queue
+    // MARK: - Recovery
 
-    private func pump() {
-        while running.count < maxConcurrent, !pending.isEmpty {
-            let video = pending.removeFirst()
-            guard store.entry(for: video.id)?.status == .queued else { continue }
-            running[video.id] = Task { [weak self] in
-                await self?.process(video)
+    /// Reconciles in-flight entries left over from a previous launch with what the background
+    /// session actually still has:
+    /// - live transfers: re-attach, the entry stays `downloading` and progress continues;
+    /// - every part staged but nothing live: resume post-processing;
+    /// - neither: `failed("Interrupted")`.
+    public func recoverInterruptedDownloads() async {
+        let live = await transfer.liveTransfers()
+        for entry in store.entries where Self.isInFlight(entry.status) {
+            let id = entry.videoId
+            if active.contains(id) || pending.contains(where: { $0.id == id }) { continue }
+            guard let job = staging.load(videoId: id) else {
+                failInterrupted(videoId: id)
+                continue
+            }
+            let hasLiveTransfer = live.contains { $0.videoId == id }
+            if hasLiveTransfer {
+                adopt(job, status: .downloading)
+                refreshAggregate()
+            } else if job.isComplete {
+                adopt(job, status: .merging)
+                startPostProcessing(videoId: id)
+            } else {
+                failInterrupted(videoId: id)
             }
         }
-    }
-
-    private func process(_ video: Video) async {
-        let id = video.id
-        store.setStatus(videoId: id, status: .downloading)
-        if leadVideoId == nil {
-            leadVideoId = id
-            #if os(iOS)
-            if liveActivitiesEnabled, #available(iOS 16.1, *) { startLiveActivity(video: video) }
-            #endif
-        }
-        refreshAggregate()
-
-        var failure: String?
-        do {
-            let tempURL = try await fetcher.fetch(video: video) { [weak self] event in
-                Task { @MainActor [weak self] in self?.handle(event, videoId: id) }
+        // Staging left behind by entries that no longer exist or are no longer in flight.
+        if let names = try? FileManager.default.contentsOfDirectory(atPath: staging.root.path) {
+            for name in names {
+                let inFlight = store.entry(for: name).map { Self.isInFlight($0.status) } ?? false
+                if !inFlight && !active.contains(name) { staging.remove(videoId: name) }
             }
-            if !store.finalize(videoId: id, from: tempURL) {
-                try? FileManager.default.removeItem(at: tempURL)
-                failure = store.entry(for: id)?.errorMessage ?? "Could not save the downloaded file"
-            }
-        } catch is CancellationError {
-            failure = "Cancelled"
-        } catch let urlError as URLError where urlError.code == .cancelled {
-            failure = "Cancelled"
-        } catch {
-            downloadLog.error("[download] ❌ \(id) failed: \(error.localizedDescription)")
-            failure = error.localizedDescription
         }
-
-        if let failure {
-            store.setStatus(videoId: id, status: .failed, error: failure)
-        }
-        running[id] = nil
-        await finish(videoId: id, failure: failure)
         pump()
     }
 
-    private func handle(_ event: DownloadFetchEvent, videoId: String) {
-        guard let entry = store.entry(for: videoId) else { return }
-        switch event {
-        case .progress(let p):
-            guard entry.status == .downloading else { return }
-            store.setProgress(videoId: videoId, progress: p)
-            if videoId == leadVideoId { refreshAggregate() }
-            #if os(iOS)
-            if liveActivitiesEnabled, videoId == leadVideoId, #available(iOS 16.1, *) {
-                Task { await updateLiveActivity(phase: .downloading, progress: p) }
+    private func adopt(_ job: DownloadJob, status: DownloadedVideo.Status) {
+        let id = job.videoId
+        jobs[id] = job
+        active.insert(id)
+        fractions[id] = Dictionary(uniqueKeysWithValues: job.donePartNames.map { ($0, 1.0) })
+        store.setStatus(videoId: id, status: status)
+        if let entry = store.entry(for: id) { promoteLead(id, title: entry.title) }
+    }
+
+    private func failInterrupted(videoId: String) {
+        staging.remove(videoId: videoId)
+        store.setStatus(videoId: videoId, status: .failed, error: Self.interruptedMessage)
+        store.setProgress(videoId: videoId, progress: 0)
+        refreshAggregate()
+    }
+
+    // MARK: - Queue
+
+    private static let cancelledMessage = "Cancelled"
+    private static let interruptedMessage = "Interrupted"
+
+    private static func isInFlight(_ status: DownloadedVideo.Status) -> Bool {
+        switch status {
+        case .queued, .downloading, .merging: return true
+        case .complete, .failed: return false
+        }
+    }
+
+    private func pump() {
+        while active.count < maxConcurrent, !pending.isEmpty {
+            let video = pending.removeFirst()
+            guard store.entry(for: video.id)?.status == .queued else { continue }
+            active.insert(video.id)
+            starting[video.id] = Task { [weak self] in
+                await self?.begin(video)
             }
-            #endif
-        case .merging:
-            // Ignore a late event that arrives after the item already finished.
-            guard entry.status == .downloading else { return }
-            store.setStatus(videoId: videoId, status: .merging)
-            if videoId == leadVideoId { refreshAggregate() }
+        }
+    }
+
+    /// Resolves the streams, persists the job record, and hands each part to the transfer layer.
+    private func begin(_ video: Video) async {
+        let id = video.id
+        store.setStatus(videoId: id, status: .downloading)
+        store.setProgress(videoId: id, progress: 0)
+        promoteLead(id, title: video.title)
+        refreshAggregate()
+
+        let endWork = workScope.begin(onExpire: {})
+        defer { endWork() }
+        // A cancel followed by a quick retry must not have the old cancel hit the new transfers.
+        await cancelling[id]?.value
+        do {
+            let plan = try await fetcher.resolve(video: video)
+            try Task.checkCancellation()
+            let job = DownloadJob(videoId: id, plan: plan)
+            try staging.save(job)
+            jobs[id] = job
+            fractions[id] = [:]
+            starting[id] = nil
+            for part in plan.parts {
+                transfer.start(
+                    DownloadTransferID(videoId: id, part: part.part), url: part.url, userAgent: part.userAgent)
+            }
+        } catch is CancellationError {
+            // `cancel` already cleaned up.
+        } catch let urlError as URLError where urlError.code == .cancelled {
+        } catch {
+            downloadLog.error("[download] ❌ \(id) failed to start: \(error.localizedDescription)")
+            fail(videoId: id, message: error.localizedDescription)
+        }
+    }
+
+    // MARK: - Transfer events
+
+    private func handle(_ event: BackgroundTransferEvent) {
+        switch event {
+        case .progress(let id, let written, let expected):
+            guard expected > 0, let job = trackedJob(id.videoId),
+                store.entry(for: id.videoId)?.status == .downloading
+            else { return }
+            fractions[id.videoId, default: [:]][id.part] = min(Double(written) / Double(expected), 1)
+            let parts = job.expectedParts
+            let sum = parts.reduce(0.0) { $0 + (fractions[id.videoId]?[$1] ?? 0) }
+            applyProgress(videoId: id.videoId, progress: sum / Double(max(parts.count, 1)))
+        case .staged(let id):
+            handleStaged(id)
+        case .failed(let id, let message):
+            guard trackedJob(id.videoId) != nil || active.contains(id.videoId) else { return }
+            downloadLog.error("[download] ❌ \(id.taskDescription) failed: \(message)")
+            fail(videoId: id.videoId, message: message)
+        case .sessionEventsFinished:
+            // Relayed through the ordered stream so any post-processing background task has
+            // already begun before the system is told it may suspend us again.
+            transfer.backgroundEventsDidFinish()
+        }
+    }
+
+    /// The job for an in-flight video: the in-memory one, or (events can arrive before
+    /// `recoverInterruptedDownloads` has run after a relaunch) the one persisted on disk.
+    private func trackedJob(_ videoId: String) -> DownloadJob? {
+        if let job = jobs[videoId] { return job }
+        guard let entry = store.entry(for: videoId), Self.isInFlight(entry.status),
+            !pending.contains(where: { $0.id == videoId }),
+            let job = staging.load(videoId: videoId)
+        else { return nil }
+        adopt(job, status: entry.status == .merging ? .merging : .downloading)
+        return job
+    }
+
+    private func handleStaged(_ id: DownloadTransferID) {
+        let videoId = id.videoId
+        guard var job = trackedJob(videoId), store.entry(for: videoId) != nil else {
+            // Late event for something cancelled or removed: drop its bytes.
+            if !active.contains(videoId) { staging.remove(videoId: videoId) }
+            return
+        }
+        job.donePartNames.insert(id.part)
+        jobs[videoId] = job
+        try? staging.save(job)
+        fractions[videoId, default: [:]][id.part] = 1
+        if job.isComplete {
+            startPostProcessing(videoId: videoId)
+        } else {
+            let parts = job.expectedParts
+            let sum = parts.reduce(0.0) { $0 + (fractions[videoId]?[$1] ?? 0) }
+            applyProgress(videoId: videoId, progress: sum / Double(max(parts.count, 1)))
+        }
+    }
+
+    private func applyProgress(videoId: String, progress p: Double) {
+        store.setProgress(videoId: videoId, progress: p)
+        guard videoId == leadVideoId else { return }
+        refreshAggregate()
+        #if os(iOS)
+        if liveActivitiesEnabled, #available(iOS 16.1, *) {
+            Task { await updateLiveActivity(phase: .downloading, progress: p) }
+        }
+        #endif
+    }
+
+    // MARK: - Post-processing
+
+    private func startPostProcessing(videoId id: String) {
+        guard postProcessing[id] == nil, let job = jobs[id] else { return }
+        store.setStatus(videoId: id, status: .merging)
+        if id == leadVideoId {
+            refreshAggregate()
             #if os(iOS)
-            if liveActivitiesEnabled, videoId == leadVideoId, #available(iOS 16.1, *) {
+            if liveActivitiesEnabled, #available(iOS 16.1, *) {
                 Task { await updateLiveActivity(phase: .saving, progress: 1) }
             }
             #endif
         }
+        // Keeps the process alive for the merge when we were only woken in the background. If the
+        // system expires it anyway, the staged files remain and the next launch resumes.
+        let endWork = workScope.begin(onExpire: {
+            downloadLog.notice("[download] background time expired during post-processing of \(id)")
+        })
+        postProcessing[id] = Task { [weak self] in
+            await self?.postProcess(job, endWork: endWork)
+        }
     }
 
-    private func finish(videoId: String, failure: String?) async {
+    private func postProcess(_ job: DownloadJob, endWork: @MainActor () -> Void) async {
+        let id = job.videoId
+        defer { endWork() }
+        var stagedParts: [DownloadPart: URL] = [:]
+        for part in job.expectedParts { stagedParts[part] = staging.stagedFile(videoId: id, part: part) }
+        do {
+            let tempURL = try await fetcher.assemble(videoId: id, stagedParts: stagedParts)
+            guard !Task.isCancelled, store.entry(for: id)?.status == .merging else {
+                try? FileManager.default.removeItem(at: tempURL)
+                return
+            }
+            if store.finalize(videoId: id, from: tempURL) {
+                succeed(videoId: id)
+            } else {
+                try? FileManager.default.removeItem(at: tempURL)
+                fail(
+                    videoId: id,
+                    message: store.entry(for: id)?.errorMessage ?? "Could not save the downloaded file")
+            }
+        } catch is CancellationError {
+            // `cancel` already cleaned up.
+        } catch {
+            downloadLog.error("[download] ❌ \(id) post-processing failed: \(error.localizedDescription)")
+            if !Task.isCancelled { fail(videoId: id, message: error.localizedDescription) }
+        }
+    }
+
+    // MARK: - Completion
+
+    private func succeed(videoId id: String) {
+        postProcessing[id] = nil
+        jobs[id] = nil
+        fractions[id] = nil
+        staging.remove(videoId: id)
+        active.remove(id)
+        finish(videoId: id, failure: nil)
+        pump()
+    }
+
+    /// Marks `videoId` failed and releases everything it held: transfers, staging, slot.
+    private func fail(videoId id: String, message: String) {
+        starting[id]?.cancel()
+        starting[id] = nil
+        postProcessing[id]?.cancel()
+        postProcessing[id] = nil
+        let transfer = self.transfer
+        cancelling[id] = Task { await transfer.cancel(videoId: id) }
+        staging.remove(videoId: id)
+        jobs[id] = nil
+        fractions[id] = nil
+        pending.removeAll { $0.id == id }
+        let wasActive = active.remove(id) != nil
+        store.setStatus(videoId: id, status: .failed, error: message)
+        store.setProgress(videoId: id, progress: 0)
+        if wasActive {
+            finish(videoId: id, failure: message)
+        } else {
+            refreshAggregate()
+        }
+        pump()
+    }
+
+    private func finish(videoId: String, failure: String?) {
         if videoId == leadVideoId {
             leadVideoId = nil
             #if os(iOS)
             if liveActivitiesEnabled, #available(iOS 16.1, *) {
-                await endLiveActivity(phase: failure == nil ? .done : .failed)
+                let phase: DownloadActivityAttributes.DownloadContentState.Phase =
+                    failure == nil ? .done : .failed
+                Task { await endLiveActivity(phase: phase) }
             }
             #endif
         }
         // Promote another running item to lead.
-        if leadVideoId == nil { leadVideoId = running.keys.first }
+        if leadVideoId == nil { leadVideoId = active.first }
         // `.done` / `.failed` are momentary results for the UI; the next progress event or
         // `reset()` restores the aggregate.
         switch failure {
         case nil: state = .done
-        case "Cancelled": refreshAggregate()
+        case Self.cancelledMessage: refreshAggregate()
         case .some(let reason): state = .failed(reason)
         }
     }
 
+    private func promoteLead(_ id: String, title: String) {
+        guard leadVideoId == nil else { return }
+        leadVideoId = id
+        #if os(iOS)
+        if liveActivitiesEnabled, #available(iOS 16.1, *) { startLiveActivity(title: title) }
+        #endif
+    }
+
     private func refreshAggregate() {
-        if case .done = state, pending.isEmpty, running.isEmpty { return }
-        if case .failed = state, pending.isEmpty, running.isEmpty { return }
-        guard !pending.isEmpty || !running.isEmpty else {
+        if case .done = state, pending.isEmpty, active.isEmpty { return }
+        if case .failed = state, pending.isEmpty, active.isEmpty { return }
+        guard !pending.isEmpty || !active.isEmpty else {
             state = .idle
             return
         }
@@ -255,9 +487,9 @@ public final class VideoDownloadService {
 
     #if os(iOS)
     @available(iOS 16.1, *)
-    private func startLiveActivity(video: Video) {
+    private func startLiveActivity(title: String) {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
-        let attrs = DownloadActivityAttributes(videoTitle: video.title)
+        let attrs = DownloadActivityAttributes(videoTitle: title)
         let state = DownloadActivityAttributes.DownloadContentState(progress: 0, phase: .fetching)
         do {
             liveActivity = try Activity<DownloadActivityAttributes>.request(

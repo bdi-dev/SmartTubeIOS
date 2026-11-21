@@ -7,21 +7,17 @@ private let fetchLog = CrashlyticsLogger(category: "Download")
 
 // MARK: - DownloadFetching
 
-/// Progress / phase events emitted while a download is being fetched.
-public enum DownloadFetchEvent: Sendable, Equatable {
-    /// Fraction of bytes downloaded, 0…1.
-    case progress(Double)
-    /// Bytes are on disk; adaptive streams are being merged / the file is being remuxed.
-    case merging
-}
-
-/// Seam between the download queue (`VideoDownloadService`) and the network:
-/// "resolve a stream, download it, and hand back a finished, AVPlayer-ready MP4 temp file".
+/// Seam between the download queue (`VideoDownloadService`) and YouTube:
+/// "work out which CDN files to fetch" and, later, "turn the fetched files into one
+/// AVPlayer-ready MP4". The bytes themselves travel through a `BackgroundTransferring`.
 /// Tests supply a fake; production uses `InnerTubeDownloadFetcher`.
 public protocol DownloadFetching: Sendable {
-    /// Returns a temp file URL (owned by the caller from now on). Throws on failure and
-    /// cleans up its own intermediate files. Must honour task cancellation.
-    func fetch(video: Video, onEvent: @escaping @Sendable (DownloadFetchEvent) -> Void) async throws -> URL
+    /// Resolves signed CDN URLs (and the User-Agent each needs). Throws if nothing is downloadable.
+    func resolve(video: Video) async throws -> DownloadPlan
+
+    /// Merges (video + audio) and passthrough-remuxes the staged files into a finished MP4 temp
+    /// file owned by the caller. Must not delete the staged inputs; honours task cancellation.
+    func assemble(videoId: String, stagedParts: [DownloadPart: URL]) async throws -> URL
 }
 
 struct DownloadFetchError: LocalizedError {
@@ -31,9 +27,9 @@ struct DownloadFetchError: LocalizedError {
 
 // MARK: - InnerTubeDownloadFetcher
 
-/// Production fetcher: resolves a muxed MP4 (Web, then Android client) or falls back to merging
-/// adaptive video + audio streams, then passthrough-remuxes so the moov atom is first and
-/// AVPlayer can play the file.
+/// Production fetcher: resolves a muxed MP4 (Web, then Android client) or falls back to adaptive
+/// video + audio streams, then passthrough-remuxes so the moov atom is first and AVPlayer can
+/// play the file.
 public final class InnerTubeDownloadFetcher: DownloadFetching {
     private let api: InnerTubeAPI
 
@@ -41,15 +37,15 @@ public final class InnerTubeDownloadFetcher: DownloadFetching {
         self.api = api
     }
 
-    /// URLSession used for all YouTube CDN downloads.
-    /// httpAdditionalHeaders cannot override User-Agent on iOS — must use URLRequest.setValue.
-    private static let cdnSession = URLSession(configuration: .default)
+    /// Foreground session used only to probe that a resolved URL is accepted by the CDN.
+    private static let probeSession = URLSession(configuration: .ephemeral)
 
     /// Builds a URLRequest for a YouTube CDN URL.
     /// - `alr=yes` signals the CDN to respond with the full stream rather than an
     ///   initial probe chunk. Without it, adaptive-stream URLs often return 403.
     /// - `userAgent` must match the client that signed the URL (`c=` parameter):
     ///   Web → desktop Chrome, TV-auth → Cobalt, iOS → native iOS app UA.
+    ///   httpAdditionalHeaders cannot override User-Agent on iOS — must use URLRequest.setValue.
     static func cdnRequest(
         for url: URL, userAgent: String = InnerTubeClients.iOS.userAgent
     ) -> URLRequest {
@@ -65,19 +61,13 @@ public final class InnerTubeDownloadFetcher: DownloadFetching {
         return req
     }
 
-    // MARK: DownloadFetching
+    // MARK: Stream resolution
 
-    public func fetch(
-        video: Video, onEvent: @escaping @Sendable (DownloadFetchEvent) -> Void
-    ) async throws -> URL {
+    public func resolve(video: Video) async throws -> DownloadPlan {
         let videoId = video.id
-        if let tempURL = await tryDirectDownload(videoId: videoId, onEvent: onEvent) {
-            onEvent(.merging)
-            defer { try? FileManager.default.removeItem(at: tempURL) }
-            return try await passthroughRemux(inputURL: tempURL, videoId: videoId, suffix: "muxed")
-        }
+        if let plan = await resolveMuxed(videoId: videoId) { return plan }
 
-        fetchLog.notice("[download] direct download failed, trying adaptive merge fallback")
+        fetchLog.notice("[download] no usable muxed stream, trying adaptive fallback")
         let androidInfo = try await api.fetchPlayerInfoAndroid(videoId: videoId)
         fetchLog.notice("[download] adaptive fallback formats=\(androidInfo.formats.count)")
         guard let videoURL = androidInfo.bestAdaptiveVideoURL,
@@ -86,23 +76,19 @@ public final class InnerTubeDownloadFetcher: DownloadFetching {
             fetchLog.error("[download] ❌ no adaptive video/audio streams found")
             throw DownloadFetchError(message: "No downloadable stream found for this video")
         }
-        onEvent(.progress(0))
-        let mergedURL = try await mergeAdaptiveStreams(
-            videoURL: videoURL, audioURL: audioURL, videoId: videoId,
-            userAgent: InnerTubeClients.Android.userAgent, onEvent: onEvent)
-        defer { try? FileManager.default.removeItem(at: mergedURL) }
-        return try await passthroughRemux(inputURL: mergedURL, videoId: videoId, suffix: "merged")
+        let ua = InnerTubeClients.Android.userAgent
+        return DownloadPlan(parts: [
+            .init(part: .video, url: videoURL, userAgent: ua),
+            .init(part: .audio, url: audioURL, userAgent: ua),
+        ])
     }
 
-    // MARK: Stream resolution
-
-    /// Tries Web client then Android client for a direct muxed MP4 download.
-    /// Returns the temp file URL on success, nil if no muxed stream could be found.
+    /// Tries Web client then Android client for a direct muxed MP4. A candidate is accepted only
+    /// if the CDN answers a one-byte range probe, which preserves the old "try the next client
+    /// when the first URL is rejected" behaviour now that the real transfer runs in the background.
     /// Note: TVHTML5-signed CDN URLs always return 403 when fetched without session cookies,
     /// so the Android client (c=ANDROID URLs) is used as the reliable fallback.
-    private func tryDirectDownload(
-        videoId: String, onEvent: @escaping @Sendable (DownloadFetchEvent) -> Void
-    ) async -> URL? {
+    private func resolveMuxed(videoId: String) async -> DownloadPlan? {
         let candidates: [(String, String, () async throws -> PlayerInfo)] = [
             (
                 "Web", InnerTubeClients.Web.userAgent,
@@ -124,42 +110,58 @@ public final class InnerTubeDownloadFetcher: DownloadFetching {
                 fetchLog.notice("[download] \(label) — no muxed MP4, trying next")
                 continue
             }
-            fetchLog.notice("[download] \(label) ✅ muxed URL found, downloading")
-            onEvent(.progress(0))
-            if let tempURL = try? await downloadToTemp(
-                url: muxedURL, videoId: videoId, userAgent: clientUA,
-                onProgress: { onEvent(.progress($0)) })
-            {
-                let size = (try? FileManager.default.attributesOfItem(atPath: tempURL.path)[.size] as? Int) ?? 0
-                fetchLog.notice("[download] \(label) download complete bytes=\(size)")
-                guard size > 0 else {
-                    fetchLog.notice("[download] \(label) — 0 bytes, YouTube rejected URL, trying next")
-                    try? FileManager.default.removeItem(at: tempURL)
-                    continue
-                }
-                return tempURL
+            guard await Self.probe(url: muxedURL, userAgent: clientUA) else {
+                fetchLog.notice("[download] \(label) — CDN rejected URL, trying next")
+                continue
             }
+            fetchLog.notice("[download] \(label) ✅ muxed URL accepted")
+            return DownloadPlan(parts: [.init(part: .muxed, url: muxedURL, userAgent: clientUA)])
         }
         return nil
     }
 
-    private func downloadToTemp(
-        url: URL, videoId: String, userAgent: String = InnerTubeClients.iOS.userAgent,
-        onProgress: @escaping @Sendable (Double) -> Void
-    ) async throws -> URL {
-        let req = Self.cdnRequest(for: url, userAgent: userAgent)
-        let delegate = ProgressDelegate { written, expected in
-            if expected > 0 { onProgress(min(Double(written) / Double(expected), 1)) }
+    private static func probe(url: URL, userAgent: String) async -> Bool {
+        var req = cdnRequest(for: url, userAgent: userAgent)
+        req.setValue("bytes=0-0", forHTTPHeaderField: "Range")
+        guard let (_, response) = try? await probeSession.data(for: req),
+            let status = (response as? HTTPURLResponse)?.statusCode
+        else { return false }
+        return status == 200 || status == 206
+    }
+
+    // MARK: Assemble
+
+    public func assemble(videoId: String, stagedParts: [DownloadPart: URL]) async throws -> URL {
+        if let muxed = stagedParts[.muxed] {
+            let input = try Self.linkAsMP4(muxed, videoId: videoId, suffix: "muxed-in")
+            defer { try? FileManager.default.removeItem(at: input) }
+            return try await passthroughRemux(inputURL: input, videoId: videoId, suffix: "muxed")
         }
-        let (tempURL, response) = try await Self.cdnSession.download(for: req, delegate: delegate)
-        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-        let size = (try? FileManager.default.attributesOfItem(atPath: tempURL.path)[.size] as? Int) ?? 0
-        fetchLog.notice("[download] downloadToTemp status=\(status) bytes=\(size)")
-        let destURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("\(videoId).mp4")
-        try? FileManager.default.removeItem(at: destURL)
-        try FileManager.default.moveItem(at: tempURL, to: destURL)
-        return destURL
+        guard let video = stagedParts[.video], let audio = stagedParts[.audio] else {
+            throw DownloadFetchError(message: "Downloaded files are incomplete")
+        }
+        let videoFile = try Self.linkAsMP4(video, videoId: videoId, suffix: "vid")
+        defer { try? FileManager.default.removeItem(at: videoFile) }
+        let audioFile = try Self.linkAsMP4(audio, videoId: videoId, suffix: "aud")
+        defer { try? FileManager.default.removeItem(at: audioFile) }
+        let mergedURL = try await mergeAdaptiveStreams(videoFile: videoFile, audioFile: audioFile, videoId: videoId)
+        defer { try? FileManager.default.removeItem(at: mergedURL) }
+        return try await passthroughRemux(inputURL: mergedURL, videoId: videoId, suffix: "merged")
+    }
+
+    /// Staged files carry a `.tmp` extension, which AVFoundation cannot use to infer the container.
+    /// Expose them under an `.mp4` name via a hard link (copy if linking fails) without disturbing
+    /// the staged original, so an interrupted merge can be retried after relaunch.
+    private static func linkAsMP4(_ staged: URL, videoId: String, suffix: String) throws -> URL {
+        let fm = FileManager.default
+        let dest = fm.temporaryDirectory.appendingPathComponent("\(videoId)-\(suffix).mp4")
+        try? fm.removeItem(at: dest)
+        do {
+            try fm.linkItem(at: staged, to: dest)
+        } catch {
+            try fm.copyItem(at: staged, to: dest)
+        }
+        return dest
     }
 
     // MARK: Remux / merge
@@ -189,56 +191,12 @@ public final class InnerTubeDownloadFetcher: DownloadFetching {
         return destURL
     }
 
-    /// Downloads best adaptive video-only and audio-only MP4 streams concurrently,
-    /// then merges them into a single MP4 using AVAssetWriter for true passthrough
-    /// (sample-level copy, no re-encode of codec data).
-    private func mergeAdaptiveStreams(
-        videoURL: URL, audioURL: URL, videoId: String,
-        userAgent: String = InnerTubeClients.iOS.userAgent,
-        onEvent: @escaping @Sendable (DownloadFetchEvent) -> Void
-    ) async throws -> URL {
-        // Download both streams concurrently with explicit UA per-request. Progress is the mean
-        // of the two streams' fractions.
-        let fractions = OSAllocatedUnfairLock(initialState: [0.0, 0.0])
-        func delegate(_ index: Int) -> ProgressDelegate {
-            ProgressDelegate { written, expected in
-                guard expected > 0 else { return }
-                let mean = fractions.withLock { state -> Double in
-                    state[index] = min(Double(written) / Double(expected), 1)
-                    return (state[0] + state[1]) / 2
-                }
-                onEvent(.progress(mean))
-            }
-        }
-        let videoReq = Self.cdnRequest(for: videoURL, userAgent: userAgent)
-        let audioReq = Self.cdnRequest(for: audioURL, userAgent: userAgent)
-        let videoDelegate = delegate(0)
-        let audioDelegate = delegate(1)
-        async let videoTemp = Self.cdnSession.download(for: videoReq, delegate: videoDelegate)
-        async let audioTemp = Self.cdnSession.download(for: audioReq, delegate: audioDelegate)
-        let (videoResult, audioResult) = try await (videoTemp, audioTemp)
-        onEvent(.merging)
-
-        let videoStatus = (videoResult.1 as? HTTPURLResponse)?.statusCode ?? 0
-        let audioStatus = (audioResult.1 as? HTTPURLResponse)?.statusCode ?? 0
-        let videoFile = FileManager.default.temporaryDirectory.appendingPathComponent("\(videoId)-vid.mp4")
-        let audioFile = FileManager.default.temporaryDirectory.appendingPathComponent("\(videoId)-aud.mp4")
-        try? FileManager.default.removeItem(at: videoFile)
-        try? FileManager.default.removeItem(at: audioFile)
-        try FileManager.default.moveItem(at: videoResult.0, to: videoFile)
-        try FileManager.default.moveItem(at: audioResult.0, to: audioFile)
-
+    /// Merges separate video-only and audio-only MP4 files into a single MP4 using AVAssetWriter
+    /// for true passthrough (sample-level copy, no re-encode of codec data).
+    private func mergeAdaptiveStreams(videoFile: URL, audioFile: URL, videoId: String) async throws -> URL {
         let videoSize = (try? FileManager.default.attributesOfItem(atPath: videoFile.path)[.size] as? Int) ?? 0
         let audioSize = (try? FileManager.default.attributesOfItem(atPath: audioFile.path)[.size] as? Int) ?? 0
-        fetchLog.notice(
-            "[download] adaptive downloaded videoStatus=\(videoStatus) video=\(videoSize)B audioStatus=\(audioStatus) audio=\(audioSize)B"
-        )
-
-        defer {
-            try? FileManager.default.removeItem(at: videoFile)
-            try? FileManager.default.removeItem(at: audioFile)
-        }
-
+        fetchLog.notice("[download] adaptive merge input video=\(videoSize)B audio=\(audioSize)B")
         guard videoSize > 0, audioSize > 0 else {
             throw URLError(.zeroByteResource)
         }
@@ -331,30 +289,5 @@ public final class InnerTubeDownloadFetcher: DownloadFetching {
         let mergedSize = (try? FileManager.default.attributesOfItem(atPath: destURL.path)[.size] as? Int) ?? 0
         fetchLog.notice("[download] adaptive merge done bytes=\(mergedSize)")
         return destURL
-    }
-}
-
-// MARK: - ProgressDelegate
-
-/// Task-level delegate that reports byte progress. The async `download(for:delegate:)` API
-/// delivers `didWriteData` to a `URLSessionDownloadDelegate` task delegate.
-private final class ProgressDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
-    private let onBytes: @Sendable (_ written: Int64, _ expected: Int64) -> Void
-
-    init(onBytes: @escaping @Sendable (Int64, Int64) -> Void) {
-        self.onBytes = onBytes
-    }
-
-    func urlSession(
-        _ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64,
-        totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64
-    ) {
-        onBytes(totalBytesWritten, totalBytesExpectedToWrite)
-    }
-
-    func urlSession(
-        _ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL
-    ) {
-        // The async download API moves the file itself; nothing to do.
     }
 }

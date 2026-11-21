@@ -124,18 +124,80 @@ struct DownloadStoreLifecycleTests {
         #expect(second.entry(for: "gone")?.status == .failed)
     }
 
-    @Test("reconcile fails interrupted downloads and deletes stray .partial files")
-    func reconcileInterruptedAndPartial() throws {
+    @Test("reconcile leaves in-flight entries alone and deletes stray .partial files")
+    func reconcileKeepsInFlightAndDeletesPartial() throws {
         let dir = makeTempDirectory()
         let first = DownloadStore(directory: dir)
-        first.upsert(makeEntry("busy", status: .downloading))
+        for (id, status) in [
+            ("q", DownloadedVideo.Status.queued), ("d", .downloading), ("m", .merging),
+        ] {
+            first.upsert(makeEntry(id, status: status))
+        }
         let partial = dir.appendingPathComponent("busy.partial")
         try Data("p".utf8).write(to: partial)
         #expect(FileManager.default.fileExists(atPath: partial.path))
 
         let second = DownloadStore(directory: dir)
-        #expect(second.entry(for: "busy")?.status == .failed)
-        #expect(second.entry(for: "busy")?.errorMessage == "Interrupted")
+        #expect(second.entry(for: "q")?.status == .queued)
+        #expect(second.entry(for: "d")?.status == .downloading)
+        #expect(second.entry(for: "m")?.status == .merging)
+        #expect(second.entry(for: "d")?.errorMessage == nil)
         #expect(!FileManager.default.fileExists(atPath: partial.path))
+    }
+
+    @Test("remove deletes the entry's staging directory")
+    func removeDeletesStaging() throws {
+        let store = DownloadStore(directory: makeTempDirectory())
+        store.upsert(makeEntry("st", status: .downloading))
+        let plan = DownloadPlan(parts: [.init(part: .muxed, url: URL(string: "https://x.test/a")!, userAgent: "UA")])
+        try store.staging.save(DownloadJob(videoId: "st", plan: plan))
+        #expect(FileManager.default.fileExists(atPath: store.staging.directory(for: "st").path))
+        store.remove(videoId: "st")
+        #expect(!FileManager.default.fileExists(atPath: store.staging.directory(for: "st").path))
+    }
+}
+
+@Suite("Download job records")
+struct DownloadJobTests {
+
+    @Test("Transfer IDs round-trip through taskDescription")
+    func transferIDRoundTrip() {
+        for part in DownloadPart.allCases {
+            let id = DownloadTransferID(videoId: "a-B_c1:2", part: part)
+            #expect(DownloadTransferID(taskDescription: id.taskDescription) == id)
+        }
+        #expect(DownloadTransferID(taskDescription: nil) == nil)
+        #expect(DownloadTransferID(taskDescription: "bogus:abc") == nil)
+        #expect(DownloadTransferID(taskDescription: "muxed:") == nil)
+    }
+
+    @Test("A job is complete only when every expected part is done")
+    func completeness() {
+        let plan = DownloadPlan(parts: [
+            .init(part: .video, url: URL(string: "https://x.test/v")!, userAgent: "UA"),
+            .init(part: .audio, url: URL(string: "https://x.test/a")!, userAgent: "UA"),
+        ])
+        var job = DownloadJob(videoId: "v", plan: plan)
+        #expect(job.needsMerge)
+        #expect(!job.isComplete)
+        job.donePartNames.insert(.video)
+        #expect(!job.isComplete)
+        job.donePartNames.insert(.audio)
+        #expect(job.isComplete)
+    }
+
+    @Test("Loading a job reconciles done parts with the files that exist")
+    func loadReconcilesWithFiles() throws {
+        let staging = DownloadStaging(root: makeTempDirectory().appendingPathComponent("Staging"))
+        let plan = DownloadPlan(parts: [
+            .init(part: .video, url: URL(string: "https://x.test/v")!, userAgent: "UA"),
+            .init(part: .audio, url: URL(string: "https://x.test/a")!, userAgent: "UA"),
+        ])
+        try staging.save(DownloadJob(videoId: "v", plan: plan))
+        #expect(staging.load(videoId: "v")?.donePartNames == [])
+        try Data("x".utf8).write(to: staging.stagedFile(videoId: "v", part: .audio))
+        #expect(staging.load(videoId: "v")?.donePartNames == [.audio])
+        staging.remove(videoId: "v")
+        #expect(staging.load(videoId: "v") == nil)
     }
 }
