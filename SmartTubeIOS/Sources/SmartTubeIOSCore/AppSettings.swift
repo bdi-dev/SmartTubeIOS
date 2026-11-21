@@ -186,13 +186,12 @@ public struct AppSettings: Codable {
     /// previous top-tab UI. Not read on iOS or macOS.
     public var useSidebarHome: Bool
 
-    // Note: there is no `useTOSPlayerOnIOS` setting. The TOS-compliant player is
-    // always used on iOS (PlayerRouter.open(), gated #if os(iOS)) — see
-    // SettingsStore.useTOSPlayerOnIOS, which is a non-persisted, hardcoded-true
-    // property (overridable only by UI test launch arguments). It has no effect
-    // on macOS or tvOS. Automatically falls back to the AVPlayer pipeline for a
-    // given video if the embed reports a fatal error (TOSPlayerStateStore.markFallback
-    // — see TOSPlayerView.onFallback).
+    /// iOS only: play through YouTube's IFrame (TOS-compliant) player in a WKWebView
+    /// instead of the AVPlayer pipeline. Defaults to `true`. Turning it off gives native
+    /// PiP, background audio and the quality picker, at the cost of the stream-extraction
+    /// failure modes ADR-0006 describes. A video that hits a fatal embed error still falls
+    /// back to AVPlayer per-video (TOSPlayerStateStore.markFallback). No effect on macOS or tvOS.
+    public var useTOSPlayerOnIOS: Bool
 
     // MARK: Schema version
     /// Persisted schema version. Starts at 1 for newly stored settings.
@@ -328,6 +327,7 @@ public struct AppSettings: Codable {
         useTOSPlayerOnMac = false
         #endif
         useMPVPlayerOnTV = false
+        useTOSPlayerOnIOS = true
         #if os(tvOS)
         useSidebarHome = true
         #else
@@ -407,6 +407,7 @@ extension AppSettings {
         case iCloudSyncEnabled
         case useTOSPlayerOnMac
         case useMPVPlayerOnTV
+        case useTOSPlayerOnIOS
         case useSidebarHome
     }
 
@@ -476,6 +477,7 @@ extension AppSettings {
         iCloudSyncEnabled = c.safeDecode(Bool.self, forKey: .iCloudSyncEnabled, default: d.iCloudSyncEnabled)
         useTOSPlayerOnMac = c.safeDecode(Bool.self, forKey: .useTOSPlayerOnMac, default: d.useTOSPlayerOnMac)
         useMPVPlayerOnTV = c.safeDecode(Bool.self, forKey: .useMPVPlayerOnTV, default: d.useMPVPlayerOnTV)
+        useTOSPlayerOnIOS = c.safeDecode(Bool.self, forKey: .useTOSPlayerOnIOS, default: d.useTOSPlayerOnIOS)
         useSidebarHome = c.safeDecode(Bool.self, forKey: .useSidebarHome, default: d.useSidebarHome)
     }
 }
