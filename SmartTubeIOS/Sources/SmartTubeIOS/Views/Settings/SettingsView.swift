@@ -273,6 +273,23 @@ public struct SettingsView: View {
 
     // MARK: - Downloads
 
+    #if os(iOS)
+    /// Turning alerts on asks for notification permission (reverting the switch if refused) and
+    /// schedules background refresh; turning them off cancels it.
+    private func applyNewUploadAlerts(_ on: Bool) async {
+        guard on else {
+            NewUploadNotifier.cancelBackgroundRefresh()
+            return
+        }
+        let granted = await NewUploadNotifier(api: InnerTubeAPI()).enable()
+        if granted {
+            NewUploadNotifier.scheduleBackgroundRefresh()
+        } else {
+            store.settings.notifyNewUploads = false
+        }
+    }
+    #endif
+
     #if !os(tvOS)
     private var downloadsSection: some View {
         @Bindable var store = store
@@ -282,11 +299,18 @@ public struct SettingsView: View {
             Toggle("Only on Wi-Fi", isOn: $store.settings.autoDownloadOnlyOnWiFi)
                 .disabled(!store.settings.autoDownloadWatchLater)
                 .accessibilityIdentifier("settings.autoDownloadWiFiOnlyToggle")
+            #if os(iOS)
+            Toggle("New upload alerts", isOn: $store.settings.notifyNewUploads)
+                .accessibilityIdentifier("settings.notifyNewUploadsToggle")
+                .onChange(of: store.settings.notifyNewUploads) { _, on in
+                    Task { await applyNewUploadAlerts(on) }
+                }
+            #endif
         } header: {
             Text("Downloads")
         } footer: {
             Text(
-                "New Watch Later videos (up to 5 at a time, under 3 hours) are downloaded when you open the app. Downloads are never deleted automatically."
+                "New Watch Later videos (up to 5 at a time, under 3 hours) are downloaded when you open the app. New upload alerts are local notifications for channels you follow in SmartTube. Downloads are never deleted automatically."
             )
         }
     }

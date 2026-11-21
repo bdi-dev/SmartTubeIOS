@@ -35,6 +35,7 @@ struct AppEntry: App {
     @State private var cardDownloadService: VideoDownloadService
     #if os(iOS)
     @State private var watchLaterAutoDownloader: WatchLaterAutoDownloader
+    @State private var newUploadNotifier: NewUploadNotifier
     #endif
     @Environment(\.scenePhase) private var scenePhase
     #if os(iOS)
@@ -95,6 +96,7 @@ struct AppEntry: App {
         _watchLaterAutoDownloader = State(
             initialValue: WatchLaterAutoDownloader(
                 source: api, network: SystemNetworkConditions(), store: .shared, service: _cardDownloadService.wrappedValue))
+        _newUploadNotifier = State(initialValue: NewUploadNotifier(api: api))
         #endif
         #if os(iOS)
         // Task #353: keep the Home Screen widget's snapshot in step with the Home page.
@@ -316,6 +318,7 @@ struct AppEntry: App {
                             Task {
                                 await watchLaterAutoDownloader.syncIfDue(
                                     settings: settingsStore.settings, isSignedIn: authService.isSignedIn)
+                                await newUploadNotifier.checkIfDue(settings: settingsStore.settings)
                             }
                             #endif
                             consumePendingRSSFeedURL()

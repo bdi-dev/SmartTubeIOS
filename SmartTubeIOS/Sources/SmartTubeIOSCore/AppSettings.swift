@@ -173,6 +173,11 @@ public struct AppSettings: Codable {
     /// When `true`, automatic downloads only run on an unmetered connection (not cellular / hotspot).
     public var autoDownloadOnlyOnWiFi: Bool
 
+    // MARK: Alerts
+    /// When `true`, followed channels are checked periodically and a local notification is shown
+    /// for new uploads. Uses local notifications only (no push, no paid capability). Opt-in.
+    public var notifyNewUploads: Bool
+
     // MARK: iCloud sync
     /// When `true`, local user data (subscriptions, RSS feeds, video state, queue) is
     /// synced to iCloud via `NSUbiquitousKeyValueStore`. Defaults to `false` (opt-in).
@@ -330,6 +335,7 @@ public struct AppSettings: Codable {
         iCloudSyncEnabled = false
         autoDownloadWatchLater = false
         autoDownloadOnlyOnWiFi = true
+        notifyNewUploads = false
         #if os(macOS)
         useTOSPlayerOnMac = true
         #else
@@ -416,6 +422,7 @@ extension AppSettings {
         case iCloudSyncEnabled
         case autoDownloadWatchLater
         case autoDownloadOnlyOnWiFi
+        case notifyNewUploads
         case useTOSPlayerOnMac
         case useMPVPlayerOnTV
         case useTOSPlayerOnIOS
@@ -460,10 +467,14 @@ extension AppSettings {
         accentColor = c.safeDecode(AccentColorChoice.self, forKey: .accentColor, default: d.accentColor)
         let columns = Self.availableGridColumnCounts
         gridColumnsPortrait = min(
-            max(c.safeDecode(Int.self, forKey: .gridColumnsPortrait, default: d.gridColumnsPortrait), columns.lowerBound),
+            max(
+                c.safeDecode(Int.self, forKey: .gridColumnsPortrait, default: d.gridColumnsPortrait), columns.lowerBound
+            ),
             columns.upperBound)
         gridColumnsLandscape = min(
-            max(c.safeDecode(Int.self, forKey: .gridColumnsLandscape, default: d.gridColumnsLandscape), columns.lowerBound),
+            max(
+                c.safeDecode(Int.self, forKey: .gridColumnsLandscape, default: d.gridColumnsLandscape),
+                columns.lowerBound),
             columns.upperBound)
         enabledSections = c.safeDecode(
             [BrowseSection.SectionType].self, forKey: .enabledSections, default: d.enabledSections)
@@ -490,6 +501,7 @@ extension AppSettings {
             Bool.self, forKey: .autoDownloadWatchLater, default: d.autoDownloadWatchLater)
         autoDownloadOnlyOnWiFi = c.safeDecode(
             Bool.self, forKey: .autoDownloadOnlyOnWiFi, default: d.autoDownloadOnlyOnWiFi)
+        notifyNewUploads = c.safeDecode(Bool.self, forKey: .notifyNewUploads, default: d.notifyNewUploads)
         useTOSPlayerOnMac = c.safeDecode(Bool.self, forKey: .useTOSPlayerOnMac, default: d.useTOSPlayerOnMac)
         useMPVPlayerOnTV = c.safeDecode(Bool.self, forKey: .useMPVPlayerOnTV, default: d.useMPVPlayerOnTV)
         useTOSPlayerOnIOS = c.safeDecode(Bool.self, forKey: .useTOSPlayerOnIOS, default: d.useTOSPlayerOnIOS)
