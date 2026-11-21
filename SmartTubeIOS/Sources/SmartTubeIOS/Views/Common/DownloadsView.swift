@@ -57,6 +57,19 @@ struct DownloadsView: View {
                                 playerRouter.openLocal(video: video)
                             }
                         }
+                        .contextMenu {
+                            if entry.status == .complete {
+                                ShareLink(
+                                    item: DownloadExportItem(
+                                        source: downloadStore.fileURL(for: entry),
+                                        fileName: DownloadExport.fileName(for: entry)),
+                                    preview: SharePreview(entry.title)
+                                ) {
+                                    Label("Share / Save to Files", systemImage: "square.and.arrow.up")
+                                }
+                                .accessibilityIdentifier("downloads.share.\(entry.videoId)")
+                            }
+                        }
                         .accessibilityIdentifier("downloads.videoRow.\(entry.videoId)")
                     }
                     .onDelete { indexSet in
