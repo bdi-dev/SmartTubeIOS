@@ -246,7 +246,16 @@ public struct SettingsView: View {
                 .accessibilityIdentifier("settings.clearLocalHistoryButton")
             }
             Toggle("Sync to iCloud", isOn: $store.settings.iCloudSyncEnabled)
+                .disabled(!Self.iCloudAvailable)
                 .accessibilityIdentifier("settings.iCloudSyncToggle")
+            if !Self.iCloudAvailable {
+                // No iCloud account, or this build was signed without the iCloud entitlement
+                // (free Apple ID — see docs/how-to/free-account-build.md).
+                Text("iCloud sync is unavailable: no iCloud account, or this build has iCloud switched off.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("settings.iCloudUnavailableNote")
+            }
         } header: {
             Text("General")
         } footer: {
@@ -255,6 +264,9 @@ public struct SettingsView: View {
             )
         }
     }
+
+    /// `true` when this device/build can use iCloud key-value sync.
+    private static var iCloudAvailable: Bool { FileManager.default.ubiquityIdentityToken != nil }
 
     // MARK: - UI
 

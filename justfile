@@ -32,6 +32,11 @@ secrets-check:
 doc-links:
     cd {{root}} && scripts/check-doc-links.sh
 
+# --- free Apple ID builds -----------------------------------------------------
+# Switch paid-only entitlements (iCloud sync) off/on in the working tree. docs/how-to/free-account-build.md
+free-account mode="status":
+    scripts/free-account.sh {{mode}}
+
 # --- build & test ------------------------------------------------------------
 build:
     xcodebuild build -workspace {{workspace}} -scheme SmartTube -destination "platform=iOS Simulator,name={{sim}}" -derivedDataPath {{derived}} CODE_SIGNING_ALLOWED=NO -quiet
