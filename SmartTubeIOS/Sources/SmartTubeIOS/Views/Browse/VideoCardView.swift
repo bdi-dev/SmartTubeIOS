@@ -266,38 +266,47 @@ public struct VideoCardView: View {
             } label: {
                 Label("Play Next", systemImage: "text.insert")
             }
+            #if !os(tvOS)
+            DownloadActionButton(video: video)
+            DownloadAudioActionButton(video: video)
+            #endif
             #if os(iOS)
             Button {
                 playerRouter.open(video: video, api: api, incognito: true)
             } label: {
                 Label("Play Incognito", systemImage: "eyeglasses")
             }
-            Button {
-                playerRouter.openInWebPlayer(video: video, api: api)
-            } label: {
-                Label("Play in YouTube Player", systemImage: "play.rectangle")
-            }
-            .accessibilityIdentifier("video.card.playWebButton")
-            Button {
-                playerRouter.openInNativePlayer(video: video)
-            } label: {
-                Label("Play in Native Player", systemImage: "play.square")
-            }
-            .accessibilityIdentifier("video.card.playNativeButton")
-            Button {
-                playerRouter.playStream(video: video, api: api)
-            } label: {
-                Label("Play 360p Stream", systemImage: "play.square.stack")
-            }
-            .accessibilityIdentifier("video.card.playStreamButton")
-            if YtDlpServerConfig.current().isConfigured {
+            Menu {
                 Button {
-                    playerRouter.playFromServer(video: video)
+                    playerRouter.openInWebPlayer(video: video, api: api)
                 } label: {
-                    Label("Play from yt-dlp Server", systemImage: "server.rack")
+                    Label("Play in YouTube Player", systemImage: "play.rectangle")
                 }
-                .accessibilityIdentifier("video.card.playServerButton")
+                .accessibilityIdentifier("video.card.playWebButton")
+                Button {
+                    playerRouter.openInNativePlayer(video: video)
+                } label: {
+                    Label("Play in Native Player", systemImage: "play.square")
+                }
+                .accessibilityIdentifier("video.card.playNativeButton")
+                Button {
+                    playerRouter.playStream(video: video, api: api)
+                } label: {
+                    Label("Play 360p Stream", systemImage: "play.square.stack")
+                }
+                .accessibilityIdentifier("video.card.playStreamButton")
+                if YtDlpServerConfig.current().isConfigured {
+                    Button {
+                        playerRouter.playFromServer(video: video)
+                    } label: {
+                        Label("Play from yt-dlp Server", systemImage: "server.rack")
+                    }
+                    .accessibilityIdentifier("video.card.playServerButton")
+                }
+            } label: {
+                Label("Play in…", systemImage: "play.rectangle.on.rectangle")
             }
+            .accessibilityIdentifier("video.card.playInMenu")
             #endif
             if authService.isSignedIn {
                 Button(role: .destructive) {
@@ -336,21 +345,6 @@ public struct VideoCardView: View {
                     }
                 }
             }
-            #if !os(tvOS)
-            DownloadActionButton(video: video)
-            DownloadAudioActionButton(video: video)
-            #endif
-        } preview: {
-            Group {
-                if compact {
-                    compactLayout
-                } else {
-                    gridLayout
-                }
-            }
-            .padding(12)
-            .frame(width: 300)
-            .background(.background)
         }
         #if !os(tvOS)
         // Download state is observed at app-root level (RootView) so the alert
