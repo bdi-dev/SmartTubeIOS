@@ -817,7 +817,7 @@ extension PlayerView {
                         .background(Color.white)
                         .clipShape(Capsule())
                 }
-                .accessibilityIdentifier("player.openWebPlayerButton")
+                .accessibilityIdentifier(AccessibilityID.Player.openWebPlayerButton)
             }
             #endif
             if !isIPBlock && !isSignInRequired {

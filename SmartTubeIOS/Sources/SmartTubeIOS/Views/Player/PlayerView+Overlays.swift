@@ -623,7 +623,7 @@ extension PlayerView {
         }
         .buttonStyle(.plain)
         .foregroundStyle(.primary)
-        .accessibilityIdentifier("player.moreMenu.playWebButton")
+        .accessibilityIdentifier(AccessibilityID.Player.moreMenuPlayWebButton)
         Divider()
         Button {
             showMoreMenu = false
@@ -636,7 +636,7 @@ extension PlayerView {
         }
         .buttonStyle(.plain)
         .foregroundStyle(.primary)
-        .accessibilityIdentifier("player.moreMenu.playStreamButton")
+        .accessibilityIdentifier(AccessibilityID.Player.moreMenuPlayStreamButton)
         Divider()
         if YtDlpServerConfig.current().isConfigured {
             Button {
@@ -650,7 +650,7 @@ extension PlayerView {
             }
             .buttonStyle(.plain)
             .foregroundStyle(.primary)
-            .accessibilityIdentifier("player.moreMenu.playServerButton")
+            .accessibilityIdentifier(AccessibilityID.Player.moreMenuPlayServerButton)
             Divider()
         }
         #endif

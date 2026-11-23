@@ -773,7 +773,7 @@ public struct TOSPlayerView: View {
             }
 
             DownloadActionButton(video: video)
-                .accessibilityIdentifier("tosPlayer.moreMenu.downloadRow")
+                .accessibilityIdentifier(AccessibilityID.TOSPlayer.moreMenuDownloadRow)
 
             #if os(iOS)
             Button {
@@ -781,20 +781,20 @@ public struct TOSPlayerView: View {
             } label: {
                 Label("Play in Native Player", systemImage: "play.square")
             }
-            .accessibilityIdentifier("tosPlayer.moreMenu.playNativeRow")
+            .accessibilityIdentifier(AccessibilityID.TOSPlayer.moreMenuPlayNativeRow)
             Button {
                 playerRouter.playStream(video: video, api: innerTubeAPI)
             } label: {
                 Label("Play 360p Stream", systemImage: "play.square.stack")
             }
-            .accessibilityIdentifier("tosPlayer.moreMenu.playStreamRow")
+            .accessibilityIdentifier(AccessibilityID.TOSPlayer.moreMenuPlayStreamRow)
             if YtDlpServerConfig.current().isConfigured {
                 Button {
                     playerRouter.playFromServer(video: video)
                 } label: {
                     Label("Play from yt-dlp Server", systemImage: "server.rack")
                 }
-                .accessibilityIdentifier("tosPlayer.moreMenu.playServerRow")
+                .accessibilityIdentifier(AccessibilityID.TOSPlayer.moreMenuPlayServerRow)
             }
             #endif
 

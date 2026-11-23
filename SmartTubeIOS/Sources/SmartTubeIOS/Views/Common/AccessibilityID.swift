@@ -47,4 +47,18 @@ enum AccessibilityID {
     enum Toast {
         static let message = "toast.message"
     }
+
+    enum Player {
+        static let openWebPlayerButton = "player.openWebPlayerButton"
+        static let moreMenuPlayWebButton = "player.moreMenu.playWebButton"
+        static let moreMenuPlayStreamButton = "player.moreMenu.playStreamButton"
+        static let moreMenuPlayServerButton = "player.moreMenu.playServerButton"
+    }
+
+    enum TOSPlayer {
+        static let moreMenuDownloadRow = "tosPlayer.moreMenu.downloadRow"
+        static let moreMenuPlayNativeRow = "tosPlayer.moreMenu.playNativeRow"
+        static let moreMenuPlayStreamRow = "tosPlayer.moreMenu.playStreamRow"
+        static let moreMenuPlayServerRow = "tosPlayer.moreMenu.playServerRow"
+    }
 }
