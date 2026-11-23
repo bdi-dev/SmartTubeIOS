@@ -17,4 +17,17 @@ enum AccessibilityID {
         static func retry(_ videoId: String) -> String { "downloads.retry.\(videoId)" }
         static func audioBadge(_ videoId: String) -> String { "downloads.audioBadge.\(videoId)" }
     }
+
+    enum Settings {
+        static let useTOSPlayerOnIOSToggle = "settings.useTOSPlayerOnIOSToggle"
+        static let iCloudUnavailableNote = "settings.iCloudUnavailableNote"
+        static let autoDownloadWatchLaterToggle = "settings.autoDownloadWatchLaterToggle"
+        static let autoDownloadWiFiOnlyToggle = "settings.autoDownloadWiFiOnlyToggle"
+        static let notifyNewUploadsToggle = "settings.notifyNewUploadsToggle"
+        static let ytDlpModePicker = "settings.ytDlpModePicker"
+        static let ytDlpURLField = "settings.ytDlpURLField"
+        static let ytDlpTokenField = "settings.ytDlpTokenField"
+        static let ytDlpTestButton = "settings.ytDlpTestButton"
+        static let ytDlpTestResult = "settings.ytDlpTestResult"
+    }
 }
