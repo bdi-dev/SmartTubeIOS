@@ -523,8 +523,9 @@ public final class BrowseViewModel {
                 do {
                     channels = try await api.fetchSubscribedChannels()
                 } catch {
+                    // CHANDIAG (temporary)
                     print(
-                        "[CHANDIAG] vm fetchSubscribedChannels THREW \(type(of: error)) cancelled=\(Task.isCancelled)")  // CHANDIAG (temporary)
+                        "[CHANDIAG] vm fetchSubscribedChannels THREW \(type(of: error)) cancelled=\(Task.isCancelled)")
                     throw error
                 }
                 print(

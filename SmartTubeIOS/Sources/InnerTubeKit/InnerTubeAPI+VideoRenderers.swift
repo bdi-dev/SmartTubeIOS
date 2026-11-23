@@ -943,18 +943,18 @@ extension InnerTubeAPI {
         guard let overlays = thumbnailViewModel?["overlays"] as? [[String: Any]] else { return nil }
         func percent(_ v: Any?) -> Double? { (v as? NSNumber)?.doubleValue }
         for overlay in overlays {
-            var percent_: Double?
+            var barPercent: Double?
             if let bar = overlay["thumbnailOverlayProgressBarViewModel"] as? [String: Any] {
-                percent_ = percent(bar["startPercent"])
+                barPercent = percent(bar["startPercent"])
             } else if let bottom = overlay["thumbnailBottomOverlayViewModel"] as? [String: Any],
                 let bar = (bottom["progressBar"] as? [String: Any])?["thumbnailOverlayProgressBarViewModel"]
                     as? [String: Any]
             {
-                percent_ = percent(bar["startPercent"])
+                barPercent = percent(bar["startPercent"])
             } else if let resume = overlay["thumbnailOverlayResumePlaybackRenderer"] as? [String: Any] {
-                percent_ = percent(resume["percentDurationWatched"])
+                barPercent = percent(resume["percentDurationWatched"])
             }
-            if let p = percent_, p > 0 { return min(p, 100) / 100.0 }
+            if let p = barPercent, p > 0 { return min(p, 100) / 100.0 }
         }
         return nil
     }

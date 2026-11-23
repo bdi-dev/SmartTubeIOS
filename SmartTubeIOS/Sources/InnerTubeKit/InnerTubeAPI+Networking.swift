@@ -485,7 +485,8 @@ extension InnerTubeAPI {
         let (data, response) = try await session.data(for: request)
         let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            if useWebSession { print("[WATCHDIAG] post /\(endpoint) HTTP \(statusCode) FAILED") }  // WATCHDIAG (temporary)
+            // WATCHDIAG (temporary)
+            if useWebSession { print("[WATCHDIAG] post /\(endpoint) HTTP \(statusCode) FAILED") }
             tubeLog.error("❌ HTTP \(statusCode, privacy: .public) for /\(endpoint, privacy: .public)")
             throw APIError.httpError(statusCode)
         }

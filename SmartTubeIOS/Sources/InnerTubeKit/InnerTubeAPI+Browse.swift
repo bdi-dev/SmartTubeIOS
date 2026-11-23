@@ -101,7 +101,8 @@ extension InnerTubeAPI {
     public func fetchSubscribedChannels() async throws -> [Channel] {
         var listChannels: [Channel] = []
         var listError: Error?
-        print("[CHANDIAG] fetch start authToken=\(authToken != nil) pageIdSet=\(activeChannel.pageId != nil)")  // CHANDIAG (temporary)
+        // CHANDIAG (temporary)
+        print("[CHANDIAG] fetch start authToken=\(authToken != nil) pageIdSet=\(activeChannel.pageId != nil)")
         do {
             let result = try await fetchChannelListPaged()
             listChannels = result.channels
