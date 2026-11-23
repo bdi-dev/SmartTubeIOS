@@ -11,13 +11,19 @@ final class StubProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var handler: ((URLRequest) -> (Int, String))?
     nonisolated(unsafe) static var seen: [URLRequest] = []
     nonisolated(unsafe) static var seenBodies: [Data?] = []
-    override class func canInit(with request: URLRequest) -> Bool { true }
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override static func canInit(with request: URLRequest) -> Bool { true }
+    override static func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         Self.seen.append(request)
         Self.seenBodies.append(Self.bodyData(of: request))
         let (code, body) = Self.handler?(request) ?? (500, "")
-        let response = HTTPURLResponse(url: request.url!, statusCode: code, httpVersion: nil, headerFields: nil)!
+        guard let url = request.url,
+            let response = HTTPURLResponse(url: url, statusCode: code, httpVersion: nil, headerFields: nil)
+        else {
+            Issue.record("StubProtocol needs a request URL and a valid HTTP response")
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Data(body.utf8))
         client?.urlProtocolDidFinishLoading(self)

@@ -16,16 +16,22 @@ private final class FakeClient: YtDlpServerClient, @unchecked Sendable {
     var polled = 0
     var createError: Error?
     init(_ states: [YtDlpJobState]) { self.states = states }
+    // Reason: protocol witness must stay async.
+    // swiftlint:disable:next async_without_await
     func createJob(_ request: YtDlpJobRequest) async throws -> YtDlpJobState {
         if let createError { throw createError }
         created.append(request.videoId)
         requests.append(request)
         return states.removeFirst()
     }
+    // Reason: protocol witness must stay async.
+    // swiftlint:disable:next async_without_await
     func jobState(videoId: String) async throws -> YtDlpJobState {
         polled += 1
         return states.isEmpty ? YtDlpJobState(status: "running") : states.removeFirst()
     }
+    // Reason: protocol witness must stay async.
+    // swiftlint:disable:next async_without_await
     func health() async throws -> YtDlpHealth { YtDlpHealth(ok: true, ytdlpVersion: "x") }
     // swiftlint:disable:next async_without_await
     func library(cursor: String?, limit: Int) async throws -> YtDlpLibraryPage {
@@ -38,7 +44,11 @@ private final class FakeClient: YtDlpServerClient, @unchecked Sendable {
 }
 
 private struct FakeAssembler: DownloadFetching {
+    // Reason: protocol witness must stay async.
+    // swiftlint:disable:next async_without_await
     func resolve(video: Video) async throws -> DownloadPlan { throw DownloadFetchError(message: "unused") }
+    // Reason: protocol witness must stay async.
+    // swiftlint:disable:next async_without_await
     func assemble(videoId: String, stagedParts: [DownloadPart: URL]) async throws -> URL {
         URL(fileURLWithPath: "/tmp/assembled-\(videoId)")
     }
@@ -125,11 +135,17 @@ struct YtDlpServerFetcherTests {
 private struct StubFetcher: DownloadFetching {
     let label: String
     var fails: Bool = false
+    // Reason: protocol witness must stay async.
+    // swiftlint:disable:next async_without_await
     func resolve(video: Video) async throws -> DownloadPlan {
         if fails { throw DownloadFetchError(message: "\(label) failed") }
-        return DownloadPlan(parts: [.init(part: .muxed, url: URL(string: "https://\(label).test/x")!, userAgent: label)]
-        )
+        guard let url = URL(string: "https://\(label).test/x") else {
+            throw DownloadFetchError(message: "invalid test URL")
+        }
+        return DownloadPlan(parts: [.init(part: .muxed, url: url, userAgent: label)])
     }
+    // Reason: protocol witness must stay async.
+    // swiftlint:disable:next async_without_await
     func assemble(videoId: String, stagedParts: [DownloadPart: URL]) async throws -> URL {
         URL(fileURLWithPath: "/tmp/\(label)")
     }
@@ -179,8 +195,8 @@ private func router(
 
 @Suite("ConfigurableDownloadFetcher")
 struct ConfigurableDownloadFetcherTests {
-    private func userAgent(_ f: ConfigurableDownloadFetcher, audioOnly: Bool = false) async throws -> String {
-        try await f.resolve(video: video(), audioOnly: audioOnly).parts[0].userAgent
+    private func userAgent(_ downloader: ConfigurableDownloadFetcher, audioOnly: Bool = false) async throws -> String {
+        try await downloader.resolve(video: video(), audioOnly: audioOnly).parts[0].userAgent
     }
 
     @Test("off always uses the native extractor, even when the server is configured")
@@ -224,10 +240,10 @@ struct ConfigurableDownloadFetcherTests {
 
     @Test("fallback does not swallow cancellation")
     func fallbackCancellation() async {
-        let f = ConfigurableDownloadFetcher(
+        let downloader = ConfigurableDownloadFetcher(
             native: CancellingFetcher(), config: { YtDlpServerConfig(mode: .fallback, baseURL: base, token: "t") },
             makeServer: { _ in StubFetcher(label: "server") }, makeProbe: { _ in ProbeClient() })
-        await #expect(throws: CancellationError.self) { try await f.resolve(video: video()) }
+        await #expect(throws: CancellationError.self) { try await downloader.resolve(video: video()) }
     }
 
     @Test("fallback uses the server when it already has the file, without extracting")
@@ -319,7 +335,11 @@ struct ConfigurableDownloadFetcherTests {
 }
 
 private struct CancellingFetcher: DownloadFetching {
+    // Reason: protocol witness must stay async.
+    // swiftlint:disable:next async_without_await
     func resolve(video: Video) async throws -> DownloadPlan { throw CancellationError() }
+    // Reason: protocol witness must stay async.
+    // swiftlint:disable:next async_without_await
     func assemble(videoId: String, stagedParts: [DownloadPart: URL]) async throws -> URL { URL(fileURLWithPath: "/x") }
 }
 
@@ -345,9 +365,9 @@ struct YtDlpConfigTests {
     }
 
     @Test("the token round-trips through the keychain; blank clears it")
-    func token() {
+    func token() throws {
         let keychain = MemoryKeychain()
-        let defaults = UserDefaults(suiteName: "test-\(UUID().uuidString)")!
+        let defaults = try #require(UserDefaults(suiteName: "test-\(UUID().uuidString)"))
         YtDlpServerConfig.saveToken("  secret \n", keychain: keychain, defaults: defaults)
         #expect(YtDlpServerConfig.current(defaults: defaults, keychain: keychain).token == "secret")
         YtDlpServerConfig.saveToken("   ", keychain: keychain, defaults: defaults)
@@ -356,11 +376,11 @@ struct YtDlpConfigTests {
 
     @Test("persisted settings feed the config")
     func persisted() throws {
-        let defaults = UserDefaults(suiteName: "test-\(UUID().uuidString)")!
-        var s = AppSettings()
-        s.ytDlpMode = .fallback
-        s.ytDlpServerURL = base
-        defaults.set(try JSONEncoder().encode(s), forKey: AppSettings.persistenceKey)
+        let defaults = try #require(UserDefaults(suiteName: "test-\(UUID().uuidString)"))
+        var settings = AppSettings()
+        settings.ytDlpMode = .fallback
+        settings.ytDlpServerURL = base
+        defaults.set(try JSONEncoder().encode(settings), forKey: AppSettings.persistenceKey)
         let cfg = YtDlpServerConfig.current(defaults: defaults, keychain: MemoryKeychain())
         #expect(cfg.mode == .fallback)
         #expect(cfg.baseURL == base)
