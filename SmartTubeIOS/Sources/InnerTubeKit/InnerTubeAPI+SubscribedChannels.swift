@@ -65,10 +65,16 @@ extension InnerTubeAPI {
             guard depth < 50 else { return }
             if let dict = obj as? [String: Any] {
                 if let tile = dict["tileRenderer"] as? [String: Any] {
-                    if let c = fromTile(tile) { add(c); return }
+                    if let c = fromTile(tile) {
+                        add(c)
+                        return
+                    }
                 }
                 for key in ["channelRenderer", "gridChannelRenderer", "compactChannelRenderer"] {
-                    if let r = dict[key] as? [String: Any], let c = fromRenderer(r) { add(c); return }
+                    if let r = dict[key] as? [String: Any], let c = fromRenderer(r) {
+                        add(c)
+                        return
+                    }
                 }
                 for v in dict.values { walk(v, depth + 1) }
             } else if let arr = obj as? [Any] {

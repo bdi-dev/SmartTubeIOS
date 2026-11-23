@@ -284,7 +284,7 @@ public actor WatchedHistoryIndex {
         if pagesLoaded >= maxPages || entries.count >= maxEntries { complete = true }
         deepenTask = nil
         persist()
-        print("[WATCHDIAG] history deepen finished ids=\(entries.count) pages=\(pagesLoaded) complete=\(complete)") // WATCHDIAG
+        print("[WATCHDIAG] history deepen finished ids=\(entries.count) pages=\(pagesLoaded) complete=\(complete)")  // WATCHDIAG
         NotificationCenter.default.post(name: .watchedHistoryIndexDidUpdate, object: nil)
     }
 
@@ -292,7 +292,8 @@ public actor WatchedHistoryIndex {
 
     private func fileURL(for key: String) -> URL? {
         guard let dir = persistenceDirectory else { return nil }
-        let safe = String(key.unicodeScalars.map { $0.properties.isAlphabetic || ("0"..."9").contains($0) ? Character($0) : "_" })
+        let safe = String(
+            key.unicodeScalars.map { $0.properties.isAlphabetic || ("0"..."9").contains($0) ? Character($0) : "_" })
         return dir.appendingPathComponent("history-\(safe).json")
     }
 
