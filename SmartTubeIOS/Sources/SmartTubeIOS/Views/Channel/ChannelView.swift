@@ -39,10 +39,10 @@ public struct ChannelView: View {
                 ProgressView("Loading channel…")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     #if os(tvOS)
-                    // Keeps focus in the page while it loads. With nothing focusable here the
-                    // focus engine moves focus to the sidebar, and it stays there once the
-                    // channel's buttons and grid appear.
-                    .focusable()
+                // Keeps focus in the page while it loads. With nothing focusable here the
+                // focus engine moves focus to the sidebar, and it stays there once the
+                // channel's buttons and grid appear.
+                .focusable()
                     #endif
                     .accessibilityIdentifier("channel.view")
             } else {
