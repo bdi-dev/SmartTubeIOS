@@ -277,7 +277,7 @@ private struct TVSidebarRowLabel<Icon: View>: View {
             // inserted when the sidebar starts expanding: inserting it made the text pop in
             // while the bar was still narrow. It fades in after the bar has mostly opened and
             // fades out first when collapsing.
-            Text(verbatim: title)
+            Text(verbatim: title)  // verbatim: sidebar title is already localised by the caller
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
                 .opacity(showsTitle ? 1 : 0)

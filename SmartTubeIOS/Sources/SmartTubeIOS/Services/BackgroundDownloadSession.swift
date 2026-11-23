@@ -106,10 +106,9 @@ public final class BackgroundDownloadSession: BackgroundTransferring, @unchecked
     }
 
     public func cancel(videoId: String) async {
-        for task in await session.allTasks {
-            if DownloadTransferID(taskDescription: task.taskDescription)?.videoId == videoId {
-                task.cancel()
-            }
+        for task in await session.allTasks
+        where DownloadTransferID(taskDescription: task.taskDescription)?.videoId == videoId {
+            task.cancel()
         }
     }
 

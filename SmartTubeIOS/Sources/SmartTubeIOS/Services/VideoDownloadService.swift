@@ -443,13 +443,13 @@ public final class VideoDownloadService {
             videoId: videoId, bytesPerSecond: paused ? 0 : speed, received: received, expected: expected)
     }
 
-    private func applyProgress(videoId: String, progress p: Double) {
-        store.setProgress(videoId: videoId, progress: p)
+    private func applyProgress(videoId: String, progress value: Double) {
+        store.setProgress(videoId: videoId, progress: value)
         guard videoId == leadVideoId else { return }
         refreshAggregate()
         #if os(iOS)
         if liveActivitiesEnabled, #available(iOS 16.1, *) {
-            Task { await updateLiveActivity(phase: .downloading, progress: p) }
+            Task { await updateLiveActivity(phase: .downloading, progress: value) }
         }
         #endif
     }

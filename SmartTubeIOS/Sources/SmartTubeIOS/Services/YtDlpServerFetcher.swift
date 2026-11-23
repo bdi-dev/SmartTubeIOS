@@ -399,9 +399,13 @@ public enum YtDlpServerStream {
 
     /// Never assembles: streaming plays the server's finished file as is.
     private struct UnsupportedAssembler: DownloadFetching {
+        // Reason: protocol witness must stay async
+        // swiftlint:disable:next async_without_await
         func resolve(video: Video) async throws -> DownloadPlan {
             throw DownloadFetchError(message: "Not supported")
         }
+        // Reason: protocol witness must stay async
+        // swiftlint:disable:next async_without_await
         func assemble(videoId: String, stagedParts: [DownloadPart: URL]) async throws -> URL {
             throw DownloadFetchError(message: "Not supported")
         }

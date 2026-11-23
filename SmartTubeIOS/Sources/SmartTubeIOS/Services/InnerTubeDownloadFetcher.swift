@@ -56,6 +56,13 @@ struct DownloadFetchError: LocalizedError {
 /// Production fetcher: resolves a muxed MP4 (Web, then Android client) or falls back to adaptive
 /// video + audio streams, then passthrough-remuxes so the moov atom is first and AVPlayer can
 /// play the file.
+/// A download client to try: its log name, the User-Agent its URLs are signed for, and its player fetch.
+private struct ClientCandidate {
+    let name: String
+    let userAgent: String
+    let load: () async throws -> PlayerInfo
+}
+
 public final class InnerTubeDownloadFetcher: DownloadFetching {
     private let api: InnerTubeAPI
 
@@ -91,18 +98,18 @@ public final class InnerTubeDownloadFetcher: DownloadFetching {
 
     public func resolve(video: Video, audioOnly: Bool) async throws -> DownloadPlan {
         guard audioOnly else { return try await resolve(video: video) }
-        for (label, clientUA, fetch) in clientCandidates(videoId: video.id) {
+        for candidate in clientCandidates(videoId: video.id) {
             if Task.isCancelled { throw CancellationError() }
-            guard let info = try? await fetch(), let audioURL = info.bestAdaptiveAudioURL else {
-                fetchLog.notice("[download] \(label) — no audio stream, trying next")
+            guard let info = try? await candidate.load(), let audioURL = info.bestAdaptiveAudioURL else {
+                fetchLog.notice("[download] \(candidate.name) — no audio stream, trying next")
                 continue
             }
-            guard await Self.probe(url: audioURL, userAgent: clientUA) else {
-                fetchLog.notice("[download] \(label) — CDN rejected audio URL, trying next")
+            guard await Self.probe(url: audioURL, userAgent: candidate.userAgent) else {
+                fetchLog.notice("[download] \(candidate.name) — CDN rejected audio URL, trying next")
                 continue
             }
-            fetchLog.notice("[download] \(label) ✅ audio URL accepted")
-            return DownloadPlan(parts: [.init(part: .audio, url: audioURL, userAgent: clientUA)])
+            fetchLog.notice("[download] \(candidate.name) ✅ audio URL accepted")
+            return DownloadPlan(parts: [.init(part: .audio, url: audioURL, userAgent: candidate.userAgent)])
         }
         // No direct audio-only URL (YouTube often serves only muxed streams with usable URLs):
         // fetch the muxed file and keep just its audio track at assembly time.
@@ -112,15 +119,15 @@ public final class InnerTubeDownloadFetcher: DownloadFetching {
     }
 
     /// Clients to try, in order: Web first (its CDN URLs download reliably), then Android.
-    private func clientCandidates(videoId: String) -> [(String, String, () async throws -> PlayerInfo)] {
+    private func clientCandidates(videoId: String) -> [ClientCandidate] {
         [
-            (
-                "Web", InnerTubeClients.Web.userAgent,
-                { [api] in try await api.fetchPlayerInfoForDownload(videoId: videoId) }
+            ClientCandidate(
+                name: "Web", userAgent: InnerTubeClients.Web.userAgent,
+                load: { [api] in try await api.fetchPlayerInfoForDownload(videoId: videoId) }
             ),
-            (
-                "Android", InnerTubeClients.Android.userAgent,
-                { [api] in try await api.fetchPlayerInfoAndroid(videoId: videoId) }
+            ClientCandidate(
+                name: "Android", userAgent: InnerTubeClients.Android.userAgent,
+                load: { [api] in try await api.fetchPlayerInfoAndroid(videoId: videoId) }
             ),
         ]
     }
@@ -159,33 +166,34 @@ public final class InnerTubeDownloadFetcher: DownloadFetching {
     /// User-Agent its URL was signed for. Tries the Web client then Android and accepts a URL only
     /// if the CDN answers a one-byte range probe. Shared by downloads and "Play in Native Player".
     public static func muxedStream(api: InnerTubeAPI, videoId: String) async -> Video.DirectStream? {
-        let candidates: [(String, String, () async throws -> PlayerInfo)] = [
-            (
-                "Web", InnerTubeClients.Web.userAgent,
-                { try await api.fetchPlayerInfoForDownload(videoId: videoId) }
+        let candidates: [ClientCandidate] = [
+            ClientCandidate(
+                name: "Web", userAgent: InnerTubeClients.Web.userAgent,
+                load: { try await api.fetchPlayerInfoForDownload(videoId: videoId) }
             ),
-            (
-                "Android", InnerTubeClients.Android.userAgent,
-                { try await api.fetchPlayerInfoAndroid(videoId: videoId) }
+            ClientCandidate(
+                name: "Android", userAgent: InnerTubeClients.Android.userAgent,
+                load: { try await api.fetchPlayerInfoAndroid(videoId: videoId) }
             ),
         ]
-        for (label, clientUA, fetch) in candidates {
+        for candidate in candidates {
             if Task.isCancelled { return nil }
-            guard let info = try? await fetch() else {
-                fetchLog.notice("[stream] \(label) client failed or UNPLAYABLE, trying next")
+            guard let info = try? await candidate.load() else {
+                fetchLog.notice("[stream] \(candidate.name) client failed or UNPLAYABLE, trying next")
                 continue
             }
-            fetchLog.notice("[stream] \(label) formats=\(info.formats.count) hlsURL=\(info.hlsURL != nil)")
+            fetchLog.notice("[stream] \(candidate.name) formats=\(info.formats.count) hlsURL=\(info.hlsURL != nil)")
             guard let muxedFormat = info.bestMuxedFormat, let muxedURL = muxedFormat.url else {
-                fetchLog.notice("[stream] \(label) — no muxed MP4, trying next")
+                fetchLog.notice("[stream] \(candidate.name) — no muxed MP4, trying next")
                 continue
             }
-            guard await probe(url: muxedURL, userAgent: clientUA) else {
-                fetchLog.notice("[stream] \(label) — CDN rejected URL, trying next")
+            guard await probe(url: muxedURL, userAgent: candidate.userAgent) else {
+                fetchLog.notice("[stream] \(candidate.name) — CDN rejected URL, trying next")
                 continue
             }
-            fetchLog.notice("[stream] \(label) ✅ muxed URL accepted")
-            return Video.DirectStream(url: muxedURL, userAgent: clientUA, qualityLabel: muxedFormat.qualityLabel)
+            fetchLog.notice("[stream] \(candidate.name) ✅ muxed URL accepted")
+            return Video.DirectStream(
+                url: muxedURL, userAgent: candidate.userAgent, qualityLabel: muxedFormat.qualityLabel)
         }
         return nil
     }
@@ -306,15 +314,20 @@ public final class InnerTubeDownloadFetcher: DownloadFetching {
         return destURL
     }
 
-    /// Merges separate video-only and audio-only MP4 files into a single MP4 using AVAssetWriter
-    /// for true passthrough (sample-level copy, no re-encode of codec data).
-    private func mergeAdaptiveStreams(videoFile: URL, audioFile: URL, videoId: String) async throws -> URL {
+    /// Fails with `zeroByteResource` unless both downloaded tracks have bytes, and logs their sizes.
+    private static func validateAdaptiveInputs(videoFile: URL, audioFile: URL) throws {
         let videoSize = (try? FileManager.default.attributesOfItem(atPath: videoFile.path)[.size] as? Int) ?? 0
         let audioSize = (try? FileManager.default.attributesOfItem(atPath: audioFile.path)[.size] as? Int) ?? 0
         fetchLog.notice("[download] adaptive merge input video=\(videoSize)B audio=\(audioSize)B")
         guard videoSize > 0, audioSize > 0 else {
             throw URLError(.zeroByteResource)
         }
+    }
+
+    /// Merges separate video-only and audio-only MP4 files into a single MP4 using AVAssetWriter
+    /// for true passthrough (sample-level copy, no re-encode of codec data).
+    private func mergeAdaptiveStreams(videoFile: URL, audioFile: URL, videoId: String) async throws -> URL {
+        try Self.validateAdaptiveInputs(videoFile: videoFile, audioFile: audioFile)
 
         let destURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(videoId)-merged.mp4")
         try? FileManager.default.removeItem(at: destURL)
@@ -330,8 +343,9 @@ public final class InnerTubeDownloadFetcher: DownloadFetching {
             throw URLError(.badServerResponse)
         }
 
-        let videoFmt = try await videoTrackSrc.load(.formatDescriptions).first!
-        let audioFmt = try await audioTrackSrc.load(.formatDescriptions).first!
+        guard let videoFmt = try await videoTrackSrc.load(.formatDescriptions).first,
+            let audioFmt = try await audioTrackSrc.load(.formatDescriptions).first
+        else { throw URLError(.badServerResponse) }
 
         let writer = try AVAssetWriter(outputURL: destURL, fileType: .mp4)
         let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: nil, sourceFormatHint: videoFmt)

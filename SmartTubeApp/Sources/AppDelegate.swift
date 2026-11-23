@@ -39,6 +39,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     /// Show an alert even if the app is in the foreground.
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter, willPresent notification: UNNotification
+            // Reason: protocol witness must stay async
+            // swiftlint:disable:next async_without_await
     ) async -> UNNotificationPresentationOptions {
         [.banner, .sound]
     }
