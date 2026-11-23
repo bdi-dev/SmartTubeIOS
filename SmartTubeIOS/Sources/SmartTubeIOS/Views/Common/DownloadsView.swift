@@ -35,11 +35,11 @@ struct DownloadsView: View {
         @Bindable var settings = settingsStore
         return VStack(spacing: 0) {
             Toggle("Enable downloads", isOn: $settings.settings.downloadsEnabled)
-                .accessibilityIdentifier("downloads.enableToggle")
+                .accessibilityIdentifier(AccessibilityID.Downloads.enableToggle)
                 .onChange(of: settings.settings.downloadsEnabled) { _, _ in downloadService.refreshPolicy() }
             Divider().padding(.vertical, 6)
             Toggle("Enable cellular", isOn: $settings.settings.allowCellularDownloads)
-                .accessibilityIdentifier("downloads.cellularToggle")
+                .accessibilityIdentifier(AccessibilityID.Downloads.cellularToggle)
                 .disabled(!settings.settings.downloadsEnabled)
                 .onChange(of: settings.settings.allowCellularDownloads) { _, _ in downloadService.refreshPolicy() }
         }
@@ -88,7 +88,7 @@ struct DownloadsView: View {
                                 ) {
                                     Label("Share / Save to Files", systemImage: "square.and.arrow.up")
                                 }
-                                .accessibilityIdentifier("downloads.share.\(entry.videoId)")
+                                .accessibilityIdentifier(AccessibilityID.Downloads.share(entry.videoId))
                             }
                         }
                         .accessibilityIdentifier("downloads.videoRow.\(entry.videoId)")
@@ -138,12 +138,12 @@ struct DownloadsView: View {
             )
             .font(.caption)
             .foregroundStyle(low ? Color.orange : Color.secondary)
-            .accessibilityIdentifier("downloads.storageSummary")
+            .accessibilityIdentifier(AccessibilityID.Downloads.storageSummary)
             if low {
                 Text("Low storage — new downloads may fail")
                     .font(.caption2)
                     .foregroundStyle(.orange)
-                    .accessibilityIdentifier("downloads.lowStorageWarning")
+                    .accessibilityIdentifier(AccessibilityID.Downloads.lowStorageWarning)
             }
         }
     }
@@ -232,17 +232,17 @@ private struct DownloadedVideoRow: View {
             EmptyView()
         case .queued:
             Text("Queued").font(.caption).foregroundStyle(.secondary)
-                .accessibilityIdentifier("downloads.status.\(entry.videoId)")
+                .accessibilityIdentifier(AccessibilityID.Downloads.status(entry.videoId))
         case .downloading:
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 8) {
                     ProgressView(value: entry.progress)
                         .tint(entry.isPaused ? .secondary : .accentColor)
-                        .accessibilityIdentifier("downloads.progress.\(entry.videoId)")
+                        .accessibilityIdentifier(AccessibilityID.Downloads.progress(entry.videoId))
                     Text(percentText)
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
-                        .accessibilityIdentifier("downloads.percent.\(entry.videoId)")
+                        .accessibilityIdentifier(AccessibilityID.Downloads.percent(entry.videoId))
                     Button {
                         entry.isPaused ? onResume() : onPause()
                     } label: {
@@ -257,11 +257,11 @@ private struct DownloadedVideoRow: View {
                 Text(transferDetail)
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.secondary)
-                    .accessibilityIdentifier("downloads.status.\(entry.videoId)")
+                    .accessibilityIdentifier(AccessibilityID.Downloads.status(entry.videoId))
             }
         case .merging:
             Text("Merging…").font(.caption).foregroundStyle(.secondary)
-                .accessibilityIdentifier("downloads.status.\(entry.videoId)")
+                .accessibilityIdentifier(AccessibilityID.Downloads.status(entry.videoId))
         case .failed:
             HStack(spacing: 8) {
                 Text(entry.errorMessage ?? String(localized: "Download failed", bundle: .module))
@@ -271,7 +271,7 @@ private struct DownloadedVideoRow: View {
                 Button("Retry", action: onRetry)
                     .font(.caption)
                     .buttonStyle(.bordered)
-                    .accessibilityIdentifier("downloads.retry.\(entry.videoId)")
+                    .accessibilityIdentifier(AccessibilityID.Downloads.retry(entry.videoId))
             }
         }
     }
@@ -306,7 +306,7 @@ private struct DownloadedVideoRow: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .fixedSize()
-                        .accessibilityIdentifier("downloads.audioBadge.\(entry.videoId)")
+                        .accessibilityIdentifier(AccessibilityID.Downloads.audioBadge(entry.videoId))
                     }
                     if !durationDescription.isEmpty {
                         Text(durationDescription)
