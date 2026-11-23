@@ -15,24 +15,24 @@ private func v(_ id: String, channel: String = "c1", live: Bool = false) -> Vide
 struct NewUploadDetectorTests {
     @Test("the first check records a baseline and announces nothing")
     func baselineIsSilent() {
-        let r = NewUploadDetector.evaluate(feed: [v("a"), v("b")], seenIds: [], hasBaseline: false)
-        #expect(r.toNotify.isEmpty)
-        #expect(r.allIds == ["a", "b"])
+        let result = NewUploadDetector.evaluate(feed: [v("a"), v("b")], seenIds: [], hasBaseline: false)
+        #expect(result.toNotify.isEmpty)
+        #expect(result.allIds == ["a", "b"])
     }
 
     @Test("after the baseline only unseen, non-live, non-muted videos are announced, capped")
     func announcesNew() {
         let feed = [v("n1"), v("old"), v("live", live: true), v("muted", channel: "bad"), v("n2"), v("n3")]
-        let r = NewUploadDetector.evaluate(
+        let result = NewUploadDetector.evaluate(
             feed: feed, seenIds: ["old"], hasBaseline: true, isMuted: { $0.channelId == "bad" }, limit: 2)
-        #expect(r.toNotify.map(\.id) == ["n1", "n2"])
-        #expect(r.allIds.count == 6)
+        #expect(result.toNotify.map(\.id) == ["n1", "n2"])
+        #expect(result.allIds.count == 6)
     }
 
     @Test("duplicates in one feed are announced once")
     func dedupes() {
-        let r = NewUploadDetector.evaluate(feed: [v("x"), v("x")], seenIds: [], hasBaseline: true)
-        #expect(r.toNotify.map(\.id) == ["x"])
+        let result = NewUploadDetector.evaluate(feed: [v("x"), v("x")], seenIds: [], hasBaseline: true)
+        #expect(result.toNotify.map(\.id) == ["x"])
     }
 }
 
@@ -84,7 +84,7 @@ struct SeenUploadsStoreSourceTests {
     @Test("the earlier single-baseline format decodes as the local source")
     func legacyDecode() async throws {
         let suite = "test-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
+        let defaults = try #require(UserDefaults(suiteName: suite))
         defaults.set(Data(#"{"seen":["x"],"hasBaseline":true}"#.utf8), forKey: "st_seen_uploads")
         let store = SeenUploadsStore(suiteName: suite)
         #expect(await store.hasBaseline(for: "local"))

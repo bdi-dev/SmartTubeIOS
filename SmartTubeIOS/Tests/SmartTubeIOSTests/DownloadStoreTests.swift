@@ -105,14 +105,14 @@ struct DownloadStoreLifecycleTests {
     }
 
     @Test("finalize with a missing temp file fails and never marks complete")
-    func finalizeFailureDoesNotComplete() {
+    func finalizeFailureDoesNotComplete() throws {
         let dir = makeTempDirectory()
         let store = DownloadStore(directory: dir)
         store.upsert(makeEntry("vid2", status: .merging))
         let missing = FileManager.default.temporaryDirectory.appendingPathComponent("nope-\(UUID().uuidString).mp4")
         #expect(!store.finalize(videoId: "vid2", from: missing))
         #expect(store.entry(for: "vid2")?.status == .failed)
-        #expect(store.video(for: store.entry(for: "vid2")!) == nil)
+        #expect(store.video(for: try #require(store.entry(for: "vid2"))) == nil)
     }
 
     @Test("reconcile marks a complete entry with a missing file as failed")
