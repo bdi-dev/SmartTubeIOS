@@ -517,3 +517,28 @@ afterwards. Do this as one commit per directory so a bad hunk can be reverted: c
 3. Task 13: format the 27 legacy files so `format-check` can pass, or leave `format-check` red.
 4. `test-unit` cannot pass until the macOS compile break is fixed; decide whether the gate should
    use the `xcodebuild test` substitute instead of `swift test` (a `justfile` change, not made here).
+
+## Known debt accepted into the baseline
+
+The regenerated `.swiftlint.baseline` (commit `571aa45`, from the branch tip) accepts 21 structural
+violations that the branch grew. They are not fixed here because each needs a refactor, not a
+lint edit. `swiftlint lint --strict --baseline` stays green while they exist. Remove an entry
+only when its refactor lands.
+
+| File | Rule (current / limit) | Why it needs a refactor | One-line suggested split |
+|---|---|---|---|
+| `SmartTubeApp/Sources/AppEntry.swift` | `type_body_length` (544 / 400) | One app type owns scene setup, routing and wiring | Move scene and route wiring into extensions in separate files |
+| `SmartTubeApp/UITests/LibraryUITests.swift` | `type_body_length` (514 / 400) | One class holds every library UI test | Split by library section into separate test classes (add in Xcode) |
+| `SmartTubeIOS/Sources/SmartTubeIOS/Services/VideoDownloadService.swift` | `type_body_length` (500 / 400) | State machine, persistence and notifications in one class | Extract persistence and recovery into a helper type |
+| `SmartTubeIOS/Sources/SmartTubeIOS/ViewModels/PlaybackViewModel+Loading.swift` | `file_length` (1129 / 600), `function_body_length` (618 / 150), `cyclomatic_complexity` (76 / 15) | One loading function holds the whole fallback ladder; WS4 decomposition, no new branches | Replace the ladder with one step per stream source behind a `StreamSource` |
+| `SmartTubeIOS/Sources/SmartTubeIOS/Views/Browse/VideoCardView.swift` | `type_body_length` (615 / 600), `file_length` (641 / 600) | Menu and overlay subviews live in the card file | Move the menu and overlay subviews into their own files |
+| `SmartTubeIOS/Sources/SmartTubeIOS/Views/Player/MPV/MPVPlayerView.swift` | `file_length` (953 / 600), `type_body_length` (897 / 600), `function_body_length` (151 / 150), `cyclomatic_complexity` (35 / 15) | tvOS-only view with transport, focus and menus in one type; needs a tvOS build to verify | Move transport focus handling and menus into extension files |
+| `SmartTubeIOS/Sources/SmartTubeIOS/Views/Player/MPV/MPVPlayerViewModel.swift` | `file_length` (949 / 600), `type_body_length` (900 / 600) | tvOS-only view model with track selection and transport in one type | Move track selection into an extension file |
+| `SmartTubeIOS/Sources/SmartTubeIOS/Views/Player/PlayerView+ControlElements.swift` | `file_length` (816 / 600) | Many control groups in one extension file | Move one control group into its own extension file |
+| `SmartTubeIOS/Sources/SmartTubeIOS/Views/Player/PlayerView+Lifecycle.swift` | `file_length` (816 / 600) | Lifecycle observers share a file with other player logic | Move observers into a separate extension file |
+| `SmartTubeIOS/Sources/SmartTubeIOS/Views/Player/PlayerView+Overlays.swift` | `file_length` (728 / 600) | More-menu overlay lives with other overlays | Move the more-menu overlay into its own file |
+| `SmartTubeIOS/Sources/SmartTubeIOS/Views/Player/TOSPlayerView.swift` | `file_length` (709 / 600), `type_body_length` (615 / 600), `function_body_length` (111 / 80) | Large body function and view type | Move the more-menu section into an extension and split the body function |
+| `SmartTubeIOS/Sources/SmartTubeIOS/Views/Settings/SettingsView.swift` | `type_body_length` (454 / 400) | Downloads and yt-dlp sections sit in the main view | Move the downloads section into `SettingsView+Downloads.swift` (plan Task 7, step 3) |
+
+Count: 21 (file_length 8, type_body_length 8, function_body_length 3, cyclomatic_complexity 2).
+The MPV rows are tvOS-only and need a tvOS build to verify any change.
