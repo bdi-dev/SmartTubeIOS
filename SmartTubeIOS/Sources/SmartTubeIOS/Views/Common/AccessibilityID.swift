@@ -30,4 +30,21 @@ enum AccessibilityID {
         static let ytDlpTestButton = "settings.ytDlpTestButton"
         static let ytDlpTestResult = "settings.ytDlpTestResult"
     }
+
+    enum VideoCard {
+        static let playWebButton = "video.card.playWebButton"
+        static let playNativeButton = "video.card.playNativeButton"
+        static let playStreamButton = "video.card.playStreamButton"
+        static let playServerButton = "video.card.playServerButton"
+        static let playInMenu = "video.card.playInMenu"
+        static let downloadedBadge = "video.card.downloadedBadge"
+    }
+
+    enum Root {
+        static let offlineBanner = "offline.banner"
+    }
+
+    enum Toast {
+        static let message = "toast.message"
+    }
 }

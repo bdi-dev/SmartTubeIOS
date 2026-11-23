@@ -282,31 +282,31 @@ public struct VideoCardView: View {
                 } label: {
                     Label("Play in YouTube Player", systemImage: "play.rectangle")
                 }
-                .accessibilityIdentifier("video.card.playWebButton")
+                .accessibilityIdentifier(AccessibilityID.VideoCard.playWebButton)
                 Button {
                     playerRouter.openInNativePlayer(video: video)
                 } label: {
                     Label("Play in Native Player", systemImage: "play.square")
                 }
-                .accessibilityIdentifier("video.card.playNativeButton")
+                .accessibilityIdentifier(AccessibilityID.VideoCard.playNativeButton)
                 Button {
                     playerRouter.playStream(video: video, api: api)
                 } label: {
                     Label("Play 360p Stream", systemImage: "play.square.stack")
                 }
-                .accessibilityIdentifier("video.card.playStreamButton")
+                .accessibilityIdentifier(AccessibilityID.VideoCard.playStreamButton)
                 if YtDlpServerConfig.current().isConfigured {
                     Button {
                         playerRouter.playFromServer(video: video)
                     } label: {
                         Label("Play from yt-dlp Server", systemImage: "server.rack")
                     }
-                    .accessibilityIdentifier("video.card.playServerButton")
+                    .accessibilityIdentifier(AccessibilityID.VideoCard.playServerButton)
                 }
             } label: {
                 Label("Play in…", systemImage: "play.rectangle.on.rectangle")
             }
-            .accessibilityIdentifier("video.card.playInMenu")
+            .accessibilityIdentifier(AccessibilityID.VideoCard.playInMenu)
             #endif
             if authService.isSignedIn {
                 Button(role: .destructive) {
@@ -742,7 +742,7 @@ public struct VideoCardView: View {
             .clipShape(Circle())
             .padding(4)
             .accessibilityLabel(Text("Downloaded"))
-            .accessibilityIdentifier("video.card.downloadedBadge")
+            .accessibilityIdentifier(AccessibilityID.VideoCard.downloadedBadge)
     }
     #endif
 

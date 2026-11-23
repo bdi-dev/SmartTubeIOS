@@ -124,7 +124,7 @@ private struct ToastHostModifier: ViewModifier {
                 .transition(.opacity.combined(with: .move(edge: .bottom)))
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(toast.message.isEmpty ? toast.title : "\(toast.title). \(toast.message)")
-                .accessibilityIdentifier("toast.message")
+                .accessibilityIdentifier(AccessibilityID.Toast.message)
             }
         }
         .animation(.easeInOut(duration: 0.2), value: center.current)

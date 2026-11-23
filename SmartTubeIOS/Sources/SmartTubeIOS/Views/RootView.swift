@@ -178,7 +178,7 @@ struct MainTabView: View {
                     .foregroundStyle(.black)
             }
             .buttonStyle(.plain)
-            .accessibilityIdentifier("offline.banner")
+            .accessibilityIdentifier(AccessibilityID.Root.offlineBanner)
         }
     }
     #endif
