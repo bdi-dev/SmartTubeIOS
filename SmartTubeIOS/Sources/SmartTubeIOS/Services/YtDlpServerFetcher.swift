@@ -64,21 +64,21 @@ public struct YtDlpLibraryItem: Decodable, Sendable, Equatable {
     }
 
     public init(from decoder: any Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        videoId = try c.decode(String.self, forKey: .videoId)
-        title = try c.decode(String.self, forKey: .title)
-        channelTitle = try c.decode(String.self, forKey: .channelTitle)
-        duration = try c.decodeIfPresent(Double.self, forKey: .duration)
-        thumbnailURL = try c.decodeIfPresent(String.self, forKey: .thumbnailURL)
-        keep = try c.decode(Bool.self, forKey: .keep)
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        videoId = try container.decode(String.self, forKey: .videoId)
+        title = try container.decode(String.self, forKey: .title)
+        channelTitle = try container.decode(String.self, forKey: .channelTitle)
+        duration = try container.decodeIfPresent(Double.self, forKey: .duration)
+        thumbnailURL = try container.decodeIfPresent(String.self, forKey: .thumbnailURL)
+        keep = try container.decode(Bool.self, forKey: .keep)
         // The server writes `%Y-%m-%dT%H:%M:%SZ`, which ISO8601DateFormatter's default options read.
-        let stamp = try c.decode(String.self, forKey: .downloadedAt)
+        let stamp = try container.decode(String.self, forKey: .downloadedAt)
         guard let date = ISO8601DateFormatter().date(from: stamp) else {
             throw DecodingError.dataCorruptedError(
-                forKey: .downloadedAt, in: c, debugDescription: "Unreadable date \(stamp)")
+                forKey: .downloadedAt, in: container, debugDescription: "Unreadable date \(stamp)")
         }
         downloadedAt = date
-        fileSize = try c.decodeIfPresent(Int64.self, forKey: .fileSize)
+        fileSize = try container.decodeIfPresent(Int64.self, forKey: .fileSize)
     }
 }
 
@@ -193,8 +193,10 @@ public struct URLSessionYtDlpServerClient: YtDlpServerClient {
     private func request(
         _ path: String, query: [(name: String, value: String)] = [], method: String = "GET",
         authorised: Bool = true
-    ) -> URLRequest {
-        var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)!
+    ) throws -> URLRequest {
+        guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
+            throw URLError(.badURL)
+        }
         let prefix = components.path.hasSuffix("/") ? components.path : components.path + "/"
         components.path = prefix + path
         if !query.isEmpty {
@@ -204,7 +206,8 @@ public struct URLSessionYtDlpServerClient: YtDlpServerClient {
                 "\(item.name)=\(item.value.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "")"
             }.joined(separator: "&")
         }
-        var req = URLRequest(url: components.url!)
+        guard let url = components.url else { throw URLError(.badURL) }
+        var req = URLRequest(url: url)
         req.httpMethod = method
         req.timeoutInterval = timeout
         if authorised { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
@@ -244,18 +247,18 @@ public struct URLSessionYtDlpServerClient: YtDlpServerClient {
     }
 
     public func createJob(_ job: YtDlpJobRequest) async throws -> YtDlpJobState {
-        var req = request("v1/jobs", method: "POST")
+        var req = try request("v1/jobs", method: "POST")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONSerialization.data(withJSONObject: job.jsonObject)
         return try await send(req, as: YtDlpJobState.self)
     }
 
     public func jobState(videoId: String) async throws -> YtDlpJobState {
-        try await send(request("v1/jobs/\(videoId)"), as: YtDlpJobState.self)
+        try await send(try request("v1/jobs/\(videoId)"), as: YtDlpJobState.self)
     }
 
     public func health() async throws -> YtDlpHealth {
-        try await send(request("v1/health", authorised: false), as: YtDlpHealth.self)
+        try await send(try request("v1/health", authorised: false), as: YtDlpHealth.self)
     }
 
     public func library(cursor: String?, limit: Int) async throws -> YtDlpLibraryPage {
@@ -263,19 +266,19 @@ public struct URLSessionYtDlpServerClient: YtDlpServerClient {
         if let cursor { query.append((name: "cursor", value: cursor)) }
         query.append((name: "limit", value: String(limit)))
         return try await send(
-            request("v1/library", query: query), as: YtDlpLibraryPage.self,
+            try request("v1/library", query: query), as: YtDlpLibraryPage.self,
             notFound: "The yt-dlp server has no library endpoint (update the server)")
     }
 
     public func setKeep(videoId: String, keep: Bool) async throws {
-        var req = request("v1/files/\(videoId)/keep", method: "PUT")
+        var req = try request("v1/files/\(videoId)/keep", method: "PUT")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONSerialization.data(withJSONObject: ["keep": keep])
         _ = try await perform(req, notFound: Self.missingFile)
     }
 
     public func deleteFromServer(videoId: String) async throws {
-        _ = try await perform(request("v1/files/\(videoId)", method: "DELETE"), notFound: Self.missingFile)
+        _ = try await perform(try request("v1/files/\(videoId)", method: "DELETE"), notFound: Self.missingFile)
     }
 }
 
@@ -414,7 +417,7 @@ public final class ConfigurableDownloadFetcher: DownloadFetching {
     private let native: any DownloadFetching
     private let config: @Sendable () -> YtDlpServerConfig
     private let makeServer: @Sendable (YtDlpServerConfig) -> any DownloadFetching
-    private let makeProbe: @Sendable (YtDlpServerConfig) -> any YtDlpServerClient
+    private let makeProbe: @Sendable (YtDlpServerConfig) throws -> any YtDlpServerClient
 
     /// How long the fallback check waits for the server before extracting natively.
     public static let probeTimeout: TimeInterval = 5
@@ -423,7 +426,7 @@ public final class ConfigurableDownloadFetcher: DownloadFetching {
         native: any DownloadFetching,
         config: @escaping @Sendable () -> YtDlpServerConfig = { YtDlpServerConfig.current() },
         makeServer: (@Sendable (YtDlpServerConfig) -> any DownloadFetching)? = nil,
-        makeProbe: (@Sendable (YtDlpServerConfig) -> any YtDlpServerClient)? = nil
+        makeProbe: (@Sendable (YtDlpServerConfig) throws -> any YtDlpServerClient)? = nil
     ) {
         self.native = native
         self.config = config
@@ -434,9 +437,12 @@ public final class ConfigurableDownloadFetcher: DownloadFetching {
                     baseURL: cfg.baseURL!, token: cfg.token!, assembler: native)
             }
         self.makeProbe =
-            makeProbe ?? { cfg in
-                URLSessionYtDlpServerClient(
-                    baseURL: cfg.baseURL!, token: cfg.token!, timeout: ConfigurableDownloadFetcher.probeTimeout)
+            makeProbe ?? { (cfg: YtDlpServerConfig) throws -> any YtDlpServerClient in
+                guard let baseURL = cfg.baseURL, let token = cfg.token else {
+                    throw DownloadFetchError(message: "The yt-dlp server is not set up (Settings > Downloads)")
+                }
+                return URLSessionYtDlpServerClient(
+                    baseURL: baseURL, token: token, timeout: ConfigurableDownloadFetcher.probeTimeout)
             }
     }
 
