@@ -24,6 +24,73 @@ public struct YtDlpJobState: Decodable, Sendable, Equatable {
 public struct YtDlpHealth: Decodable, Sendable, Equatable {
     public let ok: Bool
     public let ytdlpVersion: String?
+    /// Reported by server API version 2 and later. Absent on older servers, so it is optional.
+    public let apiVersion: Int?
+
+    public init(ok: Bool, ytdlpVersion: String?, apiVersion: Int? = nil) {
+        self.ok = ok
+        self.ytdlpVersion = ytdlpVersion
+        self.apiVersion = apiVersion
+    }
+}
+
+/// One finished download on the server, as listed by `GET /v1/library`.
+public struct YtDlpLibraryItem: Decodable, Sendable, Equatable {
+    public let videoId: String
+    public let title: String
+    public let channelTitle: String
+    public let duration: Double?
+    public let thumbnailURL: String?
+    public let keep: Bool
+    public let downloadedAt: Date
+    public let fileSize: Int64?
+
+    public init(
+        videoId: String, title: String, channelTitle: String, duration: Double?, thumbnailURL: String?,
+        keep: Bool, downloadedAt: Date, fileSize: Int64?
+    ) {
+        self.videoId = videoId
+        self.title = title
+        self.channelTitle = channelTitle
+        self.duration = duration
+        self.thumbnailURL = thumbnailURL
+        self.keep = keep
+        self.downloadedAt = downloadedAt
+        self.fileSize = fileSize
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case videoId, title, channelTitle, duration, thumbnailURL, keep, downloadedAt, fileSize
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        videoId = try c.decode(String.self, forKey: .videoId)
+        title = try c.decode(String.self, forKey: .title)
+        channelTitle = try c.decode(String.self, forKey: .channelTitle)
+        duration = try c.decodeIfPresent(Double.self, forKey: .duration)
+        thumbnailURL = try c.decodeIfPresent(String.self, forKey: .thumbnailURL)
+        keep = try c.decode(Bool.self, forKey: .keep)
+        // The server writes `%Y-%m-%dT%H:%M:%SZ`, which ISO8601DateFormatter's default options read.
+        let stamp = try c.decode(String.self, forKey: .downloadedAt)
+        guard let date = ISO8601DateFormatter().date(from: stamp) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .downloadedAt, in: c, debugDescription: "Unreadable date \(stamp)")
+        }
+        downloadedAt = date
+        fileSize = try c.decodeIfPresent(Int64.self, forKey: .fileSize)
+    }
+}
+
+/// One page of `GET /v1/library`. `nextCursor` is nil on the last page.
+public struct YtDlpLibraryPage: Decodable, Sendable, Equatable {
+    public let items: [YtDlpLibraryItem]
+    public let nextCursor: String?
+
+    public init(items: [YtDlpLibraryItem], nextCursor: String?) {
+        self.items = items
+        self.nextCursor = nextCursor
+    }
 }
 
 /// The calls the app makes to the companion server. Tests supply a fake.
@@ -31,10 +98,22 @@ public protocol YtDlpServerClient: Sendable {
     func createJob(videoId: String) async throws -> YtDlpJobState
     func jobState(videoId: String) async throws -> YtDlpJobState
     func health() async throws -> YtDlpHealth
+    func library(cursor: String?, limit: Int) async throws -> YtDlpLibraryPage
+    func setKeep(videoId: String, keep: Bool) async throws
+    func deleteFromServer(videoId: String) async throws
 }
 
 struct YtDlpServerError: LocalizedError {
     let message: String
+    /// The HTTP status, or nil when the server never replied (offline, timeout). Lets callers tell
+    /// a 401 from a 404 from a timeout.
+    let status: Int?
+
+    init(message: String, status: Int? = nil) {
+        self.message = message
+        self.status = status
+    }
+
     var errorDescription: String? { message }
 }
 
@@ -43,23 +122,42 @@ public struct URLSessionYtDlpServerClient: YtDlpServerClient {
     public let baseURL: URL
     public let token: String
     private let session: URLSession
+    private let timeout: TimeInterval
 
-    public init(baseURL: URL, token: String, session: URLSession = .shared) {
+    public init(baseURL: URL, token: String, session: URLSession = .shared, timeout: TimeInterval = 30) {
         self.baseURL = baseURL
         // A pasted token often carries a trailing space or newline, which the server rejects.
         self.token = token.trimmingCharacters(in: .whitespacesAndNewlines)
         self.session = session
+        self.timeout = timeout
     }
 
-    private func request(_ path: String, method: String = "GET", authorised: Bool = true) -> URLRequest {
-        var req = URLRequest(url: baseURL.appendingPathComponent(path))
+    private static let defaultNotFound = "The yt-dlp server does not know this video"
+    private static let missingFile = "The yt-dlp server does not have this file"
+
+    private func request(
+        _ path: String, query: [(name: String, value: String)] = [], method: String = "GET",
+        authorised: Bool = true
+    ) -> URLRequest {
+        var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)!
+        let prefix = components.path.hasSuffix("/") ? components.path : components.path + "/"
+        components.path = prefix + path
+        if !query.isEmpty {
+            // Encode everything outside the alphanumerics so "+", "/" and "=" in a base64 cursor
+            // reach the server intact (a raw "+" would be read back as a space).
+            components.percentEncodedQuery = query.map { item in
+                "\(item.name)=\(item.value.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "")"
+            }.joined(separator: "&")
+        }
+        var req = URLRequest(url: components.url!)
         req.httpMethod = method
-        req.timeoutInterval = 30
+        req.timeoutInterval = timeout
         if authorised { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         return req
     }
 
-    private func send<T: Decodable>(_ req: URLRequest, as: T.Type) async throws -> T {
+    /// Sends the request and returns the body of a 2xx reply. Maps failures to status-carrying errors.
+    private func perform(_ req: URLRequest, notFound: String) async throws -> Data {
         let (data, response): (Data, URLResponse)
         do {
             (data, response) = try await session.data(for: req)
@@ -69,17 +167,24 @@ public struct URLSessionYtDlpServerClient: YtDlpServerClient {
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         switch status {
         case 200..<300:
-            do {
-                return try JSONDecoder().decode(T.self, from: data)
-            } catch {
-                throw YtDlpServerError(message: "The yt-dlp server sent an unexpected reply")
-            }
+            return data
         case 401:
-            throw YtDlpServerError(message: "The yt-dlp server rejected the token")
+            throw YtDlpServerError(message: "The yt-dlp server rejected the token", status: status)
         case 404:
-            throw YtDlpServerError(message: "The yt-dlp server does not know this video")
+            throw YtDlpServerError(message: notFound, status: status)
         default:
-            throw YtDlpServerError(message: "The yt-dlp server returned HTTP \(status)")
+            throw YtDlpServerError(message: "The yt-dlp server returned HTTP \(status)", status: status)
+        }
+    }
+
+    private func send<T: Decodable>(
+        _ req: URLRequest, as: T.Type, notFound: String = defaultNotFound
+    ) async throws -> T {
+        let data = try await perform(req, notFound: notFound)
+        do {
+            return try JSONDecoder().decode(T.self, from: data)
+        } catch {
+            throw YtDlpServerError(message: "The yt-dlp server sent an unexpected reply", status: nil)
         }
     }
 
@@ -96,6 +201,26 @@ public struct URLSessionYtDlpServerClient: YtDlpServerClient {
 
     public func health() async throws -> YtDlpHealth {
         try await send(request("v1/health", authorised: false), as: YtDlpHealth.self)
+    }
+
+    public func library(cursor: String?, limit: Int) async throws -> YtDlpLibraryPage {
+        var query: [(name: String, value: String)] = []
+        if let cursor { query.append((name: "cursor", value: cursor)) }
+        query.append((name: "limit", value: String(limit)))
+        return try await send(
+            request("v1/library", query: query), as: YtDlpLibraryPage.self,
+            notFound: "The yt-dlp server has no library endpoint (update the server)")
+    }
+
+    public func setKeep(videoId: String, keep: Bool) async throws {
+        var req = request("v1/files/\(videoId)/keep", method: "PUT")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONSerialization.data(withJSONObject: ["keep": keep])
+        _ = try await perform(req, notFound: Self.missingFile)
+    }
+
+    public func deleteFromServer(videoId: String) async throws {
+        _ = try await perform(request("v1/files/\(videoId)", method: "DELETE"), notFound: Self.missingFile)
     }
 }
 
