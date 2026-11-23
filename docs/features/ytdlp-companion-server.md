@@ -71,17 +71,22 @@ yt-dlp's current docs for the JavaScript runtime it needs for YouTube and instal
 
 | Method & path | Behaviour |
 |---|---|
-| `GET /v1/health` | `{ok, ytdlpVersion}`; used by the app's "Test connection" button. |
-| `POST /v1/jobs` body `{videoId, maxHeight?}` | Idempotent per `videoId`. Returns `202 {status}`; existing job/file returns current state. |
-| `GET /v1/jobs/{videoId}` | `{status: queued\|running\|ready\|failed, progress?, error?, fileSize?}` |
+| `GET /v1/health` | `{ok, apiVersion, ytdlpVersion}`; used by the app's "Test connection" button. `apiVersion` is 2 when the library, keep and metadata endpoints exist. |
+| `POST /v1/jobs` body `{videoId, maxHeight?, title?, channelTitle?, duration?, thumbnailURL?, keep?}` | Idempotent per `videoId`. Metadata is stored in a sidecar `<videoId>.json`; the first POST's metadata wins. `keep` defaults to `true`. Returns `202 {status}`; existing job/file returns current state. |
+| `GET /v1/jobs/{videoId}` | `{status: queued\|running\|ready\|failed, progress?, error?, fileSize?}`. Never returns metadata. |
 | `GET /v1/files/{videoId}.mp4` | The finished file. Must support `Range` and `Content-Length` (background sessions resume with ranges). |
-| `DELETE /v1/files/{videoId}` | Optional cleanup; the app calls it after a successful finalize. |
+| `GET /v1/library?limit=&cursor=` | Finished downloads, newest first, as `{items, nextCursor}`. `limit` is 1 to 200 (default 50). `nextCursor` is opaque and `null` on the last page. Each item is the sidecar. |
+| `PUT /v1/files/{videoId}/keep` body `{keep}` | Sets the keep flag. Returns `{ok, keep}`; `404` if the download is unknown. |
+| `DELETE /v1/files/{videoId}` | Removes the file and its sidecar. `200 {deleted: true}`, `404 {deleted: false}` if nothing existed, `409` while the job is queued or running. |
 
 **Rules**
 - Validate `videoId` against `^[A-Za-z0-9_-]{11}$` before it touches a path or a command line.
   Pass arguments as an argv array, never through a shell.
 - At most 2 concurrent yt-dlp jobs (mirror `DownloadTuning.maxConcurrent`).
-- Retention: delete files after 24 h or when the app calls `DELETE`; cap total disk use.
+- Storage: kept downloads (`keep: true`, the default) never expire. Unkept downloads (`keep: false`,
+  used for "Play from yt-dlp Server") are capped at 20 GB in total (`YTDLP_UNKEPT_CAP_GB`, where
+  1 GB is 1024^3 bytes). Over the cap, the oldest unkept files are evicted first. Running jobs and the
+  file that just finished are never evicted.
 - Optional `cookies.txt` on the server for age-restricted/members content; cookies never leave it.
 - Log video IDs and statuses only; no tokens.
 
@@ -126,7 +131,7 @@ view models, `os.Logger`, no Combine/`DispatchQueue`). Core stays Foundation-onl
   only on extraction errors; fallback skipped when server mode is Off; tolerant `job.json` decode
   with and without `headers`/`source`.
 - **Server tests (pytest):** a fake `yt-dlp` executable on `PATH`; cover idempotent POST, bad
-  `videoId` rejection, auth, `Range` responses, retention sweep.
+  `videoId` rejection, auth, `Range` responses, the keep flag, and the unkept cap and eviction.
 - **Manual:** kill the server mid-job; kill the app mid-poll and mid-transfer; download a video the
   native path cannot (to be found when one fails); 10-hour video over the tailnet.
 
