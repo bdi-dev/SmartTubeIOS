@@ -4,6 +4,7 @@ import SmartTubeIOS
 import SmartTubeIOSCore
 import SwiftUI
 import os
+
 #if os(iOS)
 import CoreSpotlight
 #endif
@@ -87,7 +88,8 @@ struct AppEntry: App {
         #if os(iOS)
         _watchLaterAutoDownloader = State(
             initialValue: WatchLaterAutoDownloader(
-                source: api, network: SystemNetworkConditions(), store: .shared, service: _cardDownloadService.wrappedValue))
+                source: api, network: SystemNetworkConditions(), store: .shared,
+                service: _cardDownloadService.wrappedValue))
         _newUploadNotifier = State(initialValue: NewUploadNotifier(api: api))
         #endif
         #if os(iOS)
@@ -276,63 +278,63 @@ struct AppEntry: App {
                     }
                     .onOpenURL { url in handleOpenURL(url) }
                     #if os(iOS)
-                    // Spotlight: tapping a video or channel result opens it.
-                    .onContinueUserActivity(CSSearchableItemActionType) { activity in
-                        guard let id = activity.userInfo?[CSSearchableItemActivityIdentifier] as? String,
-                            let route = SpotlightIndexer.route(forIdentifier: id)
-                        else { return }
-                        handleOpenURL(route.url)
-                    }
-                    // Spotlight: recently watched videos (removed when history is off or cleared)
-                    // and subscribed channels (removed on sign-out).
-                    .onChange(of: LocalWatchHistoryStore.shared.entries.map(\.video.id), initial: true) { _, _ in
-                        syncSpotlightHistory()
-                    }
-                    .onChange(of: settingsStore.settings.historyState) { _, _ in syncSpotlightHistory() }
-                    .onChange(of: browseViewModel.subscribedChannels) { _, channels in
-                        if !channels.isEmpty { SpotlightIndexer.shared.syncChannels(channels) }
-                    }
-                    .onChange(of: authService.isSignedIn) { _, signedIn in
-                        if !signedIn { SpotlightIndexer.shared.syncChannels([]) }
-                    }
-                    #endif
-                    .onChange(of: scenePhase, initial: true) { _, phase in
-                        if phase == .active {
-                            consumePendingVideoID()
-                            consumePendingVideoFromLaunchArgs()
-                            consumeDeepLinkFromLaunchArgs()
-                            consumeChannelDeepLinkFromLaunchArgs()
-                            consumeQueueInjectFromLaunchArgs()
-                            consumeBotGuardProbeFromLaunchArgs()
-                            authService.handleForeground()
-                            browseViewModel.refreshIfStale()
-                            #if os(iOS)
-                            Task {
-                                await watchLaterAutoDownloader.syncIfDue(
-                                    settings: settingsStore.settings, isSignedIn: authService.isSignedIn)
-                                await newUploadNotifier.checkIfDue(settings: settingsStore.settings)
-                            }
-                            #endif
-                            consumePendingRSSFeedURL()
-                            #if os(iOS)
-                            consumePendingWatchLaterID()
-                            consumePendingQueueVideoID()
-                            if playerStateStore.presentation == .miniPlayer {
-                                playerStateStore.vm.handleForeground()
-                            }
-                            #endif
-                        } else if phase == .background {
-                            #if os(iOS)
-                            if playerStateStore.presentation == .miniPlayer {
-                                playerStateStore.vm.handleBackground()
-                            }
-                            #endif
+                // Spotlight: tapping a video or channel result opens it.
+                .onContinueUserActivity(CSSearchableItemActionType) { activity in
+                    guard let id = activity.userInfo?[CSSearchableItemActivityIdentifier] as? String,
+                        let route = SpotlightIndexer.route(forIdentifier: id)
+                    else { return }
+                    handleOpenURL(route.url)
+                }
+                // Spotlight: recently watched videos (removed when history is off or cleared)
+                // and subscribed channels (removed on sign-out).
+                .onChange(of: LocalWatchHistoryStore.shared.entries.map(\.video.id), initial: true) { _, _ in
+                    syncSpotlightHistory()
+                }
+                .onChange(of: settingsStore.settings.historyState) { _, _ in syncSpotlightHistory() }
+                .onChange(of: browseViewModel.subscribedChannels) { _, channels in
+                    if !channels.isEmpty { SpotlightIndexer.shared.syncChannels(channels) }
+                }
+                .onChange(of: authService.isSignedIn) { _, signedIn in
+                    if !signedIn { SpotlightIndexer.shared.syncChannels([]) }
+                }
+                #endif
+                .onChange(of: scenePhase, initial: true) { _, phase in
+                    if phase == .active {
+                        consumePendingVideoID()
+                        consumePendingVideoFromLaunchArgs()
+                        consumeDeepLinkFromLaunchArgs()
+                        consumeChannelDeepLinkFromLaunchArgs()
+                        consumeQueueInjectFromLaunchArgs()
+                        consumeBotGuardProbeFromLaunchArgs()
+                        authService.handleForeground()
+                        browseViewModel.refreshIfStale()
+                        #if os(iOS)
+                        Task {
+                            await watchLaterAutoDownloader.syncIfDue(
+                                settings: settingsStore.settings, isSignedIn: authService.isSignedIn)
+                            await newUploadNotifier.checkIfDue(settings: settingsStore.settings)
                         }
+                        #endif
+                        consumePendingRSSFeedURL()
+                        #if os(iOS)
+                        consumePendingWatchLaterID()
+                        consumePendingQueueVideoID()
+                        if playerStateStore.presentation == .miniPlayer {
+                            playerStateStore.vm.handleForeground()
+                        }
+                        #endif
+                    } else if phase == .background {
+                        #if os(iOS)
+                        if playerStateStore.presentation == .miniPlayer {
+                            playerStateStore.vm.handleBackground()
+                        }
+                        #endif
                     }
-                    .onAppear {
-                        enableShortsIfNeeded()
-                        signOutIfNeeded()
-                    }
+                }
+                .onAppear {
+                    enableShortsIfNeeded()
+                    signOutIfNeeded()
+                }
             }
         }
         #endif
@@ -365,7 +367,8 @@ struct AppEntry: App {
             NotificationCenter.default.post(name: .smartTubeOpenSearch, object: nil, userInfo: ["query": query])
         case .section(let type):
             leaveFullScreenPlayer()
-            NotificationCenter.default.post(name: .smartTubeOpenSection, object: nil, userInfo: ["section": type.rawValue])
+            NotificationCenter.default.post(
+                name: .smartTubeOpenSection, object: nil, userInfo: ["section": type.rawValue])
         case .playWatchLater:
             Task { @MainActor in
                 // Needs a signed-in account; otherwise show the Watch Later section, which
@@ -471,7 +474,8 @@ struct AppEntry: App {
             await api.setAuthToken(token)
             do {
                 try await api.addToWatchLater(videoId: videoID)
-                ToastCenter.shared.show(title: "Saved to Watch Later", message: "The video was added to your Watch Later playlist.")
+                ToastCenter.shared.show(
+                    title: "Saved to Watch Later", message: "The video was added to your Watch Later playlist.")
             } catch {
                 ToastCenter.shared.show(title: "Could Not Save", message: error.localizedDescription)
             }
