@@ -21,16 +21,16 @@ public actor SeenUploadsStore: UserDefaultsBackedStore {
 
         /// Tolerant of the earlier shape (`hasBaseline: Bool`, one source): that meant "local".
         init(from decoder: Decoder) throws {
-            let c = try decoder.container(keyedBy: CodingKeys.self)
-            seen = try c.decodeIfPresent([String].self, forKey: .seen) ?? []
-            baselines = try c.decodeIfPresent(Set<String>.self, forKey: .baselines) ?? []
-            if try c.decodeIfPresent(Bool.self, forKey: .hasBaseline) == true { baselines.insert("local") }
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            seen = try container.decodeIfPresent([String].self, forKey: .seen) ?? []
+            baselines = try container.decodeIfPresent(Set<String>.self, forKey: .baselines) ?? []
+            if try container.decodeIfPresent(Bool.self, forKey: .hasBaseline) == true { baselines.insert("local") }
         }
 
         func encode(to encoder: Encoder) throws {
-            var c = encoder.container(keyedBy: CodingKeys.self)
-            try c.encode(seen, forKey: .seen)
-            try c.encode(baselines, forKey: .baselines)
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(seen, forKey: .seen)
+            try container.encode(baselines, forKey: .baselines)
         }
     }
 

@@ -13,8 +13,8 @@ public enum NewUploadDetector {
         public let toNotify: [Video]
         /// Every id in the feed, to mark as seen whether or not it was announced.
         public let allIds: [String]
-        public static func == (l: Self, r: Self) -> Bool {
-            l.toNotify.map(\.id) == r.toNotify.map(\.id) && l.allIds == r.allIds
+        public static func == (lhs: Self, rhs: Self) -> Bool {
+            lhs.toNotify.map(\.id) == rhs.toNotify.map(\.id) && lhs.allIds == rhs.allIds
         }
     }
 

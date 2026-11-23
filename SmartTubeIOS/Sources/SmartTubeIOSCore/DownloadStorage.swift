@@ -19,7 +19,7 @@ extension DownloadStore {
 
     /// Free space on the volume holding `directory`, favouring the "important usage" figure the
     /// system reports to users. `nil` if it cannot be read.
-    public nonisolated static func availableBytes(at directory: URL) -> Int64? {
+    nonisolated public static func availableBytes(at directory: URL) -> Int64? {
         #if os(tvOS)
         // tvOS has no "important usage" figure.
         let values = try? directory.resourceValues(forKeys: [.volumeAvailableCapacityKey])

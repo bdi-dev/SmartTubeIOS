@@ -57,11 +57,11 @@ public struct DownloadPlan: Codable, Sendable, Equatable {
 
         /// Tolerant: job records written before `headers` existed decode with no headers.
         public init(from decoder: Decoder) throws {
-            let c = try decoder.container(keyedBy: CodingKeys.self)
-            part = try c.decode(DownloadPart.self, forKey: .part)
-            url = try c.decode(URL.self, forKey: .url)
-            userAgent = try c.decode(String.self, forKey: .userAgent)
-            headers = try c.decodeIfPresent([String: String].self, forKey: .headers) ?? [:]
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            part = try container.decode(DownloadPart.self, forKey: .part)
+            url = try container.decode(URL.self, forKey: .url)
+            userAgent = try container.decode(String.self, forKey: .userAgent)
+            headers = try container.decodeIfPresent([String: String].self, forKey: .headers) ?? [:]
         }
     }
 

@@ -231,6 +231,12 @@ public struct AppSettings: Codable {
 
     public static let availableGridColumnCounts: ClosedRange<Int> = 1...3
 
+    /// Clamps a decoded grid column count into `availableGridColumnCounts`.
+    private static func clampGridColumns(_ value: Int) -> Int {
+        let columns = availableGridColumnCounts
+        return min(max(value, columns.lowerBound), columns.upperBound)
+    }
+
     /// `.system` keeps the `AccentColor` asset from the app bundle.
     public enum AccentColorChoice: String, Codable, CaseIterable, Sendable {
         case system, red, orange, yellow, green, mint, teal, blue, indigo, purple, pink
@@ -482,17 +488,10 @@ extension AppSettings {
             Bool.self, forKey: .perDeviceRecommendationsEnabled, default: d.perDeviceRecommendationsEnabled)
         themeName = c.safeDecode(ThemeName.self, forKey: .themeName, default: d.themeName)
         accentColor = c.safeDecode(AccentColorChoice.self, forKey: .accentColor, default: d.accentColor)
-        let columns = Self.availableGridColumnCounts
-        gridColumnsPortrait = min(
-            max(
-                c.safeDecode(Int.self, forKey: .gridColumnsPortrait, default: d.gridColumnsPortrait), columns.lowerBound
-            ),
-            columns.upperBound)
-        gridColumnsLandscape = min(
-            max(
-                c.safeDecode(Int.self, forKey: .gridColumnsLandscape, default: d.gridColumnsLandscape),
-                columns.lowerBound),
-            columns.upperBound)
+        gridColumnsPortrait = Self.clampGridColumns(
+            c.safeDecode(Int.self, forKey: .gridColumnsPortrait, default: d.gridColumnsPortrait))
+        gridColumnsLandscape = Self.clampGridColumns(
+            c.safeDecode(Int.self, forKey: .gridColumnsLandscape, default: d.gridColumnsLandscape))
         enabledSections = c.safeDecode(
             [BrowseSection.SectionType].self, forKey: .enabledSections, default: d.enabledSections)
         historyState = c.safeDecode(HistoryState.self, forKey: .historyState, default: d.historyState)

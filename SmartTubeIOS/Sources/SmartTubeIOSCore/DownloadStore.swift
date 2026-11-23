@@ -73,42 +73,42 @@ public struct DownloadedVideo: Codable, Sendable, Identifiable {
     }
 
     public init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        videoId = try c.decode(String.self, forKey: .videoId)
-        title = try c.decode(String.self, forKey: .title)
-        channelTitle = try c.decode(String.self, forKey: .channelTitle)
-        thumbnailURL = try c.decodeIfPresent(URL.self, forKey: .thumbnailURL)
-        duration = try c.decode(Double.self, forKey: .duration)
-        downloadedAt = try c.decode(Date.self, forKey: .downloadedAt)
-        errorMessage = try c.decodeIfPresent(String.self, forKey: .errorMessage)
-        progress = try c.decodeIfPresent(Double.self, forKey: .progress) ?? 0
-        isAudioOnly = try c.decodeIfPresent(Bool.self, forKey: .isAudioOnly) ?? false
-        isPaused = try c.decodeIfPresent(Bool.self, forKey: .isPaused) ?? false
-        if let name = try c.decodeIfPresent(String.self, forKey: .fileName) {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        videoId = try container.decode(String.self, forKey: .videoId)
+        title = try container.decode(String.self, forKey: .title)
+        channelTitle = try container.decode(String.self, forKey: .channelTitle)
+        thumbnailURL = try container.decodeIfPresent(URL.self, forKey: .thumbnailURL)
+        duration = try container.decode(Double.self, forKey: .duration)
+        downloadedAt = try container.decode(Date.self, forKey: .downloadedAt)
+        errorMessage = try container.decodeIfPresent(String.self, forKey: .errorMessage)
+        progress = try container.decodeIfPresent(Double.self, forKey: .progress) ?? 0
+        isAudioOnly = try container.decodeIfPresent(Bool.self, forKey: .isAudioOnly) ?? false
+        isPaused = try container.decodeIfPresent(Bool.self, forKey: .isPaused) ?? false
+        if let name = try container.decodeIfPresent(String.self, forKey: .fileName) {
             fileName = name
-            status = try c.decodeIfPresent(Status.self, forKey: .status) ?? .complete
+            status = try container.decodeIfPresent(Status.self, forKey: .status) ?? .complete
         } else {
             // Legacy entry: absolute fileURL, implicitly complete.
-            let legacy = try c.decode(URL.self, forKey: .fileURL)
+            let legacy = try container.decode(URL.self, forKey: .fileURL)
             fileName = legacy.lastPathComponent
-            status = try c.decodeIfPresent(Status.self, forKey: .status) ?? .complete
+            status = try container.decodeIfPresent(Status.self, forKey: .status) ?? .complete
         }
     }
 
     public func encode(to encoder: Encoder) throws {
-        var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(videoId, forKey: .videoId)
-        try c.encode(title, forKey: .title)
-        try c.encode(channelTitle, forKey: .channelTitle)
-        try c.encodeIfPresent(thumbnailURL, forKey: .thumbnailURL)
-        try c.encode(duration, forKey: .duration)
-        try c.encode(fileName, forKey: .fileName)
-        try c.encode(downloadedAt, forKey: .downloadedAt)
-        try c.encode(status, forKey: .status)
-        try c.encodeIfPresent(errorMessage, forKey: .errorMessage)
-        try c.encode(progress, forKey: .progress)
-        try c.encode(isAudioOnly, forKey: .isAudioOnly)
-        try c.encode(isPaused, forKey: .isPaused)
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(videoId, forKey: .videoId)
+        try container.encode(title, forKey: .title)
+        try container.encode(channelTitle, forKey: .channelTitle)
+        try container.encodeIfPresent(thumbnailURL, forKey: .thumbnailURL)
+        try container.encode(duration, forKey: .duration)
+        try container.encode(fileName, forKey: .fileName)
+        try container.encode(downloadedAt, forKey: .downloadedAt)
+        try container.encode(status, forKey: .status)
+        try container.encodeIfPresent(errorMessage, forKey: .errorMessage)
+        try container.encode(progress, forKey: .progress)
+        try container.encode(isAudioOnly, forKey: .isAudioOnly)
+        try container.encode(isPaused, forKey: .isPaused)
     }
 
     /// Synthesises a `Video` with `localFileURL` resolved against `directory`, suitable for
@@ -155,7 +155,7 @@ public final class DownloadStore {
 
     /// `Documents/SmartTubeDownloads`. Nonisolated so the background `URLSession` delegate can
     /// compute the staging directory without hopping to the main actor.
-    public nonisolated static var defaultDirectory: URL {
+    nonisolated public static var defaultDirectory: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("SmartTubeDownloads")
     }
@@ -212,8 +212,8 @@ public final class DownloadStore {
 
     /// Adds or replaces a download record and persists the manifest.
     public func upsert(_ entry: DownloadedVideo) {
-        if let i = entries.firstIndex(where: { $0.videoId == entry.videoId }) {
-            entries[i] = entry
+        if let index = entries.firstIndex(where: { $0.videoId == entry.videoId }) {
+            entries[index] = entry
         } else {
             entries.append(entry)
         }
@@ -222,37 +222,37 @@ public final class DownloadStore {
 
     /// Updates in-flight progress (0…1). Not persisted: progress is meaningless across launches.
     public func setProgress(videoId: String, progress: Double) {
-        guard let i = entries.firstIndex(where: { $0.videoId == videoId }) else { return }
-        entries[i].progress = min(max(progress, 0), 1)
+        guard let index = entries.firstIndex(where: { $0.videoId == videoId }) else { return }
+        entries[index].progress = min(max(progress, 0), 1)
     }
 
     /// Updates the live transfer figures shown on the row. Not persisted.
     public func setTransferStats(videoId: String, bytesPerSecond: Double, received: Int64, expected: Int64) {
-        guard let i = entries.firstIndex(where: { $0.videoId == videoId }) else { return }
-        entries[i].bytesPerSecond = bytesPerSecond
-        entries[i].bytesReceived = received
-        entries[i].bytesExpected = expected
+        guard let index = entries.firstIndex(where: { $0.videoId == videoId }) else { return }
+        entries[index].bytesPerSecond = bytesPerSecond
+        entries[index].bytesReceived = received
+        entries[index].bytesExpected = expected
     }
 
     /// Marks a running download as paused/resumed by the user and persists it.
     public func setPaused(videoId: String, _ paused: Bool) {
-        guard let i = entries.firstIndex(where: { $0.videoId == videoId }),
-            entries[i].status == .downloading
+        guard let index = entries.firstIndex(where: { $0.videoId == videoId }),
+            entries[index].status == .downloading
         else { return }
-        entries[i].isPaused = paused
-        if paused { entries[i].bytesPerSecond = 0 }
+        entries[index].isPaused = paused
+        if paused { entries[index].bytesPerSecond = 0 }
         saveManifest()
     }
 
     public func setStatus(videoId: String, status: DownloadedVideo.Status, error: String? = nil) {
-        guard let i = entries.firstIndex(where: { $0.videoId == videoId }) else { return }
-        entries[i].status = status
-        entries[i].errorMessage = error
+        guard let index = entries.firstIndex(where: { $0.videoId == videoId }) else { return }
+        entries[index].status = status
+        entries[index].errorMessage = error
         if status != .downloading {
-            entries[i].isPaused = false
-            entries[i].bytesPerSecond = 0
+            entries[index].isPaused = false
+            entries[index].bytesPerSecond = 0
         }
-        if status == .complete { entries[i].progress = 1 }
+        if status == .complete { entries[index].progress = 1 }
         saveManifest()
     }
 
@@ -304,13 +304,13 @@ public final class DownloadStore {
     func reconcile() {
         let fm = FileManager.default
         var changed = false
-        for i in entries.indices {
-            switch entries[i].status {
+        for index in entries.indices {
+            switch entries[index].status {
             case .complete:
-                let path = downloadsDirectory.appendingPathComponent(entries[i].fileName).path
+                let path = downloadsDirectory.appendingPathComponent(entries[index].fileName).path
                 if !fm.fileExists(atPath: path) {
-                    entries[i].status = .failed
-                    entries[i].errorMessage = "File missing"
+                    entries[index].status = .failed
+                    entries[index].errorMessage = "File missing"
                     changed = true
                 }
             case .queued, .downloading, .merging, .failed:

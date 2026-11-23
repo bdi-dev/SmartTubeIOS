@@ -66,7 +66,7 @@ public struct Video: Identifiable, Hashable, Codable, Sendable {
             self.headers = headers
         }
     }
-    public var directStream: DirectStream? = nil
+    public var directStream: DirectStream?
 
     private enum CodingKeys: String, CodingKey {
         case id, title, channelTitle, channelId, description, thumbnailURL, duration
