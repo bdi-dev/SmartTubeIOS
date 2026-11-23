@@ -87,8 +87,10 @@ construction, something the branch introduced.
   `DispatchQueue` / completion handlers in new code.
 - `SmartTubeIOSCore` is Foundation-only. Never add SwiftUI/UIKit there.
 - **Real fixes over suppressions.** A `// swiftlint:disable:next <rule>` is allowed only where a
-  task says so, and it must carry a reason: `// swiftlint:disable:next async_without_await --
-  protocol witness must stay async`. Never use a file-wide or block `disable`. Never edit
+  task says so, and it must carry a reason on a separate comment line directly above the plain
+  disable line: `// Reason: protocol witness must stay async` then
+  `// swiftlint:disable:next async_without_await`. SwiftLint 0.65.1 rejects a `--` reason on the
+  disable line itself. Never use a file-wide or block `disable`. Never edit
   `.swiftlint.yml` or `.swift-format` in this plan.
 - **Behaviour must not change.** These are lint fixes. Do not change logic, signatures that other
   files call (unless the task says so), strings, or accessibility identifier values.
@@ -184,8 +186,8 @@ Rules: `identifier_name` 28 (mostly `h`, also `i`, `c`, `s`), `async_without_awa
 3. `async_without_await`: for each `@Test func ... async` that never uses `await`, remove `async`
    (and `throws` stays if present). If removing `async` produces a compiler error because the
    function is a protocol witness or is passed where an async closure is required, instead keep it
-   and put `// swiftlint:disable:next async_without_await -- protocol witness must stay async`
-   on the line above.
+   and put `// Reason: protocol witness must stay async` followed by
+   `// swiftlint:disable:next async_without_await` on the line(s) above.
 4. `force_unwrapping`: in a `@Test`, replace `x!` with `try #require(x)` and mark the test
    `throws` (add `throws` if absent, keep `async` if it has `await`). In a helper that cannot
    throw, use `guard let x else { Issue.record("<what was nil>"); return <fallback> }`.
@@ -207,7 +209,8 @@ Files: `SmartTubeIOS/Tests/SmartTubeIOSTests/YtDlpServerFetcherTests.swift` (15:
 3. `static_over_final_class` (`StubProtocol`, lines 14-15, `override class func canInit` and
    `canonicalRequest`): change `override class func` to `override static func` on exactly the two
    flagged declarations. If the compiler rejects it, revert that edit and use
-   `// swiftlint:disable:next static_over_final_class -- URLProtocol requires class overrides`.
+   `// Reason: URLProtocol requires class overrides` followed by
+   `// swiftlint:disable:next static_over_final_class`.
 4. Verify: template; expect FetcherTests -15, ClientURLTests -4. Tests: `YtDlpServerFetcherTests`,
    `ConfigurableDownloadFetcherTests`, `YtDlpConfigTests`, `YtDlpServerStreamTests`,
    `YtDlpLibraryDecodingTests`, `YtDlpServerClientTokenTests`, `YtDlpJobMetadataTests`,
@@ -249,8 +252,8 @@ Files: `SmartTubeIOS/Sources/SmartTubeIOSCore/DownloadStore.swift` (9: `identifi
 4. `function_body_length` (`AppSettings` init): move one cohesive group of assignments into a
    private helper called from the init so the body is 80 lines or fewer. Do not reorder
    assignments that depend on each other. If that is not possible without risk, use
-   `// swiftlint:disable:next function_body_length -- settings init mirrors the stored properties`
-   and say so in the commit body.
+   `// Reason: settings init mirrors the stored properties` followed by
+   `// swiftlint:disable:next function_body_length` and say so in the commit body.
 5. `implicit_optional_initialization` (`Video.swift`): of the two flagged `var x: T? = nil`
    lines (48 and 69), only the one on an added line is ours; check with
    `git blame -L48,48 -L69,69 SmartTubeIOS/Sources/InnerTubeKit/Video.swift` (a commit not
@@ -278,7 +281,8 @@ Files: `SmartTubeIOS/Sources/SmartTubeIOS/Services/YtDlpServerFetcher.swift` (6:
 2. `async_without_await`, `YtDlpServerFetcher.swift` 402 and 405 (`UnsupportedAssembler`'s
    `resolve` and `assemble`) and `AppDelegate.swift:42` (`userNotificationCenter(_:willPresent:)`):
    these are protocol witnesses that must stay `async`. Do NOT remove `async`. Add
-   `// swiftlint:disable:next async_without_await -- protocol witness must stay async` above each.
+   `// Reason: protocol witness must stay async` followed by
+   `// swiftlint:disable:next async_without_await` above each.
 3. `force_unwrapping` in `YtDlpServerFetcher.swift` 436-437 (`cfg.baseURL!`, `cfg.token!` inside the
    `makeServer` default closure): unwrap once before building the fetcher:
    `guard let baseURL = cfg.baseURL, let token = cfg.token else { return nil }` ONLY if the closure
