@@ -17,10 +17,12 @@ Configuration (environment):
 """
 import hmac
 import json
+import math
 import os
 import re
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -57,9 +59,37 @@ class JobManager:
         self.pool = ThreadPoolExecutor(max_workers=max(1, config.max_concurrent))
         self.lock = threading.Lock()
         self.jobs = {}  # video_id -> dict(status, progress, error)
+        self.meta = {}  # video_id -> posted metadata, kept apart from job state
 
     def file_path(self, video_id):
         return os.path.join(self.config.data_dir, video_id + ".mp4")
+
+    def sidecar_path(self, video_id):
+        return os.path.join(self.config.data_dir, video_id + ".json")
+
+    def _write_sidecar(self, video_id, meta, downloaded_at=None):
+        """Atomically writes <id>.json. The caller must hold self.lock."""
+        record = {
+            "videoId": video_id,
+            "title": meta.get("title", ""),
+            "channelTitle": meta.get("channelTitle", ""),
+            "duration": meta.get("duration"),
+            "thumbnailURL": meta.get("thumbnailURL"),
+            "keep": meta.get("keep", True),
+            "downloadedAt": time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() if downloaded_at is None else downloaded_at)
+            ),
+            "fileSize": os.path.getsize(self.file_path(video_id)),
+        }
+        fd, tmp = tempfile.mkstemp(dir=self.config.data_dir, prefix=video_id + ".", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(record, f)
+            os.replace(tmp, self.sidecar_path(video_id))
+        except OSError:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            raise
 
     def status(self, video_id):
         with self.lock:
@@ -77,14 +107,19 @@ class JobManager:
                 return None
         return out
 
-    def submit(self, video_id, max_height=None):
+    def submit(self, video_id, max_height=None, meta=None):
+        meta = meta or {}
         with self.lock:
             job = self.jobs.get(video_id)
             if job and job["status"] in ("queued", "running", "ready"):
-                return dict(job)
+                return dict(job)  # first writer wins: the new metadata is ignored
             if not job and os.path.exists(self.file_path(video_id)):
+                if not os.path.exists(self.sidecar_path(video_id)):  # legacy file: backfill
+                    mtime = os.path.getmtime(self.file_path(video_id))
+                    self._write_sidecar(video_id, meta, downloaded_at=mtime)
                 return {"status": "ready", "progress": 1.0}
             self.jobs[video_id] = {"status": "queued", "progress": 0.0}
+            self.meta[video_id] = meta
         self.pool.submit(self._run, video_id, max_height or self.config.max_height)
         return {"status": "queued", "progress": 0.0}
 
@@ -93,6 +128,8 @@ class JobManager:
             self.jobs.setdefault(video_id, {}).update(fields)
 
     def _run(self, video_id, height):
+        with self.lock:
+            meta = self.meta.pop(video_id, {})
         self._set(video_id, status="running")
         out_path = self.file_path(video_id)
         cmd = [
@@ -122,7 +159,12 @@ class JobManager:
             self._set(video_id, status="failed", error="Could not run yt-dlp: %s" % e)
             return
         if code == 0 and os.path.exists(out_path):
-            self._set(video_id, status="ready", progress=1.0)
+            try:
+                with self.lock:  # sidecar first, so "ready" is never seen without one
+                    self._write_sidecar(video_id, meta)
+                    self.jobs.setdefault(video_id, {}).update(status="ready", progress=1.0)
+            except OSError as e:
+                self._set(video_id, status="failed", error="Could not save the file: %s" % e)
         else:
             if os.path.exists(out_path):
                 os.remove(out_path)
@@ -151,6 +193,38 @@ class JobManager:
                     self.jobs.pop(name[:-4], None)
                 removed += 1
         return removed
+
+
+def parse_metadata(body):
+    """Validates the optional metadata of POST /v1/jobs. Raises ValueError(field) if one is bad.
+    A missing or null field takes its default."""
+    meta = {}
+    for key, limit in (("title", 300), ("channelTitle", 200)):
+        value = body.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, str) or len(value) > limit:
+            raise ValueError(key)
+        meta[key] = value
+    duration = body.get("duration")
+    if duration is not None:
+        if isinstance(duration, bool) or not isinstance(duration, (int, float)):
+            raise ValueError("duration")
+        if not math.isfinite(duration) or duration < 0:
+            raise ValueError("duration")
+        meta["duration"] = duration
+    thumb = body.get("thumbnailURL")
+    if thumb is not None:
+        if not isinstance(thumb, str) or not thumb.startswith("https://") or len(thumb) > 500:
+            raise ValueError("thumbnailURL")
+        meta["thumbnailURL"] = thumb
+    keep = body.get("keep")
+    if keep is None:
+        keep = True
+    if not isinstance(keep, bool):
+        raise ValueError("keep")
+    meta["keep"] = keep
+    return meta
 
 
 def make_handler(config, manager):
@@ -214,7 +288,11 @@ def make_handler(config, manager):
             height = body.get("maxHeight")
             if height is not None and not (isinstance(height, int) and 144 <= height <= 4320):
                 return self._json(400, {"error": "bad maxHeight"})
-            self._json(202, manager.submit(vid, height))
+            try:
+                meta = parse_metadata(body)
+            except ValueError as e:
+                return self._json(400, {"error": "bad %s" % e})
+            self._json(202, manager.submit(vid, height, meta))
 
         def do_DELETE(self):
             if not self._authorised():

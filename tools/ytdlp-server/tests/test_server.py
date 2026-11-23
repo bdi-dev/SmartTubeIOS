@@ -131,6 +131,93 @@ class ServerTests(unittest.TestCase):
         self.assertTrue(os.path.exists(new))
         os.remove(new)
 
+    # -- metadata sidecar (Task 1.1) --
+    def sidecar(self, vid):
+        with open(os.path.join(self.cfg.data_dir, vid + ".json")) as f:
+            return json.load(f)
+
+    def test_finished_job_writes_sidecar_with_metadata_and_keep(self):
+        vid = "METAvideo01"
+        meta = {
+            "videoId": vid,
+            "title": "A title",
+            "channelTitle": "A channel",
+            "duration": 61.5,
+            "thumbnailURL": "https://example.com/t.jpg",
+            "keep": True,
+        }
+        self.assertEqual(self.call("POST", "/v1/jobs", meta)[0], 202)
+        self.wait_for(vid, "ready")
+        side = self.sidecar(vid)  # written before "ready" was seen
+        self.assertEqual(side["videoId"], vid)
+        self.assertEqual(side["title"], "A title")
+        self.assertEqual(side["channelTitle"], "A channel")
+        self.assertEqual(side["duration"], 61.5)
+        self.assertEqual(side["thumbnailURL"], "https://example.com/t.jpg")
+        self.assertIs(side["keep"], True)
+        self.assertEqual(side["fileSize"], 1024)
+        self.assertRegex(side["downloadedAt"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+
+    def test_job_state_does_not_leak_metadata(self):
+        vid = "METAleak001"
+        self.call("POST", "/v1/jobs", {"videoId": vid, "title": "Secret title", "keep": False})
+        self.wait_for(vid, "ready")
+        _, body, _ = self.call("GET", "/v1/jobs/" + vid)
+        state = json.loads(body)
+        self.assertEqual(set(state), {"status", "progress", "fileSize"})
+        self.assertNotIn(b"Secret title", body)
+
+    def test_omitted_metadata_still_gives_valid_sidecar(self):
+        vid = "PLAINvideo1"
+        self.call("POST", "/v1/jobs", {"videoId": vid})
+        self.wait_for(vid, "ready")
+        side = self.sidecar(vid)
+        self.assertEqual(side["title"], "")
+        self.assertEqual(side["channelTitle"], "")
+        self.assertIsNone(side["duration"])
+        self.assertIsNone(side["thumbnailURL"])
+        self.assertIs(side["keep"], True)
+        self.assertEqual(side["fileSize"], 1024)
+
+    def test_bad_metadata_is_400(self):
+        bad_bodies = [
+            {"title": "x" * 301},
+            {"title": 5},
+            {"channelTitle": "x" * 201},
+            {"duration": "5"},
+            {"duration": True},
+            {"duration": -1},
+            {"thumbnailURL": "http://example.com/t.jpg"},
+            {"thumbnailURL": "https://example.com/" + "x" * 490},
+            {"keep": "yes"},
+            {"keep": 1},
+        ]
+        for extra in bad_bodies:
+            body = dict(extra, videoId=GOOD)
+            self.assertEqual(self.call("POST", "/v1/jobs", body)[0], 400, extra)
+
+    def test_first_writer_wins(self):
+        vid = "FIRSTwrite1"
+        self.call("POST", "/v1/jobs", {"videoId": vid, "title": "first"})
+        self.call("POST", "/v1/jobs", {"videoId": vid, "title": "second"})
+        self.wait_for(vid, "ready")
+        self.call("POST", "/v1/jobs", {"videoId": vid, "title": "third"})
+        self.assertEqual(self.sidecar(vid)["title"], "first")
+
+    def test_legacy_file_gets_backfilled_sidecar(self):
+        vid = "LEGACYxxxxx"
+        path = os.path.join(self.cfg.data_dir, vid + ".mp4")
+        with open(path, "wb") as f:
+            f.write(b"x" * 10)
+        os.utime(path, (1700000000, 1700000000))
+        self.addCleanup(lambda: [os.remove(p) for p in (path, path[:-4] + ".json") if os.path.exists(p)])
+        self.assertEqual(self.call("POST", "/v1/jobs", {"videoId": vid, "title": "Legacy", "keep": False})[0], 202)
+        side = self.sidecar(vid)
+        self.assertEqual(side["title"], "Legacy")
+        self.assertIs(side["keep"], False)
+        self.assertEqual(side["downloadedAt"], "2023-11-14T22:13:20Z")
+        self.assertEqual(side["fileSize"], 10)
+
 
 if __name__ == "__main__":
     unittest.main()
