@@ -73,8 +73,21 @@ class JobManager:
     def sidecar_path(self, video_id):
         return os.path.join(self.config.data_dir, video_id + ".json")
 
+    def _store_sidecar(self, video_id, record):
+        """Atomically replaces <id>.json: write a uniquely named temp file, then os.replace.
+        The caller must hold self.lock."""
+        fd, tmp = tempfile.mkstemp(dir=self.config.data_dir, prefix=video_id + ".", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(record, f)
+            os.replace(tmp, self.sidecar_path(video_id))
+        except OSError:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            raise
+
     def _write_sidecar(self, video_id, meta, downloaded_at=None):
-        """Atomically writes <id>.json. The caller must hold self.lock."""
+        """Writes the sidecar for a finished download. The caller must hold self.lock."""
         record = {
             "videoId": video_id,
             "title": meta.get("title", ""),
@@ -87,15 +100,17 @@ class JobManager:
             ),
             "fileSize": os.path.getsize(self.file_path(video_id)),
         }
-        fd, tmp = tempfile.mkstemp(dir=self.config.data_dir, prefix=video_id + ".", suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w") as f:
-                json.dump(record, f)
-            os.replace(tmp, self.sidecar_path(video_id))
-        except OSError:
-            if os.path.exists(tmp):
-                os.remove(tmp)
-            raise
+        self._store_sidecar(video_id, record)
+
+    def set_keep(self, video_id, keep):
+        """Sets the keep flag on a download's sidecar. Returns False if it has no valid sidecar."""
+        with self.lock:
+            side = self._read_sidecar(video_id)
+            if side is None:
+                return False
+            side["keep"] = keep
+            self._store_sidecar(video_id, side)
+            return True
 
     def status(self, video_id):
         with self.lock:
@@ -382,6 +397,27 @@ def make_handler(config, manager):
             except ValueError as e:
                 return self._json(400, {"error": "bad %s" % e})
             self._json(202, manager.submit(vid, height, meta))
+
+        def do_PUT(self):
+            if not self._authorised():
+                return self._json(401, {"error": "unauthorised"})
+            m = re.match(r"^/v1/files/([^/]+)/keep$", self.path.split("?")[0])
+            if not m:
+                return self._json(404, {"error": "not found"})
+            vid = self._video_id(m.group(1))
+            if not vid:
+                return self._json(400, {"error": "bad video id"})
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                body = json.loads(self.rfile.read(length) or b"{}")
+            except (ValueError, json.JSONDecodeError):
+                return self._json(400, {"error": "bad json"})
+            keep = body.get("keep") if isinstance(body, dict) else None
+            if not isinstance(keep, bool):
+                return self._json(400, {"error": "bad keep"})
+            if not manager.set_keep(vid, keep):
+                return self._json(404, {"error": "unknown file"})
+            self._json(200, {"ok": True, "keep": keep})
 
         def do_DELETE(self):
             if not self._authorised():

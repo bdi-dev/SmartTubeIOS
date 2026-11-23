@@ -327,6 +327,45 @@ class LibraryTests(unittest.TestCase):
     def test_library_needs_token(self):
         self.assertEqual(self.library(token=None)[0], 401)
 
+    # -- keep toggle (Task 1.4) --
+    def set_keep(self, vid, body=None, token=TOKEN, raw=None):
+        data = raw if raw is not None else (json.dumps(body).encode() if body is not None else None)
+        req = urllib.request.Request(self.base + "/v1/files/%s/keep" % vid, data=data, method="PUT")
+        if token:
+            req.add_header("Authorization", "Bearer " + token)
+        try:
+            with urllib.request.urlopen(req) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read() or b"{}")
+
+    def sidecar_keep(self, vid):
+        with open(os.path.join(self.tmp.name, vid + ".json")) as f:
+            return json.load(f)["keep"]
+
+    def test_keep_toggle_sets_true_and_false(self):
+        self.add("KEEPvideo01", "2026-01-01T00:00:00Z", keep=True)
+        self.assertEqual(self.set_keep("KEEPvideo01", {"keep": False}), (200, {"ok": True, "keep": False}))
+        self.assertIs(self.sidecar_keep("KEEPvideo01"), False)
+        self.assertEqual(self.set_keep("KEEPvideo01", {"keep": True}), (200, {"ok": True, "keep": True}))
+        self.assertIs(self.sidecar_keep("KEEPvideo01"), True)
+        self.assertEqual(self.library()[1]["items"][0]["keep"], True)
+
+    def test_keep_unknown_id_is_404(self):
+        self.assertEqual(self.set_keep("NOSUCHvid00", {"keep": True})[0], 404)
+
+    def test_keep_bad_body_is_400(self):
+        self.add("KEEPbadbod1", "2026-01-01T00:00:00Z")
+        self.assertEqual(self.set_keep("KEEPbadbod1", raw=b"{not json")[0], 400)
+        for body in [{"keep": "yes"}, {"keep": 1}, {"keep": None}, {}, ["keep"]]:
+            self.assertEqual(self.set_keep("KEEPbadbod1", body)[0], 400, body)
+        self.assertIs(self.sidecar_keep("KEEPbadbod1"), True)
+
+    def test_keep_needs_token(self):
+        self.add("KEEPnoauth01", "2026-01-01T00:00:00Z")
+        self.assertEqual(self.set_keep("KEEPnoauth01", {"keep": False}, token=None)[0], 401)
+        self.assertIs(self.sidecar_keep("KEEPnoauth01"), True)
+
 
 if __name__ == "__main__":
     unittest.main()
