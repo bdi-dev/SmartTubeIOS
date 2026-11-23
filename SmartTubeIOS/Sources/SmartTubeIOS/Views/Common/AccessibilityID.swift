@@ -10,6 +10,7 @@ enum AccessibilityID {
         static let storageSummary = "downloads.storageSummary"
         static let lowStorageWarning = "downloads.lowStorageWarning"
 
+        static func videoRow(_ videoId: String) -> String { "downloads.videoRow.\(videoId)" }
         static func share(_ videoId: String) -> String { "downloads.share.\(videoId)" }
         static func status(_ videoId: String) -> String { "downloads.status.\(videoId)" }
         static func progress(_ videoId: String) -> String { "downloads.progress.\(videoId)" }

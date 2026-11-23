@@ -91,7 +91,7 @@ struct DownloadsView: View {
                                 .accessibilityIdentifier(AccessibilityID.Downloads.share(entry.videoId))
                             }
                         }
-                        .accessibilityIdentifier("downloads.videoRow.\(entry.videoId)")
+                        .accessibilityIdentifier(AccessibilityID.Downloads.videoRow(entry.videoId))
                     }
                     .onDelete { indexSet in
                         let sorted = downloadStore.entries.sorted { $0.downloadedAt > $1.downloadedAt }
