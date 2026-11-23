@@ -279,8 +279,15 @@ struct MPVPlayerView: View {
         // Every fresh show of the overlay starts on Play, as it always has.
         .onChange(of: vm.controlsVisible) { _, visible in
             if visible {
-                if keepTransportFocusOnShow { keepTransportFocusOnShow = false } else { lastTransportFocus = .playPause }
-            } else { restoringTransportFocus = nil; pendingTransportMove = nil }
+                if keepTransportFocusOnShow {
+                    keepTransportFocusOnShow = false
+                } else {
+                    lastTransportFocus = .playPause
+                }
+            } else {
+                restoringTransportFocus = nil
+                pendingTransportMove = nil
+            }
         }
         .onChange(of: vm.errorMessage) { _, message in
             if message != nil { restoringTransportFocus = nil }
@@ -413,7 +420,10 @@ struct MPVPlayerView: View {
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(250))
             if restoringTransportFocus == target {
-                if focus == target { lastTransportFocus = target; transportLockReleasedAt = Date() }
+                if focus == target {
+                    lastTransportFocus = target
+                    transportLockReleasedAt = Date()
+                }
                 restoringTransportFocus = nil
                 pendingTransportMove = nil
             }

@@ -571,7 +571,8 @@ final class MPVPlayerViewModel {
         guard let engine, let plan = activePlan else { return }
         if let failed = currentAudioURL(for: plan) { failedAudioURLs.insert(failed) }
         guard audioRecoveryAttempts < Self.maxAudioRecoveryAttempts else {
-            mpvPlayerLog.notice("no audio for \(video.id) after \(audioRecoveryAttempts) recoveries — continuing video only")
+            mpvPlayerLog.notice(
+                "no audio for \(video.id) after \(audioRecoveryAttempts) recoveries — continuing video only")
             return
         }
         audioRecoveryAttempts += 1
@@ -899,7 +900,8 @@ final class MPVPlayerViewModel {
         }
         isLoading = true
         mpvPlayerLog.notice("quality → \(plan.label) at \(Int(self.currentTime))s")
-        engine.load(plan, startAt: currentTime, userAgent: activeClient?.userAgent, audioOverride: audioOverride(for: plan))
+        engine.load(
+            plan, startAt: currentTime, userAgent: activeClient?.userAgent, audioOverride: audioOverride(for: plan))
         engine.setSpeed(playbackSpeed)
         if !isPlaying { engine.setPaused(true) }
     }
