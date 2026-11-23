@@ -15,6 +15,17 @@ Architecture map: docs/architecture.md · Glossary: CONTEXT.md · Decisions: doc
 - `just test-smoke` — hermetic UI smoke plan. `just test-ui` — live UI plan (needs signed-in simulator; 3 workers max, see docs/how-to/run-tests.md).
 - `just format` — swift-format in place. `just lint` — SwiftLint against the committed baseline.
 
+## Lint and format on every code change
+Any change to a `.swift` file is checked before you commit and before you report it done. Run these on the files you touched:
+1. `just format`, or `xcrun swift-format format --in-place --configuration .swift-format <files>`.
+2. `xcrun swift-format lint --strict --configuration .swift-format <files>` — must print nothing.
+3. `swiftlint lint --quiet --config .swiftlint.yml <files> 2>&1 | grep -E "error:|warning:"` — count the violations before and after your change. A change must not add any.
+Then `just ci` before the commit. If `just` is not installed, run what its recipes run: `scripts/check-no-secrets.sh`, `scripts/check-doc-links.sh`, the format and lint commands above, and the unit tests (see Gotchas for the test command that works). Say in the commit body which checks ran.
+- Fix violations; do not add them to `.swiftlint.baseline`. Regenerating the baseline is a deliberate, separate change (`just lint-baseline`).
+- SwiftLint aborts unless `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` is set (when `xcode-select` points at the Command Line Tools), and it writes violations to stderr, so use `2>&1`. Install with `brew install swiftlint`.
+- Repo-wide `just format-check` and `just lint` currently fail on code that predates any given change. Judge your change by the files you touched; the cleanup plan is in `docs/superpowers/plans/`.
+- A subagent does not read this file unless told to. When you brief one to edit Swift, put these commands in its brief and ask for the before and after violation counts in its report.
+
 ## Rules that differ from defaults
 - Swift 6 strict concurrency everywhere. View models are `@MainActor @Observable`. No `ObservableObject`, `@Published`, Combine, `DispatchQueue`, completion handlers in new code.
 - `SmartTubeIOSCore` must stay Foundation-only (no SwiftUI/UIKit/AVFoundation/WebKit). Put platform code in `SmartTubeIOS`.
