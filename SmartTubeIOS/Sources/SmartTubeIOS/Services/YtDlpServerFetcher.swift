@@ -279,6 +279,15 @@ public struct URLSessionYtDlpServerClient: YtDlpServerClient {
     }
 }
 
+extension Video {
+    /// The video for a NAS library item, so the item can be downloaded to the device.
+    public init(libraryItem item: YtDlpLibraryItem) {
+        self.init(
+            id: item.videoId, title: item.title, channelTitle: item.channelTitle,
+            thumbnailURL: item.thumbnailURL.flatMap(URL.init(string:)), duration: item.duration)
+    }
+}
+
 // MARK: - YtDlpServerFetcher
 
 /// Resolves a download by asking the companion server to fetch the video, waiting until it is
@@ -450,6 +459,16 @@ public final class ConfigurableDownloadFetcher: DownloadFetching {
 
     public func resolve(video: Video) async throws -> DownloadPlan {
         try await resolve(video: video, audioOnly: false)
+    }
+
+    public func resolve(video: Video, audioOnly: Bool, forceServer: Bool) async throws -> DownloadPlan {
+        guard forceServer else { return try await resolve(video: video, audioOnly: audioOnly) }
+        // The NAS list download: the file is known to be on the server, so skip the mode and the check.
+        let cfg = config()
+        guard cfg.isConfigured else {
+            throw DownloadFetchError(message: "The yt-dlp server is not set up (Settings > Downloads)")
+        }
+        return try await makeServer(cfg).resolve(video: video, audioOnly: audioOnly)
     }
 
     public func resolve(video: Video, audioOnly: Bool) async throws -> DownloadPlan {

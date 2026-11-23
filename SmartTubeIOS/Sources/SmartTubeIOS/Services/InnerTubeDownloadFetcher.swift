@@ -19,6 +19,10 @@ public protocol DownloadFetching: Sendable {
     /// Fetchers that cannot do audio-only inherit a default that ignores the flag.
     func resolve(video: Video, audioOnly: Bool) async throws -> DownloadPlan
 
+    /// Like `resolve(video:audioOnly:)`, but when `forceServer` is true the plan comes from the
+    /// yt-dlp server whatever the mode. Fetchers with no server route inherit a default that ignores it.
+    func resolve(video: Video, audioOnly: Bool, forceServer: Bool) async throws -> DownloadPlan
+
     /// Merges (video + audio) and passthrough-remuxes the staged files into a finished MP4 temp
     /// file owned by the caller. Must not delete the staged inputs; honours task cancellation.
     func assemble(videoId: String, stagedParts: [DownloadPart: URL]) async throws -> URL
@@ -31,6 +35,10 @@ public protocol DownloadFetching: Sendable {
 extension DownloadFetching {
     public func resolve(video: Video, audioOnly: Bool) async throws -> DownloadPlan {
         try await resolve(video: video)
+    }
+
+    public func resolve(video: Video, audioOnly: Bool, forceServer: Bool) async throws -> DownloadPlan {
+        try await resolve(video: video, audioOnly: audioOnly)
     }
 
     public func assemble(videoId: String, stagedParts: [DownloadPart: URL], audioOnly: Bool) async throws -> URL {

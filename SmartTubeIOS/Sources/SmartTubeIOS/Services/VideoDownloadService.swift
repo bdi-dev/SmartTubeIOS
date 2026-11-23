@@ -63,6 +63,8 @@ public final class VideoDownloadService {
     @ObservationIgnored private let maxConcurrent: Int
     @ObservationIgnored private let liveActivitiesEnabled: Bool
     @ObservationIgnored private var pending: [Video] = []
+    /// Queued videos that must be fetched from the yt-dlp server (set by `enqueue(forceServer:)`).
+    @ObservationIgnored private var forcedServer: Set<String> = []
     /// Videos occupying a concurrency slot (resolving, transferring or post-processing).
     @ObservationIgnored private var active: Set<String> = []
     @ObservationIgnored private var starting: [String: Task<Void, Never>] = [:]
@@ -127,7 +129,9 @@ public final class VideoDownloadService {
 
     /// Queues `video` for download. Ignored if it is already queued, downloading, merging or
     /// complete. A previously failed entry is re-queued.
-    public func enqueue(video: Video, audioOnly: Bool = false) {
+    /// - Parameter forceServer: fetch from the yt-dlp server whatever the download mode (used by
+    ///   "Available on NAS"). Fails with the usual "not set up" message when no server is configured.
+    public func enqueue(video: Video, audioOnly: Bool = false, forceServer: Bool = false) {
         guard AppSettings.loadPersisted().downloadsEnabled else {
             ToastCenter.shared.show(
                 title: String(localized: "Downloads are off", bundle: .module),
@@ -140,6 +144,8 @@ public final class VideoDownloadService {
             case .failed: break
             }
         }
+        // Set on every enqueue, so a stale flag from an earlier cancelled request cannot apply here.
+        if forceServer { forcedServer.insert(video.id) } else { forcedServer.remove(video.id) }
         store.upsert(
             DownloadedVideo(
                 videoId: video.id,
@@ -338,7 +344,8 @@ public final class VideoDownloadService {
         await cancelling[id]?.value
         do {
             let audioOnly = store.entry(for: id)?.isAudioOnly ?? false
-            let plan = try await fetcher.resolve(video: video, audioOnly: audioOnly)
+            let plan = try await fetcher.resolve(
+                video: video, audioOnly: audioOnly, forceServer: forcedServer.contains(id))
             try Task.checkCancellation()
             let job = DownloadJob(videoId: id, plan: plan)
             try staging.save(job)

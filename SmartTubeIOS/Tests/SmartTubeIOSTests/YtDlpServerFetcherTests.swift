@@ -274,6 +274,39 @@ struct ConfigurableDownloadFetcherTests {
         #expect(try await userAgent(router(mode: .always, probe: probe)) == "server")
         #expect(probe.jobStateCalls == 0)
     }
+
+    private func forcedUserAgent(_ f: ConfigurableDownloadFetcher) async throws -> String {
+        try await f.resolve(video: video(), audioOnly: false, forceServer: true).parts[0].userAgent
+    }
+
+    @Test("forceServer uses the server even when the mode is off")
+    func forceServerWithModeOff() async throws {
+        #expect(try await forcedUserAgent(router(mode: .off)) == "server")
+    }
+
+    @Test("forceServer with no server configured fails with the not-set-up message")
+    func forceServerUnconfigured() async {
+        do {
+            _ = try await forcedUserAgent(router(mode: .off, configured: false))
+            Issue.record("expected an error")
+        } catch {
+            #expect(error.localizedDescription.contains("not set up"))
+        }
+    }
+
+    @Test("a NAS library item becomes a Video with its metadata")
+    func videoFromLibraryItem() throws {
+        let item = YtDlpLibraryItem(
+            videoId: "dQw4w9WgXcQ", title: "T", channelTitle: "C", duration: 61.5,
+            thumbnailURL: "https://i.example/x.jpg", keep: true,
+            downloadedAt: Date(timeIntervalSince1970: 0), fileSize: 1)
+        let video = Video(libraryItem: item)
+        #expect(video.id == "dQw4w9WgXcQ")
+        #expect(video.title == "T")
+        #expect(video.channelTitle == "C")
+        #expect(video.duration == 61.5)
+        #expect(video.thumbnailURL == URL(string: "https://i.example/x.jpg"))
+    }
 }
 
 private struct CancellingFetcher: DownloadFetching {
