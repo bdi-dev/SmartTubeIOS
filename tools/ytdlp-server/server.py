@@ -28,6 +28,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+API_VERSION = 2  # 2 = sidecar metadata, library listing, keep and delete
 VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 PROGRESS_RE = re.compile(r"\[download\]\s+(\d+(?:\.\d+)?)%")
 # AVPlayer-friendly: H.264 + AAC in MP4, falling back to whatever yt-dlp can merge into MP4.
@@ -254,7 +255,9 @@ def make_handler(config, manager):
         def do_GET(self):
             path = self.path.split("?")[0]
             if path == "/v1/health":
-                return self._json(200, {"ok": True, "ytdlpVersion": _ytdlp_version(config)})
+                return self._json(
+                    200, {"ok": True, "apiVersion": API_VERSION, "ytdlpVersion": _ytdlp_version(config)}
+                )
             if not self._authorised():
                 return self._json(401, {"error": "unauthorised"})
             m = re.match(r"^/v1/jobs/([^/]+)$", path)

@@ -68,6 +68,8 @@ class ServerTests(unittest.TestCase):
         code, body, _ = self.call("GET", "/v1/health", token=None)
         self.assertEqual(code, 200)
         self.assertEqual(json.loads(body)["ytdlpVersion"], "2099.01.01")
+        self.assertEqual(json.loads(body)["apiVersion"], 2)
+        self.assertIs(json.loads(body)["ok"], True)
 
     def test_requires_token(self):
         self.assertEqual(self.call("POST", "/v1/jobs", {"videoId": GOOD}, token=None)[0], 401)
