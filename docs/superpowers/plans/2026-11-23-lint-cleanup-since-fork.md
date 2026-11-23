@@ -124,12 +124,13 @@ export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 ```
 `just` is not installed here; use these instead of `just`.
 
-SwiftLint on given files (prints only that file's violations; SwiftLint writes to stderr):
+SwiftLint on given files, ONE FILE PER CALL (passing several paths to one call lints the whole
+tree, not just those files; SwiftLint writes to stderr):
 ```bash
-swiftlint lint --quiet --config .swiftlint.yml <file> [<file> ...] 2>&1 \
-  | grep -E "error:|warning:" | grep -v "not a valid rule" | sort -u
-# count only:      ... | wc -l
-# one rule only:   ... | grep -c "(identifier_name)"
+for f in <file1> <file2>; do swiftlint lint --quiet --config .swiftlint.yml "$f" 2>&1 \
+  | grep -E "error:|warning:" | grep -v "not a valid rule" | sort -u; done
+# count only (per file):   swiftlint lint --quiet --config .swiftlint.yml "$f" 2>&1 | grep -E "error:|warning:" | grep -v "not a valid rule" | wc -l
+# one rule only:           ... | grep -c "(identifier_name)"
 ```
 swift-format on given files (no output and exit code 0 means clean):
 ```bash
@@ -355,8 +356,8 @@ File: `SmartTubeIOS/Sources/SmartTubeIOS/Views/Settings/SettingsView.swift` (10
    `extension SettingsView` with a `@ViewBuilder var downloadsSection: some View`. Properties it
    uses must be at least `internal` (not `private`); change `private` to nothing only for those
    members. Pure move, no logic edits. Goal: both files 600 lines or fewer.
-4. Verify: template on `SettingsView.swift`, `SettingsView+Downloads.swift`, `AccessibilityID.swift`
-   (expect -11 total, no new violations in the new file). Tests: settings-related structs:
+4. Verify: template on each of `SettingsView.swift`, `SettingsView+Downloads.swift`, `AccessibilityID.swift`
+   (one SwiftLint call per file; expect -11 total, no new violations in the new file). Tests: settings-related structs:
    `grep -l "SettingsView\|AppSettings" SmartTubeIOS/Tests/SmartTubeIOSTests/*.swift`; if none
    reference views, run `YtDlpConfigTests` and `DownloadStoreLifecycleTests` as a compile check.
 5. Commit: `refactor(settings): AccessibilityID for new ids; split downloads settings out of SettingsView`.
