@@ -42,7 +42,6 @@ class ServerTests(unittest.TestCase):
                 "YTDLP_BIN": FAKE,
                 "YTDLP_DATA_DIR": cls.tmp.name,
                 "YTDLP_PORT": "0",
-                "YTDLP_RETENTION_HOURS": "1",
             }
         )
         cls.cfg = cfg
@@ -124,19 +123,6 @@ class ServerTests(unittest.TestCase):
 
     def test_unknown_job_is_404(self):
         self.assertEqual(self.call("GET", "/v1/jobs/AAAAAAAAAAA")[0], 404)
-
-    def test_sweep_removes_only_old_files(self):
-        manager = self.srv.manager
-        old = os.path.join(self.cfg.data_dir, "OLDxxxxxxxx.mp4")
-        new = os.path.join(self.cfg.data_dir, "NEWxxxxxxxx.mp4")
-        for p in (old, new):
-            with open(p, "wb") as f:
-                f.write(b"x")
-        os.utime(old, (time.time() - 7200, time.time() - 7200))
-        self.assertEqual(manager.sweep(), 1)
-        self.assertFalse(os.path.exists(old))
-        self.assertTrue(os.path.exists(new))
-        os.remove(new)
 
     # -- metadata sidecar (Task 1.1) --
     def sidecar(self, vid):
@@ -398,6 +384,115 @@ class LibraryTests(unittest.TestCase):
 
     def test_delete_unknown_id_is_404_with_deleted_false(self):
         self.assertEqual(self.delete("DELnothing1"), (404, {"deleted": False}))
+
+
+class StorageTests(unittest.TestCase):
+    """Unkept cap, eviction, legacy migration and startup cleanup (Task 1.6)."""
+
+    CAP = 25  # bytes: three 10-byte unkept files are over it, two are under it
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.cfg = server.Config(
+            {
+                "YTDLP_TOKEN": TOKEN,
+                "YTDLP_BIN": FAKE,
+                "YTDLP_DATA_DIR": self.tmp.name,
+                "YTDLP_PORT": "0",
+                "YTDLP_UNKEPT_CAP_GB": repr(self.CAP / 1024**3),
+            }
+        )
+        self.manager = server.JobManager(self.cfg)
+
+    def path(self, name):
+        return os.path.join(self.tmp.name, name)
+
+    def add(self, vid, downloaded_at, keep=False, size=10):
+        with open(self.path(vid + ".mp4"), "wb") as f:
+            f.write(b"x" * size)
+        with open(self.path(vid + ".json"), "w") as f:
+            json.dump(
+                {"videoId": vid, "title": "", "channelTitle": "", "duration": None, "thumbnailURL": None,
+                 "keep": keep, "downloadedAt": downloaded_at, "fileSize": size},
+                f,
+            )
+
+    def has_mp4(self, vid):
+        return os.path.exists(self.path(vid + ".mp4"))
+
+    def test_three_unkept_over_cap_evict_oldest_first(self):
+        self.add("EVICTvid001", "2026-01-01T00:00:00Z")
+        self.add("EVICTvid002", "2026-01-02T00:00:00Z")
+        self.add("EVICTvid003", "2026-01-03T00:00:00Z")
+        self.assertEqual(self.manager.evict(), ["EVICTvid001"])
+        self.assertFalse(self.has_mp4("EVICTvid001"))
+        self.assertFalse(os.path.exists(self.path("EVICTvid001.json")))
+        self.assertTrue(self.has_mp4("EVICTvid002"))
+        self.assertTrue(self.has_mp4("EVICTvid003"))
+        self.assertEqual(self.manager.evict(), [])
+
+    def test_kept_files_are_never_evicted(self):
+        self.add("KEEPvid0001", "2026-01-00T00:00:00Z", keep=True, size=500)  # oldest, huge, kept
+        self.add("EVICTvid001", "2026-01-01T00:00:00Z")
+        self.add("EVICTvid002", "2026-01-02T00:00:00Z")
+        self.add("EVICTvid003", "2026-01-03T00:00:00Z")
+        self.manager.evict()
+        self.assertTrue(self.has_mp4("KEEPvid0001"))
+        self.assertTrue(os.path.exists(self.path("KEEPvid0001.json")))
+
+    def test_under_cap_evicts_nothing(self):
+        self.add("EVICTvid001", "2026-01-01T00:00:00Z")
+        self.add("EVICTvid002", "2026-01-02T00:00:00Z")
+        self.assertEqual(self.manager.evict(), [])
+
+    def test_running_job_file_is_skipped(self):
+        self.add("RUNvid00001", "2026-01-01T00:00:00Z")  # oldest, but its job is running
+        self.manager.jobs["RUNvid00001"] = {"status": "running", "progress": 0.5}
+        self.add("EVICTvid002", "2026-01-02T00:00:00Z")
+        self.add("EVICTvid003", "2026-01-03T00:00:00Z")
+        self.assertEqual(self.manager.evict(), ["EVICTvid002"])
+        self.assertTrue(self.has_mp4("RUNvid00001"))
+
+    def test_skip_protects_the_file_that_just_finished(self):
+        self.add("EVICTvid001", "2026-01-01T00:00:00Z")
+        self.add("EVICTvid002", "2026-01-02T00:00:00Z")
+        self.add("EVICTvid003", "2026-01-03T00:00:00Z")
+        self.assertEqual(self.manager.evict(skip="EVICTvid001"), ["EVICTvid002"])
+        self.assertTrue(self.has_mp4("EVICTvid001"))
+
+    def test_legacy_mp4_is_migrated_as_unkept_and_counted(self):
+        path = self.path("LEGACYxxxxx.mp4")
+        with open(path, "wb") as f:
+            f.write(b"x" * 10)
+        os.utime(path, (1700000000, 1700000000))
+        self.manager.startup_cleanup()
+        with open(self.path("LEGACYxxxxx.json")) as f:
+            side = json.load(f)
+        self.assertIs(side["keep"], False)
+        self.assertEqual(side["downloadedAt"], "2023-11-14T22:13:20Z")
+        self.assertEqual((side["title"], side["channelTitle"]), ("", ""))
+
+    def test_startup_removes_orphans_and_stale_partials_only(self):
+        with open(self.path("ORPHANvid01.json"), "w") as f:
+            f.write("{}")
+        old = time.time() - 7200
+        for name in ["STALEvid001.part", "STALEvid001.f137.mp4", "STALEvid001.tmp"]:
+            with open(self.path(name), "wb") as f:
+                f.write(b"x")
+            os.utime(self.path(name), (old, old))
+        with open(self.path("FRESHvid001.part"), "wb") as f:
+            f.write(b"x")
+        self.manager.startup_cleanup()
+        self.assertFalse(os.path.exists(self.path("ORPHANvid01.json")))
+        for name in ["STALEvid001.part", "STALEvid001.f137.mp4", "STALEvid001.tmp"]:
+            self.assertFalse(os.path.exists(self.path(name)), name)
+        self.assertTrue(os.path.exists(self.path("FRESHvid001.part")))
+
+    def test_startup_evict_keeps_kept_file(self):
+        self.add("KEEPvid0001", "2026-01-00T00:00:00Z", keep=True, size=500)
+        server.build_server(self.cfg).server_close()  # runs startup_cleanup
+        self.assertTrue(self.has_mp4("KEEPvid0001"))
 
 
 if __name__ == "__main__":

@@ -11,11 +11,13 @@ Configuration (environment):
   YTDLP_DATA_DIR         where files live (default: ./data).
   YTDLP_HOST / YTDLP_PORT  bind address (default 127.0.0.1:8787). Put it behind Tailscale/LAN only.
   YTDLP_MAX_CONCURRENT   simultaneous yt-dlp jobs (default 2).
-  YTDLP_RETENTION_HOURS  delete files older than this (default 24).
+  YTDLP_UNKEPT_CAP_GB    cap on unkept downloads, in GB of 1024^3 bytes (default 20). Kept files
+                         have no cap. Unkept files are evicted oldest-first when over the cap.
   YTDLP_MAX_HEIGHT       default quality cap when the app sends none (default 1080).
   YTDLP_COOKIES          optional cookies.txt passed to yt-dlp (never leaves this machine).
 """
 import base64
+import fnmatch
 import hmac
 import json
 import math
@@ -51,7 +53,7 @@ class Config:
         self.host = env.get("YTDLP_HOST", "127.0.0.1")
         self.port = int(env.get("YTDLP_PORT", "8787"))
         self.max_concurrent = int(env.get("YTDLP_MAX_CONCURRENT", "2"))
-        self.retention_hours = float(env.get("YTDLP_RETENTION_HOURS", "24"))
+        self.unkept_cap_bytes = int(round(float(env.get("YTDLP_UNKEPT_CAP_GB", "20")) * 1024**3))
         self.max_height = int(env.get("YTDLP_MAX_HEIGHT", "1080"))
         self.cookies = env.get("YTDLP_COOKIES", "")
 
@@ -233,6 +235,8 @@ class JobManager:
                     self.jobs.setdefault(video_id, {}).update(status="ready", progress=1.0)
             except OSError as e:
                 self._set(video_id, status="failed", error="Could not save the file: %s" % e)
+            else:
+                self.evict(skip=video_id)  # never evict the file that just finished
         else:
             if os.path.exists(out_path):
                 os.remove(out_path)
@@ -256,19 +260,73 @@ class JobManager:
                     pass
             return "deleted" if removed else "missing"
 
-    def sweep(self, now=None):
-        """Removes files older than the retention window. Returns how many were removed."""
-        now = time.time() if now is None else now
-        limit = self.config.retention_hours * 3600
-        removed = 0
-        for name in os.listdir(self.config.data_dir):
-            path = os.path.join(self.config.data_dir, name)
-            if name.endswith(".mp4") and now - os.path.getmtime(path) > limit:
-                os.remove(path)
-                with self.lock:
-                    self.jobs.pop(name[:-4], None)
-                removed += 1
-        return removed
+    def _active(self, video_id):
+        """True if a job is queued or running. The caller must hold self.lock."""
+        job = self.jobs.get(video_id)
+        return bool(job) and job["status"] in ("queued", "running")
+
+    def _video_ids_with_mp4(self):
+        names = os.listdir(self.config.data_dir)
+        return [n[:-4] for n in names if n.endswith(".mp4") and VIDEO_ID_RE.match(n[:-4])]
+
+    def evict(self, skip=None):
+        """Evicts unkept downloads, oldest first, until their total is within the cap. Never
+        evicts kept files, a queued or running job, or `skip` (the file that just finished).
+        Returns the evicted ids."""
+        cap = self.config.unkept_cap_bytes
+        evicted = []
+        with self.lock:
+            total = 0
+            unkept = []  # (downloadedAt, videoId, size)
+            for vid in self._video_ids_with_mp4():
+                if not os.path.exists(self.sidecar_path(vid)):
+                    continue  # not in the library; startup migrates these
+                side = self._read_sidecar(vid)
+                if side is None:
+                    continue
+                try:
+                    size = os.path.getsize(self.file_path(vid))
+                except OSError:
+                    continue
+                if side["keep"]:
+                    continue
+                total += size  # active files count towards the cap but are never evicted
+                if not self._active(vid):
+                    unkept.append((side["downloadedAt"], vid, size))
+            unkept.sort()
+            for _, vid, size in unkept:
+                if total <= cap:
+                    break
+                if vid == skip:
+                    continue
+                for path in (self.file_path(vid), self.sidecar_path(vid)):
+                    try:
+                        os.remove(path)
+                    except FileNotFoundError:
+                        pass
+                self.jobs.pop(vid, None)
+                total -= size
+                evicted.append(vid)
+        return evicted
+
+    def startup_cleanup(self):
+        """Migrates legacy .mp4 files to unkept sidecars, removes orphan sidecars and stale partial
+        downloads (older than an hour), then enforces the cap."""
+        now = time.time()
+        with self.lock:
+            for name in os.listdir(self.config.data_dir):
+                path = os.path.join(self.config.data_dir, name)
+                if name.endswith(".mp4") and VIDEO_ID_RE.match(name[:-4]):
+                    vid = name[:-4]
+                    if not os.path.exists(self.sidecar_path(vid)):  # legacy: treat as unkept
+                        self._write_sidecar(vid, {"keep": False}, downloaded_at=os.path.getmtime(path))
+                elif name.endswith(".json") and VIDEO_ID_RE.match(name[:-5]):
+                    if not os.path.exists(self.file_path(name[:-5])):  # orphan sidecar
+                        os.remove(path)
+                elif name.endswith((".part", ".tmp")) or fnmatch.fnmatch(name, "*.f*.mp4"):
+                    if now - os.path.getmtime(path) > 3600:  # stale partial download
+                        os.remove(path)
+        self.evict()
 
 
 def encode_cursor(key):
@@ -499,7 +557,7 @@ def _ytdlp_version(config):
 
 def build_server(config):
     manager = JobManager(config)
-    manager.sweep()
+    manager.startup_cleanup()
     server = ThreadingHTTPServer((config.host, config.port), make_handler(config, manager))
     server.manager = manager
     return server
