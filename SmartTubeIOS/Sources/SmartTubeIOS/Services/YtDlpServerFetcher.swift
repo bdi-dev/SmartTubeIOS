@@ -93,9 +93,64 @@ public struct YtDlpLibraryPage: Decodable, Sendable, Equatable {
     }
 }
 
+/// The body of `POST /v1/jobs`. Metadata is sent only when present. `keep` is sent only when set,
+/// because the server defaults to `true`. Values the server would reject (over-long text, a
+/// non-https thumbnail, a negative duration) are dropped or clipped here, so a job never fails
+/// with a 400 over its metadata.
+public struct YtDlpJobRequest: Sendable, Equatable {
+    public let videoId: String
+    public let title: String?
+    public let channelTitle: String?
+    public let duration: Double?
+    public let thumbnailURL: String?
+    public let keep: Bool?
+
+    public init(
+        videoId: String, title: String? = nil, channelTitle: String? = nil, duration: Double? = nil,
+        thumbnailURL: String? = nil, keep: Bool? = nil
+    ) {
+        self.videoId = videoId
+        self.title = title
+        self.channelTitle = channelTitle
+        self.duration = duration
+        self.thumbnailURL = thumbnailURL
+        self.keep = keep
+    }
+
+    /// Builds the request for a video. Empty metadata (such as the placeholder title used when only
+    /// streaming) is omitted rather than sent as an empty string.
+    public init(video: Video, keep: Bool? = nil) {
+        self.init(
+            videoId: video.id,
+            title: Self.clip(video.title, max: 300),
+            channelTitle: Self.clip(video.channelTitle, max: 200),
+            duration: video.duration.flatMap { $0 >= 0 && $0.isFinite ? $0 : nil },
+            thumbnailURL: video.thumbnailURL.flatMap {
+                $0.scheme == "https" && $0.absoluteString.count <= 500 ? $0.absoluteString : nil
+            },
+            keep: keep)
+    }
+
+    private static func clip(_ text: String, max: Int) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : String(trimmed.prefix(max))
+    }
+
+    /// The JSON object for the request. Absent optionals are left out, not sent as null.
+    var jsonObject: [String: Any] {
+        var object: [String: Any] = ["videoId": videoId]
+        if let title { object["title"] = title }
+        if let channelTitle { object["channelTitle"] = channelTitle }
+        if let duration { object["duration"] = duration }
+        if let thumbnailURL { object["thumbnailURL"] = thumbnailURL }
+        if let keep { object["keep"] = keep }
+        return object
+    }
+}
+
 /// The calls the app makes to the companion server. Tests supply a fake.
 public protocol YtDlpServerClient: Sendable {
-    func createJob(videoId: String) async throws -> YtDlpJobState
+    func createJob(_ request: YtDlpJobRequest) async throws -> YtDlpJobState
     func jobState(videoId: String) async throws -> YtDlpJobState
     func health() async throws -> YtDlpHealth
     func library(cursor: String?, limit: Int) async throws -> YtDlpLibraryPage
@@ -188,10 +243,10 @@ public struct URLSessionYtDlpServerClient: YtDlpServerClient {
         }
     }
 
-    public func createJob(videoId: String) async throws -> YtDlpJobState {
+    public func createJob(_ job: YtDlpJobRequest) async throws -> YtDlpJobState {
         var req = request("v1/jobs", method: "POST")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try JSONSerialization.data(withJSONObject: ["videoId": videoId])
+        req.httpBody = try JSONSerialization.data(withJSONObject: job.jsonObject)
         return try await send(req, as: YtDlpJobState.self)
     }
 
@@ -241,9 +296,12 @@ public final class YtDlpServerFetcher: DownloadFetching {
     private let pollInterval: TimeInterval
     private let maxPolls: Int
     private let sleep: @Sendable (TimeInterval) async throws -> Void
+    /// Sent as `keep` on job creation. nil leaves it out, so the server keeps the file (its default).
+    private let keep: Bool?
 
     public init(
         client: any YtDlpServerClient, baseURL: URL, token: String, assembler: any DownloadFetching,
+        keep: Bool? = nil,
         pollInterval: TimeInterval = YtDlpServerFetcher.pollInterval,
         maxWait: TimeInterval = YtDlpServerFetcher.maxWait,
         sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { try await Task.sleep(for: .seconds($0)) }
@@ -252,6 +310,7 @@ public final class YtDlpServerFetcher: DownloadFetching {
         self.baseURL = baseURL
         self.token = token
         self.assembler = assembler
+        self.keep = keep
         self.pollInterval = pollInterval
         self.maxPolls = max(1, Int(maxWait / max(pollInterval, 0.001)))
         self.sleep = sleep
@@ -259,7 +318,7 @@ public final class YtDlpServerFetcher: DownloadFetching {
 
     public func resolve(video: Video) async throws -> DownloadPlan {
         let id = video.id
-        var state = try await client.createJob(videoId: id)
+        var state = try await client.createJob(YtDlpJobRequest(video: video, keep: keep))
         var polls = 0
         while true {
             try Task.checkCancellation()
@@ -313,10 +372,11 @@ public enum YtDlpServerStream {
         guard let baseURL = config.baseURL, let token = config.token, !token.isEmpty else {
             throw DownloadFetchError(message: "The yt-dlp server is not set up")
         }
+        // Streaming is a one-off view, not a download, so the server keeps nothing from it (keep: false).
         let fetcher = YtDlpServerFetcher(
             client: client ?? URLSessionYtDlpServerClient(baseURL: baseURL, token: token),
-            baseURL: baseURL, token: token, assembler: UnsupportedAssembler(), pollInterval: pollInterval,
-            sleep: sleep)
+            baseURL: baseURL, token: token, assembler: UnsupportedAssembler(), keep: false,
+            pollInterval: pollInterval, sleep: sleep)
         let plan = try await fetcher.resolve(video: Video(id: videoId, title: "", channelTitle: ""))
         guard let part = plan.parts.first else {
             throw DownloadFetchError(message: "The yt-dlp server returned no file")

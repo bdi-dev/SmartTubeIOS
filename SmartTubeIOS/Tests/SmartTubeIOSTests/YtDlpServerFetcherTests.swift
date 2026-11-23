@@ -12,12 +12,14 @@ private func video(_ id: String = "dQw4w9WgXcQ") -> Video {
 private final class FakeClient: YtDlpServerClient, @unchecked Sendable {
     var states: [YtDlpJobState]
     var created: [String] = []
+    var requests: [YtDlpJobRequest] = []
     var polled = 0
     var createError: Error?
     init(_ states: [YtDlpJobState]) { self.states = states }
-    func createJob(videoId: String) async throws -> YtDlpJobState {
+    func createJob(_ request: YtDlpJobRequest) async throws -> YtDlpJobState {
         if let createError { throw createError }
-        created.append(videoId)
+        created.append(request.videoId)
+        requests.append(request)
         return states.removeFirst()
     }
     func jobState(videoId: String) async throws -> YtDlpJobState {
@@ -310,12 +312,42 @@ struct URLSessionYtDlpServerClientTests {
     @Test("createJob POSTs the video id with the bearer token")
     func createJob() async throws {
         StubProtocol.handler = { _ in (202, #"{"status":"queued","progress":0}"#) }
-        let state = try await client().createJob(videoId: "dQw4w9WgXcQ")
+        let state = try await client().createJob(YtDlpJobRequest(videoId: "dQw4w9WgXcQ"))
         #expect(state.status == "queued")
         let req = try #require(StubProtocol.seen.first)
         #expect(req.httpMethod == "POST")
         #expect(req.url?.path == "/v1/jobs")
         #expect(req.value(forHTTPHeaderField: "Authorization") == "Bearer tok")
+    }
+
+    private func postedJSON() throws -> [String: Any] {
+        let body = try #require(StubProtocol.seenBodies.first ?? nil)
+        return try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+    }
+
+    @Test("a download's createJob sends the metadata and leaves keep out")
+    func createJobSendsMetadata() async throws {
+        StubProtocol.handler = { _ in (202, #"{"status":"queued"}"#) }
+        let video = Video(
+            id: "dQw4w9WgXcQ", title: "Title", channelTitle: "Channel",
+            thumbnailURL: URL(string: "https://i.example/x.jpg"), duration: 61.5)
+        _ = try await client().createJob(YtDlpJobRequest(video: video))
+        let json = try postedJSON()
+        #expect(json["videoId"] as? String == "dQw4w9WgXcQ")
+        #expect(json["title"] as? String == "Title")
+        #expect(json["channelTitle"] as? String == "Channel")
+        #expect(json["duration"] as? Double == 61.5)
+        #expect(json["thumbnailURL"] as? String == "https://i.example/x.jpg")
+        #expect(json["keep"] == nil)
+    }
+
+    @Test("streaming's createJob sends keep: false")
+    func createJobKeepFalse() async throws {
+        StubProtocol.handler = { _ in (202, #"{"status":"queued"}"#) }
+        _ = try await client().createJob(YtDlpJobRequest(videoId: "dQw4w9WgXcQ", keep: false))
+        let json = try postedJSON()
+        #expect(json["keep"] as? Bool == false)
+        #expect(json["title"] == nil)
     }
 
     @Test("health sends no token")
@@ -487,5 +519,47 @@ struct YtDlpServerClientTokenTests {
     func trimsToken() {
         let client = URLSessionYtDlpServerClient(baseURL: base, token: "  abc123\n")
         #expect(client.token == "abc123")
+    }
+}
+
+@Suite("Job metadata and keep on the wire")
+struct YtDlpJobMetadataTests {
+    @Test("a download sends metadata and no keep; the fetcher passes keep through as nil")
+    func downloadFetcherSendsMetadata() async throws {
+        let client = FakeClient([.init(status: "ready")])
+        let video = Video(
+            id: "dQw4w9WgXcQ", title: "Title", channelTitle: "Channel",
+            thumbnailURL: URL(string: "https://i.example/x.jpg"), duration: 60)
+        _ = try await fetcher(client).resolve(video: video)
+        let request = try #require(client.requests.first)
+        #expect(request.title == "Title")
+        #expect(request.channelTitle == "Channel")
+        #expect(request.duration == 60)
+        #expect(request.thumbnailURL == "https://i.example/x.jpg")
+        #expect(request.keep == nil)
+    }
+
+    @Test("streaming sends keep: false and omits the placeholder empty title")
+    func streamSendsKeepFalse() async throws {
+        let client = FakeClient([.init(status: "ready")])
+        let config = YtDlpServerConfig(mode: .fallback, baseURL: base, token: "tok")
+        _ = try await YtDlpServerStream.resolve(
+            videoId: "dQw4w9WgXcQ", config: config, client: client, pollInterval: 1, sleep: { _ in })
+        let request = try #require(client.requests.first)
+        #expect(request.keep == false)
+        #expect(request.title == nil)
+        #expect(request.channelTitle == nil)
+    }
+
+    @Test("over-long text is clipped and values the server rejects are dropped")
+    func clipsAndDrops() {
+        let video = Video(
+            id: "dQw4w9WgXcQ", title: String(repeating: "t", count: 400), channelTitle: "  ",
+            thumbnailURL: URL(string: "http://i.example/x.jpg"), duration: -1)
+        let request = YtDlpJobRequest(video: video)
+        #expect(request.title?.count == 300)
+        #expect(request.channelTitle == nil)
+        #expect(request.thumbnailURL == nil)
+        #expect(request.duration == nil)
     }
 }
