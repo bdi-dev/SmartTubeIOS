@@ -405,11 +405,16 @@ public final class ConfigurableDownloadFetcher: DownloadFetching {
     private let native: any DownloadFetching
     private let config: @Sendable () -> YtDlpServerConfig
     private let makeServer: @Sendable (YtDlpServerConfig) -> any DownloadFetching
+    private let makeProbe: @Sendable (YtDlpServerConfig) -> any YtDlpServerClient
+
+    /// How long the fallback check waits for the server before extracting natively.
+    public static let probeTimeout: TimeInterval = 5
 
     public init(
         native: any DownloadFetching,
         config: @escaping @Sendable () -> YtDlpServerConfig = { YtDlpServerConfig.current() },
-        makeServer: (@Sendable (YtDlpServerConfig) -> any DownloadFetching)? = nil
+        makeServer: (@Sendable (YtDlpServerConfig) -> any DownloadFetching)? = nil,
+        makeProbe: (@Sendable (YtDlpServerConfig) -> any YtDlpServerClient)? = nil
     ) {
         self.native = native
         self.config = config
@@ -419,6 +424,28 @@ public final class ConfigurableDownloadFetcher: DownloadFetching {
                     client: URLSessionYtDlpServerClient(baseURL: cfg.baseURL!, token: cfg.token!),
                     baseURL: cfg.baseURL!, token: cfg.token!, assembler: native)
             }
+        self.makeProbe =
+            makeProbe ?? { cfg in
+                URLSessionYtDlpServerClient(
+                    baseURL: cfg.baseURL!, token: cfg.token!, timeout: ConfigurableDownloadFetcher.probeTimeout)
+            }
+    }
+
+    /// Asks whether the server already holds a finished file for this video. Uses `jobState`, never
+    /// `createJob` (which would start a run). Every failure, including a 404 and a timeout, means
+    /// "not there", so the native extractor runs as before. A 401 is logged. Only cancellation escapes.
+    private func serverHasReadyFile(videoId: String, _ cfg: YtDlpServerConfig) async throws -> Bool {
+        do {
+            return try await makeProbe(cfg).jobState(videoId: videoId).status == "ready"
+        } catch {
+            if Task.isCancelled { throw CancellationError() }
+            if let serverError = error as? YtDlpServerError, serverError.status == 401 {
+                ytDlpLog.notice("yt-dlp server rejected the token during the NAS check; extracting natively")
+            } else {
+                ytDlpLog.debug("yt-dlp server has no ready file for \(videoId, privacy: .public); extracting natively")
+            }
+            return false
+        }
     }
 
     public func resolve(video: Video) async throws -> DownloadPlan {
@@ -436,6 +463,10 @@ public final class ConfigurableDownloadFetcher: DownloadFetching {
             }
             return try await makeServer(cfg).resolve(video: video, audioOnly: audioOnly)
         case .fallback:
+            // Server first when it is set up. Audio-only is skipped: the server returns a full MP4.
+            if cfg.isConfigured, !audioOnly, try await serverHasReadyFile(videoId: video.id, cfg) {
+                return try await makeServer(cfg).resolve(video: video, audioOnly: audioOnly)
+            }
             do {
                 return try await native.resolve(video: video, audioOnly: audioOnly)
             } catch is CancellationError {

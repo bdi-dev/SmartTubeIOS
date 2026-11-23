@@ -132,21 +132,46 @@ private struct StubFetcher: DownloadFetching {
     }
 }
 
+/// Stands in for the fallback check. Replies with a scripted `jobState` result and counts the calls.
+/// It fails on `createJob`, because the check must never start a job.
+private final class ProbeClient: YtDlpServerClient, @unchecked Sendable {
+    let reply: Result<YtDlpJobState, YtDlpServerError>
+    var jobStateCalls = 0
+    init(_ reply: Result<YtDlpJobState, YtDlpServerError> = .failure(YtDlpServerError(message: "nf", status: 404))) {
+        self.reply = reply
+    }
+    func createJob(_ request: YtDlpJobRequest) async throws -> YtDlpJobState {
+        throw YtDlpServerError(message: "the check must not create a job")
+    }
+    func jobState(videoId: String) async throws -> YtDlpJobState {
+        jobStateCalls += 1
+        return try reply.get()
+    }
+    func health() async throws -> YtDlpHealth { YtDlpHealth(ok: true, ytdlpVersion: nil) }
+    func library(cursor: String?, limit: Int) async throws -> YtDlpLibraryPage {
+        YtDlpLibraryPage(items: [], nextCursor: nil)
+    }
+    func setKeep(videoId: String, keep: Bool) async throws {}
+    func deleteFromServer(videoId: String) async throws {}
+}
+
 private func router(
-    mode: YtDlpMode, configured: Bool = true, nativeFails: Bool = false, serverFails: Bool = false
+    mode: YtDlpMode, configured: Bool = true, nativeFails: Bool = false, serverFails: Bool = false,
+    probe: ProbeClient = ProbeClient()
 ) -> ConfigurableDownloadFetcher {
     ConfigurableDownloadFetcher(
         native: StubFetcher(label: "native", fails: nativeFails),
         config: {
             YtDlpServerConfig(mode: mode, baseURL: configured ? base : nil, token: configured ? "tok" : nil)
         },
-        makeServer: { _ in StubFetcher(label: "server", fails: serverFails) })
+        makeServer: { _ in StubFetcher(label: "server", fails: serverFails) },
+        makeProbe: { _ in probe })
 }
 
 @Suite("ConfigurableDownloadFetcher")
 struct ConfigurableDownloadFetcherTests {
-    private func userAgent(_ f: ConfigurableDownloadFetcher) async throws -> String {
-        try await f.resolve(video: video()).parts[0].userAgent
+    private func userAgent(_ f: ConfigurableDownloadFetcher, audioOnly: Bool = false) async throws -> String {
+        try await f.resolve(video: video(), audioOnly: audioOnly).parts[0].userAgent
     }
 
     @Test("off always uses the native extractor, even when the server is configured")
@@ -192,8 +217,62 @@ struct ConfigurableDownloadFetcherTests {
     func fallbackCancellation() async {
         let f = ConfigurableDownloadFetcher(
             native: CancellingFetcher(), config: { YtDlpServerConfig(mode: .fallback, baseURL: base, token: "t") },
-            makeServer: { _ in StubFetcher(label: "server") })
+            makeServer: { _ in StubFetcher(label: "server") }, makeProbe: { _ in ProbeClient() })
         await #expect(throws: CancellationError.self) { try await f.resolve(video: video()) }
+    }
+
+    @Test("fallback uses the server when it already has the file, without extracting")
+    func fallbackProbeReady() async throws {
+        let probe = ProbeClient(.success(YtDlpJobState(status: "ready")))
+        #expect(try await userAgent(router(mode: .fallback, probe: probe)) == "server")
+        #expect(probe.jobStateCalls == 1)
+    }
+
+    @Test("fallback extracts natively when the server has no file (404)")
+    func fallbackProbeNotFound() async throws {
+        let probe = ProbeClient(.failure(YtDlpServerError(message: "nf", status: 404)))
+        #expect(try await userAgent(router(mode: .fallback, probe: probe)) == "native")
+        #expect(probe.jobStateCalls == 1)
+    }
+
+    @Test("fallback extracts natively when the check times out")
+    func fallbackProbeTimeout() async throws {
+        let probe = ProbeClient(.failure(YtDlpServerError(message: "Could not reach the yt-dlp server", status: nil)))
+        #expect(try await userAgent(router(mode: .fallback, probe: probe)) == "native")
+    }
+
+    @Test("fallback extracts natively when the token is rejected (401)")
+    func fallbackProbeUnauthorised() async throws {
+        let probe = ProbeClient(.failure(YtDlpServerError(message: "rejected the token", status: 401)))
+        #expect(try await userAgent(router(mode: .fallback, probe: probe)) == "native")
+    }
+
+    @Test("fallback does not check the server when it is not configured")
+    func fallbackProbeUnconfigured() async throws {
+        let probe = ProbeClient(.success(YtDlpJobState(status: "ready")))
+        #expect(try await userAgent(router(mode: .fallback, configured: false, probe: probe)) == "native")
+        #expect(probe.jobStateCalls == 0)
+    }
+
+    @Test("fallback skips the check for audio-only downloads")
+    func fallbackProbeAudioOnly() async throws {
+        let probe = ProbeClient(.success(YtDlpJobState(status: "ready")))
+        #expect(try await userAgent(router(mode: .fallback, probe: probe), audioOnly: true) == "native")
+        #expect(probe.jobStateCalls == 0)
+    }
+
+    @Test("off never contacts the server")
+    func offNeverProbes() async throws {
+        let probe = ProbeClient(.success(YtDlpJobState(status: "ready")))
+        #expect(try await userAgent(router(mode: .off, probe: probe)) == "native")
+        #expect(probe.jobStateCalls == 0)
+    }
+
+    @Test("always does not run the check before using the server")
+    func alwaysNeverProbes() async throws {
+        let probe = ProbeClient(.success(YtDlpJobState(status: "ready")))
+        #expect(try await userAgent(router(mode: .always, probe: probe)) == "server")
+        #expect(probe.jobStateCalls == 0)
     }
 }
 
