@@ -10,7 +10,9 @@ import Testing
 
 private func channelTile(_ id: String, _ title: String, avatar: Bool = true) -> [String: Any] {
     var header: [String: Any] = [:]
-    if avatar { header = ["tileHeaderRenderer": ["thumbnail": ["thumbnails": [["url": "https://yt3.example/\(id)=s88"]]]]] }
+    if avatar {
+        header = ["tileHeaderRenderer": ["thumbnail": ["thumbnails": [["url": "https://yt3.example/\(id)=s88"]]]]]
+    }
     return [
         "tileRenderer": [
             "contentType": "TILE_CONTENT_TYPE_CHANNEL",
@@ -24,7 +26,8 @@ private func channelTile(_ id: String, _ title: String, avatar: Bool = true) -> 
 private func listPage(_ tiles: [[String: Any]], next: String?) -> [String: Any] {
     var contents: [[String: Any]] = tiles
     if let next {
-        contents.append(["continuationItemRenderer": ["continuationEndpoint": ["continuationCommand": ["token": next]]]])
+        contents.append(["continuationItemRenderer": ["continuationEndpoint": ["continuationCommand": ["token": next]]]]
+        )
     }
     return ["contents": ["tvBrowseRenderer": ["content": ["tvSecondaryNavRenderer": ["items": contents]]]]]
 }

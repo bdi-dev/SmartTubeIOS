@@ -46,7 +46,9 @@ struct TVChannelVideosTests {
 
     @Test("uploads playlist browse id is VL + UULF + id without UC")
     func browseId() {
-        #expect(InnerTubeAPI.channelUploadsBrowseId(channelId: "UCX6OQ3DkcsbYNE6H8uQQuVA") == "VLUULFX6OQ3DkcsbYNE6H8uQQuVA")
+        #expect(
+            InnerTubeAPI.channelUploadsBrowseId(channelId: "UCX6OQ3DkcsbYNE6H8uQQuVA") == "VLUULFX6OQ3DkcsbYNE6H8uQQuVA"
+        )
         #expect(InnerTubeAPI.isChannelId("UCabc"))
         #expect(!InnerTubeAPI.isChannelId("@handle"))
         #expect(!InnerTubeAPI.isChannelId("UC"))
@@ -56,7 +58,9 @@ struct TVChannelVideosTests {
         var overlays: [[String: Any]] = [
             ["thumbnailOverlayTimeStatusRenderer": ["text": ["simpleText": "10:00"], "style": "DEFAULT"]]
         ]
-        if let percent { overlays.append(["thumbnailOverlayResumePlaybackRenderer": ["percentDurationWatched": percent]]) }
+        if let percent {
+            overlays.append(["thumbnailOverlayResumePlaybackRenderer": ["percentDurationWatched": percent]])
+        }
         return [
             "tileRenderer": [
                 "contentType": "TILE_CONTENT_TYPE_VIDEO",
@@ -73,7 +77,10 @@ struct TVChannelVideosTests {
         let json: [String: Any] = [
             "contents": [
                 "playlistVideoListRenderer": [
-                    "contents": [tile("A", percent: 45), tile("B", percent: 100), tile("C", percent: 12.5), tile("D", percent: nil)]
+                    "contents": [
+                        tile("A", percent: 45), tile("B", percent: 100), tile("C", percent: 12.5),
+                        tile("D", percent: nil),
+                    ]
                 ]
             ]
         ]
@@ -139,7 +146,10 @@ private final class Counter: @unchecked Sendable {
     private var _t = Date(timeIntervalSince1970: 0)
     var n: Int { lock.withLock { _n } }
     func bump() { lock.withLock { _n += 1 } }
-    var date: Date { get { lock.withLock { _t } } set { lock.withLock { _t = newValue } } }
+    var date: Date {
+        get { lock.withLock { _t } }
+        set { lock.withLock { _t = newValue } }
+    }
 }
 
 @Suite("WatchedHistoryIndex deep loading")
@@ -220,7 +230,10 @@ struct WatchedHistoryIndexDeepTests {
         struct E: Error {}
         let c = Counter()
         let idx = WatchedHistoryIndex(initialPages: 1, now: { c.date })
-        let bad: WatchedHistoryIndex.PageFetcher = { _ in c.bump(); throw E() }
+        let bad: WatchedHistoryIndex.PageFetcher = { _ in
+            c.bump()
+            throw E()
+        }
         #expect(await idx.warm(ownerKey: "u", fetch: bad).entries.isEmpty)
         #expect(await idx.warm(ownerKey: "u", fetch: bad).entries.isEmpty)
         #expect(c.n == 2)
@@ -251,8 +264,10 @@ struct WatchedHistoryIndexDeepTests {
 
     @Test("merge: remote history supersedes smaller progress, never lowers it")
     func merge() {
-        var a = Video(id: "A", title: "a", channelTitle: "c"); a.watchProgress = 0.02
-        var b = Video(id: "B", title: "b", channelTitle: "c"); b.watchProgress = 0.9
+        var a = Video(id: "A", title: "a", channelTitle: "c")
+        a.watchProgress = 0.02
+        var b = Video(id: "B", title: "b", channelTitle: "c")
+        b.watchProgress = 0.9
         let c = Video(id: "C", title: "c", channelTitle: "c")
         let d = Video(id: "D", title: "d", channelTitle: "c")
         let out = WatchedHistoryIndex.merge([a, b, c, d], index: ["A": 1.0, "B": 0.5, "C": 0.3])
