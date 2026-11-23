@@ -212,6 +212,18 @@ struct ConfigurableDownloadFetcherTests {
         }
     }
 
+    @Test("the default unconfigured server fetcher throws the not-set-up message")
+    func unconfiguredServerFetcher() {
+        do {
+            _ = try UnconfiguredServerFetcher().resolve(video: video())
+            Issue.record("expected resolve to throw")
+        } catch let error as DownloadFetchError {
+            #expect(error.message == "The yt-dlp server is not set up (Settings > Downloads)")
+        } catch {
+            Issue.record("unexpected error: \(error)")
+        }
+    }
+
     @Test("fallback uses native first, the server only when native fails")
     func fallback() async throws {
         #expect(try await userAgent(router(mode: .fallback)) == "native")

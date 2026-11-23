@@ -412,6 +412,25 @@ public enum YtDlpServerStream {
     }
 }
 
+/// Stands in for the server fetcher when no server is configured. Every call fails with the
+/// "not set up" message. Callers check `isConfigured` first, so this only guards the default closure.
+/// The methods are not `async` because they never suspend, which keeps the protocol witnesses simple.
+struct UnconfiguredServerFetcher: DownloadFetching {
+    private static let message = "The yt-dlp server is not set up (Settings > Downloads)"
+
+    func resolve(video: Video) throws -> DownloadPlan {
+        throw DownloadFetchError(message: Self.message)
+    }
+
+    func assemble(videoId: String, stagedParts: [DownloadPart: URL]) throws -> URL {
+        throw DownloadFetchError(message: Self.message)
+    }
+
+    func assemble(videoId: String, stagedParts: [DownloadPart: URL], audioOnly: Bool) throws -> URL {
+        throw DownloadFetchError(message: Self.message)
+    }
+}
+
 // MARK: - ConfigurableDownloadFetcher
 
 /// Chooses, per download, between the app's own extractor and the companion server according to
@@ -435,10 +454,13 @@ public final class ConfigurableDownloadFetcher: DownloadFetching {
         self.native = native
         self.config = config
         self.makeServer =
-            makeServer ?? { cfg in
-                YtDlpServerFetcher(
-                    client: URLSessionYtDlpServerClient(baseURL: cfg.baseURL!, token: cfg.token!),
-                    baseURL: cfg.baseURL!, token: cfg.token!, assembler: native)
+            makeServer ?? { (cfg: YtDlpServerConfig) -> any DownloadFetching in
+                guard let baseURL = cfg.baseURL, let token = cfg.token else {
+                    return UnconfiguredServerFetcher()
+                }
+                return YtDlpServerFetcher(
+                    client: URLSessionYtDlpServerClient(baseURL: baseURL, token: token),
+                    baseURL: baseURL, token: token, assembler: native)
             }
         self.makeProbe =
             makeProbe ?? { (cfg: YtDlpServerConfig) throws -> any YtDlpServerClient in
