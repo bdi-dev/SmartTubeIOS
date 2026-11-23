@@ -15,6 +15,7 @@ Configuration (environment):
   YTDLP_MAX_HEIGHT       default quality cap when the app sends none (default 1080).
   YTDLP_COOKIES          optional cookies.txt passed to yt-dlp (never leaves this machine).
 """
+import base64
 import hmac
 import json
 import math
@@ -27,9 +28,13 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs
 
 API_VERSION = 2  # 2 = sidecar metadata, library listing, keep and delete
-VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}\Z")  # \Z, not $: "$" also matches before a newline
+DOWNLOADED_AT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\Z")
+LIBRARY_DEFAULT_LIMIT = 50
+LIBRARY_MAX_LIMIT = 200
 PROGRESS_RE = re.compile(r"\[download\]\s+(\d+(?:\.\d+)?)%")
 # AVPlayer-friendly: H.264 + AAC in MP4, falling back to whatever yt-dlp can merge into MP4.
 FORMAT_TEMPLATE = (
@@ -128,6 +133,53 @@ class JobManager:
         with self.lock:
             self.jobs.setdefault(video_id, {}).update(fields)
 
+    def _read_sidecar(self, video_id):
+        """Returns a valid sidecar dict, or None (logging the id) if it is unreadable or wrong.
+        The caller must hold self.lock."""
+        try:
+            with open(self.sidecar_path(video_id)) as f:
+                side = json.load(f)
+        except (OSError, ValueError):
+            side = None
+        ok = (
+            isinstance(side, dict)
+            and side.get("videoId") == video_id
+            and isinstance(side.get("downloadedAt"), str)
+            and DOWNLOADED_AT_RE.match(side["downloadedAt"]) is not None
+            and isinstance(side.get("keep"), bool)
+        )
+        if not ok:
+            sys.stderr.write("skipping bad sidecar for %s\n" % video_id)
+            return None
+        return side
+
+    def library(self, limit, after=None):
+        """One keyset page of finished downloads, newest first. `after` is a (downloadedAt, videoId)
+        key; only items strictly older than it are returned. Returns (items, nextCursor)."""
+        found = []
+        with self.lock:
+            for name in os.listdir(self.config.data_dir):
+                if not name.endswith(".json"):
+                    continue
+                vid = name[:-5]
+                if not VIDEO_ID_RE.match(vid) or not os.path.exists(self.file_path(vid)):
+                    continue
+                side = self._read_sidecar(vid)
+                if side is None:
+                    continue
+                key = (side["downloadedAt"], vid)
+                if after is not None and key >= after:
+                    continue
+                try:
+                    side["fileSize"] = os.path.getsize(self.file_path(vid))
+                except OSError:
+                    continue
+                found.append((key, side))
+        found.sort(key=lambda pair: pair[0], reverse=True)
+        page = found[:limit]
+        next_cursor = encode_cursor(page[-1][0]) if len(found) > limit else None
+        return [side for _, side in page], next_cursor
+
     def _run(self, video_id, height):
         with self.lock:
             meta = self.meta.pop(video_id, {})
@@ -196,6 +248,23 @@ class JobManager:
         return removed
 
 
+def encode_cursor(key):
+    """Opaque library cursor: urlsafe base64 (no padding) of "<downloadedAt>|<videoId>"."""
+    return base64.urlsafe_b64encode(("%s|%s" % key).encode()).decode().rstrip("=")
+
+
+def decode_cursor(cursor):
+    """Returns the (downloadedAt, videoId) key of a cursor. Raises ValueError if malformed."""
+    try:
+        raw = base64.urlsafe_b64decode((cursor + "=" * (-len(cursor) % 4)).encode()).decode()
+    except ValueError:  # binascii.Error and UnicodeDecodeError are both ValueErrors
+        raise ValueError("cursor")
+    downloaded_at, sep, video_id = raw.partition("|")
+    if not sep or not DOWNLOADED_AT_RE.match(downloaded_at) or not VIDEO_ID_RE.match(video_id):
+        raise ValueError("cursor")
+    return (downloaded_at, video_id)
+
+
 def parse_metadata(body):
     """Validates the optional metadata of POST /v1/jobs. Raises ValueError(field) if one is bad.
     A missing or null field takes its default."""
@@ -253,13 +322,15 @@ def make_handler(config, manager):
 
         # -- routes --
         def do_GET(self):
-            path = self.path.split("?")[0]
+            path, _, query = self.path.partition("?")
             if path == "/v1/health":
                 return self._json(
                     200, {"ok": True, "apiVersion": API_VERSION, "ytdlpVersion": _ytdlp_version(config)}
                 )
             if not self._authorised():
                 return self._json(401, {"error": "unauthorised"})
+            if path == "/v1/library":
+                return self._library(query)
             m = re.match(r"^/v1/jobs/([^/]+)$", path)
             if m:
                 vid = self._video_id(m.group(1))
@@ -274,6 +345,21 @@ def make_handler(config, manager):
                     return self._json(400, {"error": "bad video id"})
                 return self._serve_file(manager.file_path(vid))
             self._json(404, {"error": "not found"})
+
+        def _library(self, query):
+            params = parse_qs(query, keep_blank_values=True)
+            raw_limit = params.get("limit", [str(LIBRARY_DEFAULT_LIMIT)])[-1]
+            if not re.fullmatch(r"[0-9]{1,6}", raw_limit) or not 1 <= int(raw_limit) <= LIBRARY_MAX_LIMIT:
+                return self._json(400, {"error": "bad limit"})
+            raw_cursor = params.get("cursor", [""])[-1]
+            after = None
+            if raw_cursor:
+                try:
+                    after = decode_cursor(raw_cursor)
+                except ValueError:
+                    return self._json(400, {"error": "bad cursor"})
+            items, next_cursor = manager.library(int(raw_limit), after)
+            self._json(200, {"items": items, "nextCursor": next_cursor})
 
         def do_POST(self):
             if not self._authorised():

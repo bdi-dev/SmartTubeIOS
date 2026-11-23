@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 import sys
@@ -15,6 +16,20 @@ FAKE = os.path.join(os.path.dirname(__file__), "fake_ytdlp.py")
 TOKEN = "test-token"
 GOOD = "dQw4w9WgXcQ"  # 11 chars
 BAD_RUN = "FAILxxxxxxx"  # 11 chars, fake yt-dlp fails
+
+
+def http(base, method, path, body=None, token=TOKEN, headers=None):
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(base + path, data=data, method=method)
+    if token:
+        req.add_header("Authorization", "Bearer " + token)
+    for k, v in (headers or {}).items():
+        req.add_header(k, v)
+    try:
+        with urllib.request.urlopen(req) as r:
+            return r.status, r.read(), dict(r.headers)
+    except urllib.error.HTTPError as e:
+        return e.code, e.read(), dict(e.headers)
 
 
 class ServerTests(unittest.TestCase):
@@ -42,17 +57,7 @@ class ServerTests(unittest.TestCase):
 
     # -- helpers --
     def call(self, method, path, body=None, token=TOKEN, headers=None):
-        data = json.dumps(body).encode() if body is not None else None
-        req = urllib.request.Request(self.base + path, data=data, method=method)
-        if token:
-            req.add_header("Authorization", "Bearer " + token)
-        for k, v in (headers or {}).items():
-            req.add_header(k, v)
-        try:
-            with urllib.request.urlopen(req) as r:
-                return r.status, r.read(), dict(r.headers)
-        except urllib.error.HTTPError as e:
-            return e.code, e.read(), dict(e.headers)
+        return http(self.base, method, path, body, token, headers)
 
     def wait_for(self, vid, want):
         for _ in range(100):
@@ -219,6 +224,108 @@ class ServerTests(unittest.TestCase):
         self.assertIs(side["keep"], False)
         self.assertEqual(side["downloadedAt"], "2023-11-14T22:13:20Z")
         self.assertEqual(side["fileSize"], 10)
+
+
+class LibraryTests(unittest.TestCase):
+    """Each test gets its own server and data dir, so no other test's files show up here."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        cfg = server.Config(
+            {"YTDLP_TOKEN": TOKEN, "YTDLP_BIN": FAKE, "YTDLP_DATA_DIR": self.tmp.name, "YTDLP_PORT": "0"}
+        )
+        self.srv = server.build_server(cfg)
+        self.base = "http://127.0.0.1:%d" % self.srv.server_address[1]
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.addCleanup(self.srv.shutdown)
+        self.addCleanup(self.srv.server_close)
+
+    def add(self, vid, downloaded_at, keep=True, title=""):
+        """Writes a finished download (an .mp4 plus its sidecar) straight into the data dir."""
+        base = os.path.join(self.tmp.name, vid)
+        with open(base + ".mp4", "wb") as f:
+            f.write(b"x" * 10)
+        self.write_json(vid, {
+            "videoId": vid, "title": title, "channelTitle": "", "duration": None,
+            "thumbnailURL": None, "keep": keep, "downloadedAt": downloaded_at, "fileSize": 10,
+        })
+
+    def write_json(self, vid, obj):
+        with open(os.path.join(self.tmp.name, vid + ".json"), "w") as f:
+            f.write(obj if isinstance(obj, str) else json.dumps(obj))
+
+    def library(self, query="", token=TOKEN):
+        code, body, _ = http(self.base, "GET", "/v1/library" + query, token=token)
+        return code, json.loads(body)
+
+    def ids(self, page):
+        return [item["videoId"] for item in page["items"]]
+
+    def test_two_pages_no_overlap(self):
+        for i in range(1, 6):
+            self.add("LIBVIDEO00%d" % i, "2026-01-0%dT00:00:00Z" % i)
+        code, p1 = self.library("?limit=2")
+        self.assertEqual((code, self.ids(p1)), (200, ["LIBVIDEO005", "LIBVIDEO004"]))
+        self.assertIsNotNone(p1["nextCursor"])
+        code, p2 = self.library("?limit=2&cursor=" + p1["nextCursor"])
+        self.assertEqual(self.ids(p2), ["LIBVIDEO003", "LIBVIDEO002"])
+        code, p3 = self.library("?limit=2&cursor=" + p2["nextCursor"])
+        self.assertEqual(self.ids(p3), ["LIBVIDEO001"])
+        self.assertIsNone(p3["nextCursor"])
+
+    def test_download_between_pages_causes_no_duplicate_or_skip(self):
+        for i in range(1, 6):
+            self.add("LIBVIDEO00%d" % i, "2026-01-0%dT00:00:00Z" % i)
+        _, p1 = self.library("?limit=2")
+        self.add("LIBVIDEO006", "2026-01-06T00:00:00Z")  # newer than everything, lands on top
+        _, p2 = self.library("?limit=2&cursor=" + p1["nextCursor"])
+        self.assertEqual(self.ids(p2), ["LIBVIDEO003", "LIBVIDEO002"])
+        self.assertFalse(set(self.ids(p1)) & set(self.ids(p2)))
+
+    def test_same_timestamp_is_ordered_by_video_id(self):
+        self.add("TIEVIDEO0AA", "2026-02-01T00:00:00Z")
+        self.add("TIEVIDEO0BB", "2026-02-01T00:00:00Z")
+        _, p1 = self.library("?limit=1")
+        _, p2 = self.library("?limit=1&cursor=" + p1["nextCursor"])
+        self.assertEqual(self.ids(p1) + self.ids(p2), ["TIEVIDEO0BB", "TIEVIDEO0AA"])
+        self.assertIsNone(p2["nextCursor"])
+
+    def test_empty_library(self):
+        self.assertEqual(self.library(), (200, {"items": [], "nextCursor": None}))
+
+    def test_items_carry_sidecar_fields_and_keep(self):
+        self.add("LIBVIDEO001", "2026-01-01T00:00:00Z", keep=False, title="Kept?")
+        _, page = self.library()
+        item = page["items"][0]
+        self.assertEqual((item["title"], item["keep"], item["fileSize"]), ("Kept?", False, 10))
+
+    def test_sidecar_without_mp4_is_left_out(self):
+        self.write_json("ORPHANjson1", {"videoId": "ORPHANjson1", "downloadedAt": "2026-01-01T00:00:00Z", "keep": True})
+        self.assertEqual(self.library()[1]["items"], [])
+
+    def test_corrupt_and_mismatched_sidecars_are_skipped(self):
+        self.add("LIBVIDEO001", "2026-01-01T00:00:00Z")
+        self.add("BROKENjson1", "2026-01-02T00:00:00Z")
+        self.write_json("BROKENjson1", "{not json")
+        self.add("MISMATCH001", "2026-01-03T00:00:00Z")
+        self.write_json("MISMATCH001", {"videoId": "LIBVIDEO001", "downloadedAt": "2026-01-03T00:00:00Z", "keep": True})
+        code, page = self.library()
+        self.assertEqual((code, self.ids(page)), (200, ["LIBVIDEO001"]))
+
+    def test_bad_limit_is_400(self):
+        for query in ["?limit=0", "?limit=201", "?limit=abc", "?limit=-1", "?limit=1.5"]:
+            self.assertEqual(self.library(query)[0], 400, query)
+
+    def test_bad_cursor_is_400(self):
+        def enc(text):
+            return base64.urlsafe_b64encode(text.encode()).decode().rstrip("=")
+
+        for cursor in ["!!!", enc("garbage"), enc("2026-01-01T00:00:00Z|bad id"), enc("2026-01-01|LIBVIDEO001")]:
+            self.assertEqual(self.library("?cursor=" + cursor)[0], 400, cursor)
+
+    def test_library_needs_token(self):
+        self.assertEqual(self.library(token=None)[0], 401)
 
 
 if __name__ == "__main__":
