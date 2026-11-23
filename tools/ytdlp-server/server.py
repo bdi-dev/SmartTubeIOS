@@ -240,13 +240,21 @@ class JobManager:
             self._set(video_id, status="failed", error=message)
 
     def delete(self, video_id):
+        """Removes the .mp4 and its sidecar. Returns "deleted", "missing", or "busy" (a job is
+        queued or running, so nothing is removed and _set cannot recreate the file)."""
         with self.lock:
+            job = self.jobs.get(video_id)
+            if job and job["status"] in ("queued", "running"):
+                return "busy"
             self.jobs.pop(video_id, None)
-        try:
-            os.remove(self.file_path(video_id))
-            return True
-        except FileNotFoundError:
-            return False
+            removed = False
+            for path in (self.file_path(video_id), self.sidecar_path(video_id)):
+                try:
+                    os.remove(path)
+                    removed = True
+                except FileNotFoundError:
+                    pass
+            return "deleted" if removed else "missing"
 
     def sweep(self, now=None):
         """Removes files older than the retention window. Returns how many were removed."""
@@ -426,7 +434,10 @@ def make_handler(config, manager):
             vid = self._video_id(m.group(1)) if m else None
             if not vid:
                 return self._json(400, {"error": "bad video id"})
-            self._json(200 if manager.delete(vid) else 404, {"deleted": True})
+            result = manager.delete(vid)
+            if result == "busy":
+                return self._json(409, {"deleted": False, "error": "still downloading"})
+            self._json(200 if result == "deleted" else 404, {"deleted": result == "deleted"})
 
         def _serve_file(self, path):
             try:

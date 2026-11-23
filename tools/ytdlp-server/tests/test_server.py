@@ -366,6 +366,39 @@ class LibraryTests(unittest.TestCase):
         self.assertEqual(self.set_keep("KEEPnoauth01", {"keep": False}, token=None)[0], 401)
         self.assertIs(self.sidecar_keep("KEEPnoauth01"), True)
 
+    # -- delete (Task 1.5) --
+    def delete(self, vid):
+        code, body, _ = http(self.base, "DELETE", "/v1/files/" + vid)
+        return code, json.loads(body)
+
+    def exists(self, name):
+        return os.path.exists(os.path.join(self.tmp.name, name))
+
+    def test_delete_removes_mp4_and_sidecar(self):
+        self.add("DELvideo001", "2026-01-01T00:00:00Z")
+        self.assertEqual(self.delete("DELvideo001"), (200, {"deleted": True}))
+        self.assertFalse(self.exists("DELvideo001.mp4"))
+        self.assertFalse(self.exists("DELvideo001.json"))
+
+    def test_delete_removes_orphan_sidecar(self):
+        self.write_json("DELorphan01", {"videoId": "DELorphan01", "downloadedAt": "2026-01-01T00:00:00Z", "keep": True})
+        self.assertEqual(self.delete("DELorphan01"), (200, {"deleted": True}))
+        self.assertFalse(self.exists("DELorphan01.json"))
+
+    def test_delete_running_or_queued_job_is_409_and_removes_nothing(self):
+        for status in ("running", "queued"):
+            vid = "DELbusy%s1" % status[:3]
+            self.add(vid, "2026-01-01T00:00:00Z")
+            self.srv.manager.jobs[vid] = {"status": status, "progress": 0.5}
+            code, body = self.delete(vid)
+            self.assertEqual((code, body["deleted"]), (409, False), status)
+            self.assertTrue(self.exists(vid + ".mp4"))
+            self.assertTrue(self.exists(vid + ".json"))
+            self.srv.manager.jobs.pop(vid)
+
+    def test_delete_unknown_id_is_404_with_deleted_false(self):
+        self.assertEqual(self.delete("DELnothing1"), (404, {"deleted": False}))
+
 
 if __name__ == "__main__":
     unittest.main()
