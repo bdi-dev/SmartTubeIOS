@@ -24,16 +24,17 @@ Then `just ci` before the commit. If `just` is not installed, run what its recip
 - Fix violations; do not add them to `.swiftlint.baseline`. Regenerating the baseline is a deliberate, separate change (`just lint-baseline`).
 - SwiftLint aborts unless `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` is set (when `xcode-select` points at the Command Line Tools), and it writes violations to stderr, so use `2>&1`. Install with `brew install swiftlint`.
 - Repo-wide `just format-check` and `just lint` currently fail on code that predates any given change. Judge your change by the files you touched; the cleanup plan is in `docs/superpowers/plans/`.
+- A Claude Code hook (`scripts/hooks/swift-post-edit.sh`, registered in `.claude/settings.json`) runs after every Edit/Write of a `.swift` file: it formats the file, then reports any SwiftLint or swift-format violation the edit added compared with the committed version (exit 2 sends the message back to the agent). It does not replace the checks above or `just ci`.
 - A subagent does not read this file unless told to. When you brief one to edit Swift, put these commands in its brief and ask for the before and after violation counts in its report.
 
 ## Rules that differ from defaults
 - Swift 6 strict concurrency everywhere. View models are `@MainActor @Observable`. No `ObservableObject`, `@Published`, Combine, `DispatchQueue`, completion handlers in new code.
 - `SmartTubeIOSCore` must stay Foundation-only (no SwiftUI/UIKit/AVFoundation/WebKit). Put platform code in `SmartTubeIOS`.
-- One definition per constant/identifier/threshold. Accessibility identifiers come from `AccessibilityID`; SF Symbols from `AppSymbol`; playback timeouts from `PlaybackTuning`.
+- One definition per constant/identifier/threshold. SF Symbols come from `AppSymbol` (`Views/ViewHelpers.swift`). There is no `AccessibilityID` type and no `PlaybackTuning` type yet (both are planned; a SwiftLint custom rule already warns on raw `accessibilityIdentifier("…")`). Until they exist, use dotted string identifiers (`downloads.videoRow.<id>`), reuse an existing identifier rather than adding a near-duplicate, and keep a new timeout as one named constant.
 - Wrap UIKit-only API in `#if os(iOS)`; provide AppKit/tvOS branches. Never nest `NavigationStack`s.
 - Never hand-edit `project.pbxproj` (a hook blocks it). New Swift files under synchronized folders are picked up automatically; UI-test files must be added in Xcode.
-- Tests: Swift Testing for unit tests; no `Task.sleep`, no live network, fakes at protocol seams. UI tests use `AccessibilityID` and `waitForExistence`, never `sleep`.
-- Logging via `os.Logger` (subsystem `AppSubsystem`), never `print`.
+- Tests: Swift Testing for unit tests; no `Task.sleep`, no live network, fakes at protocol seams. UI tests use the same identifiers and `waitForExistence`, never `sleep`.
+- Logging via `os.Logger` (subsystem `appSubsystem`), never `print`.
 - Commits: Conventional Commits with the task ID, e.g. `fix(player): … (#312)`.
 
 ## Gotchas
