@@ -240,7 +240,7 @@ struct MainTabView: View {
             }
         }
         .onPreferenceChange(TabBarBottomInsetKey.self) { tabBarBottomInset = $0 }
-        #if !os(tvOS)
+        #if os(iOS)
         .onChange(of: connectivity.isCellularOnly, initial: true) { _, cellularOnly in
             downloadService.refreshPolicy(cellularOnly: cellularOnly)
         }
