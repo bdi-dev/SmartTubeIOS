@@ -51,7 +51,7 @@ test-unit:
 test-unit-filter name:
     cd {{package}} && swift test --filter {{name}} 2>&1 | tail -40
 
-# `swift test` does not build on macOS (known break, AGENTS.md Gotchas); this xcodebuild run over the package is the working equivalent.
+# Runs the package tests on the iOS simulator (the shipping slice); `swift test` now builds on macOS but host runs are not what ships.
 # serial: view-model suites starve each other when run in parallel
 test-unit-sim:
     cd {{package}} && xcodebuild test -scheme SmartTubeIOS-Package -destination "platform=iOS Simulator,name={{sim}}" CODE_SIGNING_ALLOWED=NO -parallel-testing-enabled NO 2>&1 | grep -E "error:|✘|TEST (SUCCEEDED|FAILED)|Test run with" | tail -40
@@ -73,7 +73,7 @@ test-ui:
 test-ui-one id:
     xcodebuild test -workspace {{workspace}} -scheme SmartTube -destination "platform=iOS Simulator,name={{sim}}" -derivedDataPath {{derived}} -only-testing:{{id}} 2>&1 | grep -E "Test Case|TEST SUCCEEDED|TEST FAILED|error:" | tail -20
 
-# test-unit (swift test) does not build on native macOS, so CI runs the package tests on the simulator.
+# CI runs the package tests on the simulator (the iOS slice that ships), not on the macOS host.
 ci: secrets-check doc-links format-check lint test-unit-sim
     @echo "CI gate passed"
 
