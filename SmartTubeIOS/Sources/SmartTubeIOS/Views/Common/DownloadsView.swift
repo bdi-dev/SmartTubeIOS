@@ -15,6 +15,7 @@ struct DownloadsView: View {
     #if os(iOS)
     @Environment(PlayerRouter.self) private var playerRouter
     @Environment(VideoDownloadService.self) private var downloadService
+    @State private var nasLibrary: NASLibraryViewModel?
     #else
     @State private var selectedVideo: Video?
     #endif
@@ -60,7 +61,7 @@ struct DownloadsView: View {
 
             downloadToggles
 
-            if downloadStore.entries.isEmpty {
+            if downloadStore.entries.isEmpty && !(nasLibrary?.isVisible ?? false) {
                 emptyState
             } else {
                 List {
@@ -99,9 +100,19 @@ struct DownloadsView: View {
                             deleteConfirmationVideoId = sorted[idx].videoId
                         }
                     }
+                    if let nas = nasLibrary, nas.isVisible {
+                        nasSection(nas)
+                    }
                 }
                 .listStyle(.plain)
+                .refreshable { await nasLibrary?.refresh() }
             }
+        }
+        .task {
+            if nasLibrary == nil {
+                nasLibrary = Self.makeNASLibrary(store: downloadStore)
+            }
+            await nasLibrary?.appear()
         }
         .alert(
             "Delete Download",
@@ -122,6 +133,60 @@ struct DownloadsView: View {
             }
         } message: {
             Text("This video will be removed from your device. You can re-download it from the player.")
+        }
+    }
+
+    /// The server is consulted only when a URL and token are set; otherwise the section stays hidden.
+    private static func makeNASLibrary(store: DownloadStore) -> NASLibraryViewModel {
+        let cfg = YtDlpServerConfig.current()
+        var client: (any YtDlpServerClient)?
+        if cfg.isConfigured, let baseURL = cfg.baseURL, let token = cfg.token {
+            client = URLSessionYtDlpServerClient(baseURL: baseURL, token: token)
+        }
+        return NASLibraryViewModel(client: client, store: store)
+    }
+
+    /// "Available on NAS": the server's copies this device does not hold. Tap downloads to the
+    /// device; leading swipe deletes the NAS copy; trailing swipe keeps or unkeeps it.
+    @ViewBuilder
+    private func nasSection(_ nas: NASLibraryViewModel) -> some View {
+        Section {
+            ForEach(nas.available) { item in
+                NASLibraryRow(item: item)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        downloadService.enqueue(video: Video(libraryItem: item), forceServer: true)
+                    }
+                    .swipeActions(edge: .leading) {
+                        Button(role: .destructive) {
+                            Task { await nas.deleteFromNAS(videoId: item.videoId) }
+                        } label: {
+                            Label("Delete from NAS", systemImage: AppSymbol.trash)
+                        }
+                        .accessibilityIdentifier(AccessibilityID.Downloads.nasDelete(item.videoId))
+                    }
+                    .swipeActions(edge: .trailing) {
+                        Button {
+                            Task { await nas.setKeep(videoId: item.videoId, keep: !item.keep) }
+                        } label: {
+                            Label(
+                                item.keep ? "Unkeep" : "Keep",
+                                systemImage: item.keep ? AppSymbol.pinSlash : AppSymbol.pin)
+                        }
+                        .accessibilityIdentifier(AccessibilityID.Downloads.nasKeep(item.videoId))
+                    }
+                    .task(id: item.videoId) { await nas.loadMoreIfNeeded(after: item.videoId) }
+                    .accessibilityIdentifier(AccessibilityID.Downloads.nasRow(item.videoId))
+            }
+            if let message = nas.message {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .accessibilityIdentifier(AccessibilityID.Downloads.nasMessage)
+            }
+        } header: {
+            Text("Available on NAS")
+                .accessibilityIdentifier(AccessibilityID.Downloads.nasSection)
         }
     }
 
@@ -328,3 +393,56 @@ private struct DownloadedVideoRow: View {
         .padding(.vertical, 4)
     }
 }
+
+// MARK: - NASLibraryRow
+
+#if os(iOS)
+/// One "Available on NAS" row: thumbnail, title, channel, duration, size, and a pin when kept.
+private struct NASLibraryRow: View {
+    let item: YtDlpLibraryItem
+
+    var body: some View {
+        HStack(spacing: 12) {
+            AsyncImage(url: item.thumbnailURL.flatMap(URL.init(string:))) { phase in
+                switch phase {
+                case .success(let image):
+                    image.resizable().scaledToFill()
+                default:
+                    Rectangle().foregroundStyle(.secondary.opacity(0.3))
+                }
+            }
+            .frame(width: 100, height: 56)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(item.title)
+                    .font(.subheadline)
+                    .lineLimit(2)
+                Text(item.channelTitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    if let duration = item.duration, duration > 0 {
+                        Text(formatDuration(duration))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    if let size = item.fileSize {
+                        Text(formatByteCount(size))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    if item.keep {
+                        Image(systemName: AppSymbol.pin)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .accessibilityLabel("Kept on NAS")
+                    }
+                }
+            }
+            Spacer()
+        }
+        .padding(.vertical, 4)
+    }
+}
+#endif

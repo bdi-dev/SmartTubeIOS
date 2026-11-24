@@ -17,6 +17,12 @@ enum AccessibilityID {
         static func percent(_ videoId: String) -> String { "downloads.percent.\(videoId)" }
         static func retry(_ videoId: String) -> String { "downloads.retry.\(videoId)" }
         static func audioBadge(_ videoId: String) -> String { "downloads.audioBadge.\(videoId)" }
+
+        static let nasSection = "downloads.nas.section"
+        static let nasMessage = "downloads.nas.message"
+        static func nasRow(_ videoId: String) -> String { "downloads.nas.row.\(videoId)" }
+        static func nasKeep(_ videoId: String) -> String { "downloads.nas.keep.\(videoId)" }
+        static func nasDelete(_ videoId: String) -> String { "downloads.nas.delete.\(videoId)" }
     }
 
     enum Settings {

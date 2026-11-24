@@ -35,7 +35,8 @@ public struct YtDlpHealth: Decodable, Sendable, Equatable {
 }
 
 /// One finished download on the server, as listed by `GET /v1/library`.
-public struct YtDlpLibraryItem: Decodable, Sendable, Equatable {
+public struct YtDlpLibraryItem: Decodable, Sendable, Equatable, Identifiable {
+    public var id: String { videoId }
     public let videoId: String
     public let title: String
     public let channelTitle: String
