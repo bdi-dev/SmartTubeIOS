@@ -41,7 +41,8 @@ public struct YtDlpLibraryItem: Decodable, Sendable, Equatable {
     public let channelTitle: String
     public let duration: Double?
     public let thumbnailURL: String?
-    public let keep: Bool
+    /// Changed in place when the user keeps or unkeeps the NAS copy.
+    public var keep: Bool
     public let downloadedAt: Date
     public let fileSize: Int64?
 
