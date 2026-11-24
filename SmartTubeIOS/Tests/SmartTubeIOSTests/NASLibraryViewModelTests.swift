@@ -271,3 +271,62 @@ struct NASLibraryViewModelActionTests {
         #expect(vm.message == "Still downloading on the NAS")
     }
 }
+
+@MainActor
+@Suite("NASLibraryViewModel offline and refresh")
+struct NASLibraryViewModelRefreshTests {
+    @Test("a server that is unreachable before any load keeps the section hidden")
+    func unreachableBeforeLoadStaysHidden() async {
+        let client = NASFakeClient(pages: [YtDlpLibraryPage(items: [item("p0")], nextCursor: nil)])
+        client.libraryFailure = YtDlpServerError(message: "offline", status: nil)
+        let vm = NASLibraryViewModel(client: client, store: makeStore())
+
+        await vm.appear()
+
+        #expect(vm.gate == .hidden)
+        #expect(vm.items.isEmpty)
+    }
+
+    @Test("refresh reloads page 1 and replaces the rows")
+    func refreshReloadsFirstPage() async {
+        let client = NASFakeClient(pages: [YtDlpLibraryPage(items: items("p", 20), nextCursor: "c1")])
+        let vm = NASLibraryViewModel(client: client, store: makeStore())
+        await vm.appear()
+
+        client.pages = [YtDlpLibraryPage(items: [item("q0")], nextCursor: nil)]
+        await vm.refresh()
+
+        #expect(client.cursors == [nil, nil])
+        #expect(vm.items.map(\.videoId) == ["q0"])
+        #expect(vm.nextCursor == nil)
+    }
+
+    @Test("a failed refresh after a load keeps the rows and sets the message")
+    func failedRefreshKeepsRows() async {
+        let client = NASFakeClient(pages: [YtDlpLibraryPage(items: items("p", 3), nextCursor: nil)])
+        let vm = NASLibraryViewModel(client: client, store: makeStore())
+        await vm.appear()
+
+        client.libraryFailure = YtDlpServerError(message: "offline", status: nil)
+        await vm.refresh()
+
+        #expect(vm.items.count == 3)
+        #expect(vm.message == "NAS unreachable")
+        #expect(vm.gate == .visible)
+    }
+
+    @Test("refresh checks the gate again when the section was hidden")
+    func refreshRechecksHiddenGate() async {
+        let client = NASFakeClient(pages: [YtDlpLibraryPage(items: [item("p0")], nextCursor: nil)])
+        client.healthResult = .failure(YtDlpServerError(message: "offline", status: nil))
+        let vm = NASLibraryViewModel(client: client, store: makeStore())
+        await vm.appear()
+        #expect(vm.gate == .hidden)
+
+        client.healthResult = .success(YtDlpHealth(ok: true, ytdlpVersion: "x", apiVersion: 2))
+        await vm.refresh()
+
+        #expect(vm.gate == .visible)
+        #expect(vm.items.map(\.videoId) == ["p0"])
+    }
+}
