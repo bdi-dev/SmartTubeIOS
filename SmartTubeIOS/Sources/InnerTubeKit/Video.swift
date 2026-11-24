@@ -203,9 +203,41 @@ public extension Video {
         URL(string: "https://i.ytimg.com/vi/\(id)/maxresdefault.jpg")
     }
 
+    /// 1280×720 (16:9); only exists when the video was uploaded in HD (404 otherwise).
+    var hq720ThumbnailURL: URL? {
+        URL(string: "https://i.ytimg.com/vi/\(id)/hq720.jpg")
+    }
+
     /// Fallbacks after `maxResThumbnailURL`: hq720 (1280×720, 16:9) → standard chain.
     var highResThumbnailFallbackURLs: [URL] {
-        [URL(string: "https://i.ytimg.com/vi/\(id)/hq720.jpg")].compactMap { $0 } + thumbnailFallbackURLs
+        [hq720ThumbnailURL].compactMap { $0 } + thumbnailFallbackURLs
+    }
+
+    /// Native pixel widths of the static 16:9 CDN rungs. One definition each; the
+    /// rung-selection rule in `thumbnailChain(requiredPixelWidth:)` is built on them.
+    static let mqPixelWidth: CGFloat = 320
+    static let hqPixelWidth: CGFloat = 480
+    static let sdPixelWidth: CGFloat = 640
+    static let hq720PixelWidth: CGFloat = 1280
+
+    /// Static CDN chain for a thumbnail that must cover `requiredPixelWidth` device pixels
+    /// (card width in points × display scale). It starts at the smallest rung that covers
+    /// that width (hq720 when none does) and steps down through sddefault, hqdefault and
+    /// mqdefault, so the sharpest affordable rung is requested first and smaller rungs are
+    /// the failure fallbacks.
+    func thumbnailChain(requiredPixelWidth: CGFloat) -> [URL] {
+        let candidates: [(pixelWidth: CGFloat, url: URL?)] = [
+            (Video.mqPixelWidth, mqThumbnailURL),
+            (Video.hqPixelWidth, highQualityThumbnailURL),
+            (Video.sdPixelWidth, sdThumbnailURL),
+            (Video.hq720PixelWidth, hq720ThumbnailURL),
+        ]
+        let rungs: [(pixelWidth: CGFloat, url: URL)] = candidates.compactMap { rung in
+            rung.url.map { (pixelWidth: rung.pixelWidth, url: $0) }
+        }
+        guard let startIndex = rungs.firstIndex(where: { $0.pixelWidth >= requiredPixelWidth }) ?? rungs.indices.last
+        else { return [] }
+        return rungs[...startIndex].reversed().map(\.url)
     }
 
     /// Portrait (9:16) thumbnail used for Shorts cards.

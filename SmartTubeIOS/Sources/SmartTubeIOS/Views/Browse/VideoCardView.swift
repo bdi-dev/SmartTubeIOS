@@ -47,6 +47,9 @@ public struct VideoCardView: View {
     @State private var playlistPickerMode: PlaylistPickerSheet.Mode?
     /// Index into `video.thumbnailFallbackURLs`. -1 = use primary `thumbnailURL`.
     @State private var thumbnailFallbackIndex: Int = -1
+    @Environment(\.displayScale) private var displayScale
+    /// Width of the compact (list) layout's thumbnail, in points.
+    private static let compactThumbnailWidth: CGFloat = 120
     #if os(tvOS)
     @FocusState private var isFocused: Bool
     #endif
@@ -437,7 +440,13 @@ public struct VideoCardView: View {
         VStack(alignment: .leading, spacing: 6) {
             Color.clear
                 .aspectRatio(16 / 9, contentMode: .fit)
-                .overlay(thumbnailView.clipped())
+                .overlay(
+                    GeometryReader { geo in
+                        thumbnailView(requiredPixelWidth: geo.size.width * displayScale)
+                            .frame(width: geo.size.width, height: geo.size.height)
+                            .clipped()
+                    }
+                )
                 .overlay(alignment: .bottom) {
                     if let progress = effectiveProgress, progress > 0 {
                         watchProgressBar(progress)
@@ -502,8 +511,8 @@ public struct VideoCardView: View {
 
     private var compactLayout: some View {
         HStack(alignment: .top, spacing: 10) {
-            thumbnailView
-                .frame(width: 120, height: 68)
+            thumbnailView(requiredPixelWidth: Self.compactThumbnailWidth * displayScale)
+                .frame(width: Self.compactThumbnailWidth, height: 68)
                 .overlay(alignment: .bottom) {
                     if let progress = effectiveProgress, progress > 0 {
                         watchProgressBar(progress)
@@ -570,28 +579,39 @@ public struct VideoCardView: View {
         return video.title
     }
 
+    /// `requiredPixelWidth` is the card's width in device pixels (points × display scale).
     @ViewBuilder
-    private var thumbnailView: some View {
+    private func thumbnailView(requiredPixelWidth: CGFloat) -> some View {
         if video.thumbnailURL == nil, video.id == "WL" || video.id == "LL" {
             systemPlaylistThumbnail
         } else {
             // Walk a fallback chain on each successive failure:
-            //   -1 → deArrowThumbnailURL (community thumbnail), else maxresdefault.jpg when
-            //        High Resolution is on, else thumbnailURL (API-provided)
-            //    (High Resolution only: hq720.jpg, then the standard chain below)
-            //    0 → sddefault.jpg  (640×480, available for most videos)
-            //    1 → hqdefault.jpg  (480×360, always available)
-            //    2 → mqdefault.jpg  (320×180, always available — last resort)
+            //   -1 → deArrowThumbnailURL (community thumbnail), else the primary below
+            //   0.. → the fallbacks, in order
+            // Primary (-1), by mode:
+            //   High Resolution on → maxresdefault.jpg; fallbacks hq720.jpg, then the standard chain
+            //   Cards wider than hqdefault (480px), e.g. iPad grids → thumbnailChain: the smallest
+            //        rung covering the card (hq720 → sddefault → hqdefault → mqdefault)
+            //   otherwise → thumbnailURL (API-provided; too small for large cards)
+            //   Standard fallbacks: sddefault.jpg (640×480), hqdefault.jpg (480×360),
+            //        mqdefault.jpg (320×180, always available — last resort)
             // High-res URLs are built from `/vi/<id>/`, so they only make sense for real
             // videos: playlist placeholder cards (Playlists section: id == playlistId) would
             // walk the whole chain against a playlist ID and end on a grey placeholder, and
             // Shorts would swap their portrait thumbnail for a landscape one.
             let highRes =
                 store.settings.highResThumbnails && video.playlistId != video.id && !video.isShort
-            let fallbacks = highRes ? video.highResThumbnailFallbackURLs : video.thumbnailFallbackURLs
+            let largeCardRung = !highRes && !video.isShort && requiredPixelWidth > Video.hqPixelWidth
+            let chain = largeCardRung ? video.thumbnailChain(requiredPixelWidth: requiredPixelWidth) : []
+            let fallbacks =
+                highRes
+                ? video.highResThumbnailFallbackURLs
+                : (largeCardRung ? Array(chain.dropFirst()) : video.thumbnailFallbackURLs)
+            let primaryURL: URL? =
+                highRes ? video.maxResThumbnailURL : (largeCardRung ? chain.first : video.thumbnailURL)
             let url: URL? =
                 thumbnailFallbackIndex < 0
-                ? (deArrowThumbnailURL ?? (highRes ? video.maxResThumbnailURL : video.thumbnailURL) ?? fallbacks.first)
+                ? (deArrowThumbnailURL ?? primaryURL ?? fallbacks.first)
                 : (thumbnailFallbackIndex < fallbacks.count ? fallbacks[thumbnailFallbackIndex] : nil)
             AsyncImage(url: url) { phase in
                 switch phase {
