@@ -28,7 +28,7 @@ private func makeVideo(id: String) -> Video {
 
 // MARK: - Tests
 
-@Suite("PlaylistViewModel QueuedPlaylistLoader seam")
+@Suite("PlaylistViewModel QueuedPlaylistLoader seam", .serialized)
 @MainActor
 struct PlaylistViewModelQueueLoaderTests {
 

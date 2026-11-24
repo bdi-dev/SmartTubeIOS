@@ -17,7 +17,7 @@ import Testing
 // suggestions navigation to the already-tested playNext() — these tests only
 // need to verify handlePlaybackEnd()'s own gating decision.
 
-@Suite("TOS playback end — autoplay/queue gating (#109)")
+@Suite("TOS playback end — autoplay/queue gating (#109)", .serialized)
 @MainActor
 struct TOSPlaybackEndAutoplayTests {
 

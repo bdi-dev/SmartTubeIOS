@@ -46,7 +46,7 @@ private func postHideChannelAndWait(id: String) async {
 
 // MARK: - SearchViewModel
 
-@Suite("SearchViewModel feed hide notifications")
+@Suite("SearchViewModel feed hide notifications", .serialized)
 @MainActor
 struct SearchViewModelFeedHideTests {
 
@@ -126,7 +126,7 @@ struct SearchViewModelFeedHideTests {
 
 // MARK: - ChannelViewModel
 
-@Suite("ChannelViewModel feed hide notifications")
+@Suite("ChannelViewModel feed hide notifications", .serialized)
 @MainActor
 struct ChannelViewModelFeedHideTests {
 
@@ -184,7 +184,7 @@ private struct EmptyQueueLoader: QueuedPlaylistLoader {
     func loadQueuedVideos(for playlistId: String) async -> [Video]? { nil }
 }
 
-@Suite("PlaylistViewModel feed hide notifications")
+@Suite("PlaylistViewModel feed hide notifications", .serialized)
 @MainActor
 struct PlaylistViewModelFeedHideTests {
 
