@@ -73,7 +73,8 @@ test-ui:
 test-ui-one id:
     xcodebuild test -workspace {{workspace}} -scheme SmartTube -destination "platform=iOS Simulator,name={{sim}}" -derivedDataPath {{derived}} -only-testing:{{id}} 2>&1 | grep -E "Test Case|TEST SUCCEEDED|TEST FAILED|error:" | tail -20
 
-ci: secrets-check doc-links format-check lint test-unit
+# test-unit (swift test) does not build on native macOS, so CI runs the package tests on the simulator.
+ci: secrets-check doc-links format-check lint test-unit-sim
     @echo "CI gate passed"
 
 # regenerate the Unreleased section of CHANGELOG.md from Conventional Commits since the last tag
