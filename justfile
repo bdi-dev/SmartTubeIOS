@@ -52,8 +52,9 @@ test-unit-filter name:
     cd {{package}} && swift test --filter {{name}} 2>&1 | tail -40
 
 # `swift test` does not build on macOS (known break, AGENTS.md Gotchas); this xcodebuild run over the package is the working equivalent.
+# serial: view-model suites starve each other when run in parallel
 test-unit-sim:
-    cd {{package}} && xcodebuild test -scheme SmartTubeIOS-Package -destination "platform=iOS Simulator,name={{sim}}" CODE_SIGNING_ALLOWED=NO 2>&1 | grep -E "error:|✘|TEST (SUCCEEDED|FAILED)|Test run with" | tail -40
+    cd {{package}} && xcodebuild test -scheme SmartTubeIOS-Package -destination "platform=iOS Simulator,name={{sim}}" CODE_SIGNING_ALLOWED=NO -parallel-testing-enabled NO 2>&1 | grep -E "error:|✘|TEST (SUCCEEDED|FAILED)|Test run with" | tail -40
 
 # temporary until WS3-T3.4 adds the Smoke/Live test plans
 test-ui-legacy:
