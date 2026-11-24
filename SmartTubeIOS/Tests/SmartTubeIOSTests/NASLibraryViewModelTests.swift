@@ -203,3 +203,71 @@ struct NASLibraryViewModelPagingTests {
         #expect(vm.message == "NAS unreachable")
     }
 }
+
+@MainActor
+@Suite("NASLibraryViewModel actions")
+struct NASLibraryViewModelActionTests {
+    @Test("keep toggles the row once the server confirms")
+    func keepToggles() async {
+        let client = NASFakeClient(pages: [YtDlpLibraryPage(items: [item("p0")], nextCursor: nil)])
+        let vm = NASLibraryViewModel(client: client, store: makeStore())
+        await vm.appear()
+
+        await vm.setKeep(videoId: "p0", keep: true)
+
+        #expect(client.keepCalls.map(\.keep) == [true])
+        #expect(vm.items.first?.keep == true)
+        #expect(vm.message == nil)
+    }
+
+    @Test("a failed keep leaves the row as it was and sets a message")
+    func keepRollsBackOnFailure() async {
+        let client = NASFakeClient(pages: [YtDlpLibraryPage(items: [item("p0")], nextCursor: nil)])
+        let vm = NASLibraryViewModel(client: client, store: makeStore())
+        await vm.appear()
+
+        client.setKeepFailure = YtDlpServerError(message: "The yt-dlp server returned HTTP 500", status: 500)
+        await vm.setKeep(videoId: "p0", keep: true)
+
+        #expect(vm.items.first?.keep == false)
+        #expect(vm.message == "The yt-dlp server returned HTTP 500")
+    }
+
+    @Test("delete removes the row once the server confirms")
+    func deleteRemovesRow() async {
+        let client = NASFakeClient(pages: [YtDlpLibraryPage(items: [item("p0"), item("p1")], nextCursor: nil)])
+        let vm = NASLibraryViewModel(client: client, store: makeStore())
+        await vm.appear()
+
+        await vm.deleteFromNAS(videoId: "p0")
+
+        #expect(client.deletedIds == ["p0"])
+        #expect(vm.items.map(\.videoId) == ["p1"])
+    }
+
+    @Test("a delete that fails keeps the row and sets a message")
+    func deleteFailureKeepsRow() async {
+        let client = NASFakeClient(pages: [YtDlpLibraryPage(items: [item("p0")], nextCursor: nil)])
+        let vm = NASLibraryViewModel(client: client, store: makeStore())
+        await vm.appear()
+
+        client.deleteFailure = YtDlpServerError(message: "offline", status: nil)
+        await vm.deleteFromNAS(videoId: "p0")
+
+        #expect(vm.items.map(\.videoId) == ["p0"])
+        #expect(vm.message == "NAS unreachable")
+    }
+
+    @Test("a 409 on delete keeps the row and says the server is still downloading")
+    func deleteWhileRunningKeepsRow() async {
+        let client = NASFakeClient(pages: [YtDlpLibraryPage(items: [item("p0")], nextCursor: nil)])
+        let vm = NASLibraryViewModel(client: client, store: makeStore())
+        await vm.appear()
+
+        client.deleteFailure = YtDlpServerError(message: "conflict", status: 409)
+        await vm.deleteFromNAS(videoId: "p0")
+
+        #expect(vm.items.map(\.videoId) == ["p0"])
+        #expect(vm.message == "Still downloading on the NAS")
+    }
+}
