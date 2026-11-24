@@ -191,7 +191,9 @@ final class TVSidebarSettingsUITests: XCTestCase {
         XCTAssertTrue(moveFocus(to: sidebarSettings, direction: .down), "could not focus sidebar Settings")
         remote.press(.select)
 
-        let visibleSectionsLink = app.descendants(matching: .any).matching(NSPredicate(format: "label == 'Visible Sections'")).firstMatch
+        let visibleSectionsLink = app.descendants(matching: .any).matching(
+            NSPredicate(format: "label == 'Visible Sections'")
+        ).firstMatch
         XCTAssertTrue(visibleSectionsLink.waitForExistence(timeout: 12), "Settings did not render its rows")
         attach("1-settings-root")
 
@@ -201,7 +203,9 @@ final class TVSidebarSettingsUITests: XCTestCase {
             remote.press(.right)
             RunLoop.current.run(until: Date().addingTimeInterval(0.4))
         }
-        XCTAssertTrue(moveFocus(to: visibleSectionsLink, direction: .down, maxPresses: 40), "could not focus Visible Sections link")
+        XCTAssertTrue(
+            moveFocus(to: visibleSectionsLink, direction: .down, maxPresses: 40),
+            "could not focus Visible Sections link")
         remote.press(.select)
         RunLoop.current.run(until: Date().addingTimeInterval(2))
         attach("2-after-push-visible-sections")
@@ -239,7 +243,11 @@ final class TVSidebarSettingsUITests: XCTestCase {
         RunLoop.current.run(until: Date().addingTimeInterval(0.8))
         let focusedAfter = rows.allElementsBoundByIndex.first { $0.hasFocus }?.identifier
         XCTAssertNotNil(focusedAfter, "sidebar lost focus on Down")
-        if focusedBefore == "tv.sidebar.account" { _ = focusedAfter } else { XCTAssertNotEqual(focusedBefore, focusedAfter, "sidebar did not respond to Down") }
+        if focusedBefore == "tv.sidebar.account" {
+            _ = focusedAfter
+        } else {
+            XCTAssertNotEqual(focusedBefore, focusedAfter, "sidebar did not respond to Down")
+        }
         attach("4-sidebar-after-pop")
     }
 
@@ -252,7 +260,8 @@ final class TVSidebarSettingsUITests: XCTestCase {
         XCTAssertTrue(moveFocus(to: sidebarSettings, direction: .down), "could not focus sidebar Settings")
         remote.press(.select)
 
-        let row = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH 'Playback Speed'")).firstMatch
+        let row = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH 'Playback Speed'"))
+            .firstMatch
         let rowAppeared = row.waitForExistence(timeout: 12)
         if !rowAppeared { print("ROW_MISSING_HIERARCHY_BEGIN\n\(app.debugDescription)\nROW_MISSING_HIERARCHY_END") }
         XCTAssertTrue(rowAppeared, "Settings did not render Playback Speed row")
@@ -280,7 +289,8 @@ final class TVSidebarSettingsUITests: XCTestCase {
         let fast = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", target)).firstMatch
         XCTAssertTrue(fast.waitForExistence(timeout: 5), "picker options did not render (blank page)")
         XCTAssertTrue(
-            moveFocus(to: fast, direction: .down, maxPresses: 20) || moveFocus(to: fast, direction: .up, maxPresses: 20),
+            moveFocus(to: fast, direction: .down, maxPresses: 20)
+                || moveFocus(to: fast, direction: .up, maxPresses: 20),
             "could not focus \(target) option"
         )
         remote.press(.select)
@@ -288,7 +298,9 @@ final class TVSidebarSettingsUITests: XCTestCase {
         if !row.waitForExistence(timeout: 2) || row.label == before { remote.press(.menu) }
         RunLoop.current.run(until: Date().addingTimeInterval(1))
         attach("after-select")
-        let rowAfter = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH 'Playback Speed'")).firstMatch
+        let rowAfter = app.descendants(matching: .any).matching(
+            NSPredicate(format: "label BEGINSWITH 'Playback Speed'")
+        ).firstMatch
         XCTAssertTrue(rowAfter.waitForExistence(timeout: 5), "did not return to Settings root")
         XCTAssertNotEqual(rowAfter.label, before, "row value did not change after selecting an option")
         XCTAssertTrue(rowAfter.label.contains(target), "row should show \(target), got \(rowAfter.label)")
@@ -297,7 +309,8 @@ final class TVSidebarSettingsUITests: XCTestCase {
     // MARK: Return-to-selected-row focus
 
     private var sidebarRows: XCUIElementQuery {
-        app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'tv.sidebar.' AND identifier != 'tv.sidebar'"))
+        app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH 'tv.sidebar.' AND identifier != 'tv.sidebar'"))
     }
 
     private func focusedSidebarRowID() -> String? {
@@ -310,7 +323,8 @@ final class TVSidebarSettingsUITests: XCTestCase {
         XCTAssertTrue(item.waitForExistence(timeout: 20), "sidebar row \(name) missing")
         if focusedSidebarRowID() == nil { remote.press(.left) }
         XCTAssertTrue(
-            moveFocus(to: item, direction: .down, maxPresses: 12) || moveFocus(to: item, direction: .up, maxPresses: 12),
+            moveFocus(to: item, direction: .down, maxPresses: 12)
+                || moveFocus(to: item, direction: .up, maxPresses: 12),
             "could not focus sidebar row \(name)"
         )
         remote.press(.select)
@@ -332,13 +346,23 @@ final class TVSidebarSettingsUITests: XCTestCase {
         let focused = focusedSidebarRowID()
         print("RETURN_FOCUS section=\(name) via=\(label) focused=\(focused ?? "nil")")
         attach("return-\(name)-\(label)")
-        XCTAssertEqual(focused, "tv.sidebar.\(name)", "\(label) from \(name) content must focus the selected row, got \(focused ?? "none")")
+        XCTAssertEqual(
+            focused, "tv.sidebar.\(name)",
+            "\(label) from \(name) content must focus the selected row, got \(focused ?? "none")")
     }
 
-    func testLeftReturnsToSelectedRow_settings() throws { assertReturnsToSelectedRow("settings", using: .left, label: "left") }
-    func testBackReturnsToSelectedRow_settings() throws { assertReturnsToSelectedRow("settings", using: .menu, label: "back") }
-    func testLeftReturnsToSelectedRow_search() throws { assertReturnsToSelectedRow("search", using: .left, label: "left") }
-    func testBackReturnsToSelectedRow_search() throws { assertReturnsToSelectedRow("search", using: .menu, label: "back") }
+    func testLeftReturnsToSelectedRow_settings() throws {
+        assertReturnsToSelectedRow("settings", using: .left, label: "left")
+    }
+    func testBackReturnsToSelectedRow_settings() throws {
+        assertReturnsToSelectedRow("settings", using: .menu, label: "back")
+    }
+    func testLeftReturnsToSelectedRow_search() throws {
+        assertReturnsToSelectedRow("search", using: .left, label: "left")
+    }
+    func testBackReturnsToSelectedRow_search() throws {
+        assertReturnsToSelectedRow("search", using: .menu, label: "back")
+    }
     func testLeftReturnsToSelectedRow_home() throws { assertReturnsToSelectedRow("home", using: .left, label: "left") }
     func testBackReturnsToSelectedRow_home() throws { assertReturnsToSelectedRow("home", using: .menu, label: "back") }
 
@@ -366,7 +390,9 @@ final class TVSidebarSettingsUITests: XCTestCase {
         for name in ["home", "subscriptions", "playlists", "settings", "search"] {
             let item = element("tv.sidebar.\(name)")
             remote.press(.left)
-            _ = moveFocus(to: item, direction: .down, maxPresses: 12) || moveFocus(to: item, direction: .up, maxPresses: 12)
+            _ =
+                moveFocus(to: item, direction: .down, maxPresses: 12)
+                || moveFocus(to: item, direction: .up, maxPresses: 12)
             remote.press(.select)
             RunLoop.current.run(until: Date().addingTimeInterval(6))
             attach("\(name)-expanded")
@@ -392,7 +418,9 @@ final class TVSidebarSettingsUITests: XCTestCase {
         remote.press(.menu)
         RunLoop.current.run(until: Date().addingTimeInterval(2))
         attach("player-deeplink-after-back")
-        XCTAssertTrue(element("tv.sidebar.search").waitForExistence(timeout: 10), "sidebar should return after leaving the player")
+        XCTAssertTrue(
+            element("tv.sidebar.search").waitForExistence(timeout: 10), "sidebar should return after leaving the player"
+        )
     }
 
     /// A video opened from Search (pushed player) is full screen without the sidebar; Back pops.
@@ -471,13 +499,15 @@ final class TVChannelPageUITests: XCTestCase {
         for (a, b) in zip(sorted, sorted.dropFirst()) where abs(a.minY - b.minY) < 20 {
             XCTAssertGreaterThanOrEqual(b.minX - a.maxX, 39, "cards in a row are closer than 40 pt: \(a) \(b)")
         }
-        let sidebar = app.descendants(matching: .any).matching(NSPredicate(format: "identifier == 'tv.sidebar'")).firstMatch
+        let sidebar = app.descendants(matching: .any).matching(NSPredicate(format: "identifier == 'tv.sidebar'"))
+            .firstMatch
         if sidebar.exists, let leftmost = sorted.map(\.minX).min() {
             XCTAssertGreaterThanOrEqual(leftmost - sidebar.frame.maxX, 40, "grid runs up to the sidebar rail")
         }
         // The navigation bar must not repeat the channel name.
-        XCTAssertFalse(app.navigationBars.firstMatch.exists && app.navigationBars.firstMatch.staticTexts.count > 0,
-                       "channel name must not be repeated in a navigation bar")
+        XCTAssertFalse(
+            app.navigationBars.firstMatch.exists && app.navigationBars.firstMatch.staticTexts.count > 0,
+            "channel name must not be repeated in a navigation bar")
     }
 
     func testShortsTabAndScrollingLoadsMore() throws {
@@ -486,16 +516,25 @@ final class TVChannelPageUITests: XCTestCase {
         XCTAssertTrue(firstCard.waitForExistence(timeout: 40), "channel video grid did not populate")
         let initialCount = videoCards().count
         // Scroll down through the grid; pagination must keep adding cards.
-        for _ in 0..<14 { remote.press(.down); RunLoop.current.run(until: Date().addingTimeInterval(0.4)) }
+        for _ in 0..<14 {
+            remote.press(.down)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.4))
+        }
         RunLoop.current.run(until: Date().addingTimeInterval(3))
         attach("channel-scrolled")
         print("CHANNEL_CARDS initial=\(initialCount) afterScroll=\(videoCards().count)")
         // Back to the top: Up past the grid lands on the header buttons; Down once reaches the tabs.
-        for _ in 0..<16 { remote.press(.up); RunLoop.current.run(until: Date().addingTimeInterval(0.3)) }
+        for _ in 0..<16 {
+            remote.press(.up)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        }
         let shorts = app.descendants(matching: .any).matching(NSPredicate(format: "label == 'Shorts'")).firstMatch
         XCTAssertTrue(shorts.waitForExistence(timeout: 10), "Shorts tab missing")
         remote.press(.down)
-        for _ in 0..<3 where !shorts.hasFocus { remote.press(.right); RunLoop.current.run(until: Date().addingTimeInterval(0.4)) }
+        for _ in 0..<3 where !shorts.hasFocus {
+            remote.press(.right)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.4))
+        }
         XCTAssertTrue(shorts.hasFocus, "could not focus the Shorts tab")
         remote.press(.select)
         RunLoop.current.run(until: Date().addingTimeInterval(3))
@@ -570,7 +609,9 @@ final class TVMPVTimelineFocusUITests: XCTestCase {
         let early = target.hasFocus
         pause(1.5)
         attach("roundtrip-\(name)")
-        print("TIMELINE_FOCUS via=\(name) early=\(early) settled=\(target.hasFocus) forward=\(button("seekForwardButton").hasFocus) play=\(button("playPauseButton").hasFocus)")
+        print(
+            "TIMELINE_FOCUS via=\(name) early=\(early) settled=\(target.hasFocus) forward=\(button("seekForwardButton").hasFocus) play=\(button("playPauseButton").hasFocus)"
+        )
         XCTAssertTrue(target.hasFocus, "Down from the timeline must return to \(name)")
         XCTAssertFalse(scrubber.hasFocus)
     }
@@ -582,7 +623,8 @@ final class TVMPVTimelineFocusUITests: XCTestCase {
     /// Frames of everything currently focused. A menu button reports focus on an unnamed
     /// wrapper, so it is matched to the control by frame rather than by identifier.
     private func focusedFrames() -> [CGRect] {
-        app.descendants(matching: .any).matching(NSPredicate(format: "hasFocus == true")).allElementsBoundByIndex.map(\.frame)
+        app.descendants(matching: .any).matching(NSPredicate(format: "hasFocus == true")).allElementsBoundByIndex.map(
+            \.frame)
     }
 
     private func isFocused(_ el: XCUIElement) -> Bool {
@@ -607,7 +649,8 @@ final class TVMPVTimelineFocusUITests: XCTestCase {
         XCTAssertTrue(scrubber.hasFocus)
         remote.press(.down)
         pause(1.8)
-        XCTAssertTrue(isFocused(quality), "Down from the timeline must return to the quality menu, got \(focusedFrames())")
+        XCTAssertTrue(
+            isFocused(quality), "Down from the timeline must return to the quality menu, got \(focusedFrames())")
     }
 
     /// Menu labels such as "2160p" must stay on one line: no transport button may be taller
@@ -616,11 +659,15 @@ final class TVMPVTimelineFocusUITests: XCTestCase {
         let reference = button("playPauseButton").frame.height
         XCTAssertGreaterThan(reference, 0)
         attach("transport-row")
-        for name in ["seekBackButton", "seekForwardButton", "speedMenu", "qualityMenu", "captionsMenu", "audioMenu", "chaptersMenu", "commentsButton"] {
+        for name in [
+            "seekBackButton", "seekForwardButton", "speedMenu", "qualityMenu", "captionsMenu", "audioMenu",
+            "chaptersMenu", "commentsButton",
+        ] {
             let el = button(name)
             guard el.exists else { continue }
             print("TRANSPORT_HEIGHT \(name)=\(el.frame.height) play=\(reference) width=\(el.frame.width)")
-            XCTAssertLessThanOrEqual(el.frame.height, reference + 6, "\(name) is taller than the other transport buttons (label wrapped?)")
+            XCTAssertLessThanOrEqual(
+                el.frame.height, reference + 6, "\(name) is taller than the other transport buttons (label wrapped?)")
         }
     }
 
@@ -636,7 +683,8 @@ final class TVMPVTimelineFocusUITests: XCTestCase {
     }
 
     private var rowOrder: [XCUIElement] {
-        ["previousButton", "seekBackButton", "playPauseButton", "seekForwardButton", "nextButton"].map { button($0) }.filter(\.exists)
+        ["previousButton", "seekBackButton", "playPauseButton", "seekForwardButton", "nextButton"].map { button($0) }
+            .filter(\.exists)
     }
 
     /// Down from the timeline into `name`, then IMMEDIATELY (no sleep) one Left/Right press:
@@ -652,18 +700,28 @@ final class TVMPVTimelineFocusUITests: XCTestCase {
             XCTAssertTrue(scrubber.hasFocus, "iteration \(i): Up must focus the timeline")
             let order = rowOrder
             guard let idx = order.firstIndex(where: { $0.frame == target.frame }) else {
-                XCTFail("\(name) is not in the left cluster"); return
+                XCTFail("\(name) is not in the left cluster")
+                return
             }
             let expectedIdx = idx + (goRight ? 1 : -1)
-            guard order.indices.contains(expectedIdx) else { XCTFail("no neighbour"); return }
+            guard order.indices.contains(expectedIdx) else {
+                XCTFail("no neighbour")
+                return
+            }
             let expected = order[expectedIdx]
             remote.press(.down)
             remote.press(goRight ? .right : .left)
             pause(0.8)
             let ok = expected.hasFocus
             print("QUICK_PRESS from=\(name) right=\(goRight) iter=\(i) landed=\(ok)")
-            if !ok { attach("quick-\(name)-\(i)"); print("QUICK_FOCUS \(focusedFrames()) target=\(target.frame) expected=\(expected.frame)") }
-            XCTAssertTrue(ok, "iteration \(i): quick \(goRight ? "Right" : "Left") after Down into \(name) was swallowed or mis-targeted")
+            if !ok {
+                attach("quick-\(name)-\(i)")
+                print("QUICK_FOCUS \(focusedFrames()) target=\(target.frame) expected=\(expected.frame)")
+            }
+            XCTAssertTrue(
+                ok,
+                "iteration \(i): quick \(goRight ? "Right" : "Left") after Down into \(name) was swallowed or mis-targeted"
+            )
             XCTAssertFalse(scrubber.hasFocus)
         }
     }
@@ -777,7 +835,9 @@ final class TVMPVRelatedShelfUITests: XCTestCase {
         remote.press(.down)
         pause(1.5)
         attach("related-down-twice")
-        XCTAssertTrue(element("relatedShelf").waitForExistence(timeout: 3), "second Down from the transport row must open the shelf")
+        XCTAssertTrue(
+            element("relatedShelf").waitForExistence(timeout: 3),
+            "second Down from the transport row must open the shelf")
     }
 
     /// Opening the shelf from the seek-forward button and leaving it with Up must put focus

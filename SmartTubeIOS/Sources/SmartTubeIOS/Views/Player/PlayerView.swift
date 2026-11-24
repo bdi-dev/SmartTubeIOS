@@ -18,6 +18,8 @@ public struct PlayerView: View {
     public let video: Video
     #if os(iOS)
     @Environment(PlayerStateStore.self) var playerState
+    @Environment(PlayerRouter.self) var playerRouter
+    @Environment(\.innerTubeAPI) var innerTubeAPI
     var vm: PlaybackViewModel { playerState.vm }
     #else
     @State var vm: PlaybackViewModel
@@ -42,9 +44,8 @@ public struct PlayerView: View {
     @State var isTransitioning = false
     @State var channelDestination: ChannelDestination?
     #if !os(tvOS)
-    #if ENABLE_DOWNLOADS
-    @State var downloadService: VideoDownloadService
-    #endif
+    /// The app-wide service: there must be exactly one consumer of the background session's events.
+    @Environment(VideoDownloadService.self) var downloadService
     @State var downloadAlertItem: DownloadAlertItem?
     #endif
     #if os(iOS)
@@ -116,11 +117,6 @@ public struct PlayerView: View {
         self.video = video
         #if !os(iOS)
         _vm = State(initialValue: PlaybackViewModel(api: api))
-        #endif
-        #if !os(tvOS)
-        #if ENABLE_DOWNLOADS
-        _downloadService = State(initialValue: VideoDownloadService(api: api))
-        #endif
         #endif
     }
 

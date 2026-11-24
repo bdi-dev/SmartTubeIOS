@@ -97,3 +97,10 @@ Four entry adapters converge on one point:
 - Custom URL scheme
 
 All four set `browseViewModel.deepLinkedVideo`, which `AppEntry`/`BrowseView` observes to open the player. There is no router; navigation state (`selectedVideo`, `selectedPlaylist`, `channelDestination`, `showSignIn`) is re-declared per-view in 6-7 places (WS7-T7.x introduces `AppRouter`).
+
+## Downloads
+
+Personal-build offline library (ADR-0012). `VideoDownloadService` (SmartTubeIOS) queues downloads
+and delegates network work to a `DownloadFetching` seam; `DownloadStore` (SmartTubeIOSCore) owns
+the manifest, per-video status and the files in `Documents/SmartTubeDownloads`. `DownloadsView`
+lists them and plays completed files through the AVPlayer pipeline (`PlayerRouter.openLocal`).

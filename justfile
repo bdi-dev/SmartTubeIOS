@@ -32,6 +32,11 @@ secrets-check:
 doc-links:
     cd {{root}} && scripts/check-doc-links.sh
 
+# --- free Apple ID builds -----------------------------------------------------
+# Switch paid-only entitlements (iCloud sync) off/on in the working tree. docs/how-to/free-account-build.md
+free-account mode="status":
+    scripts/free-account.sh {{mode}}
+
 # --- build & test ------------------------------------------------------------
 build:
     xcodebuild build -workspace {{workspace}} -scheme SmartTube -destination "platform=iOS Simulator,name={{sim}}" -derivedDataPath {{derived}} CODE_SIGNING_ALLOWED=NO -quiet
@@ -45,6 +50,11 @@ test-unit:
 # filter: `just test-unit-filter HLSManifestParserTests`
 test-unit-filter name:
     cd {{package}} && swift test --filter {{name}} 2>&1 | tail -40
+
+# Runs the package tests on the iOS simulator (the shipping slice); `swift test` now builds on macOS but host runs are not what ships.
+# serial: view-model suites starve each other when run in parallel
+test-unit-sim:
+    cd {{package}} && xcodebuild test -scheme SmartTubeIOS-Package -destination "platform=iOS Simulator,name={{sim}}" CODE_SIGNING_ALLOWED=NO -parallel-testing-enabled NO 2>&1 | grep -E "error:|✘|TEST (SUCCEEDED|FAILED)|Test run with" | tail -40
 
 # temporary until WS3-T3.4 adds the Smoke/Live test plans
 test-ui-legacy:
@@ -63,7 +73,8 @@ test-ui:
 test-ui-one id:
     xcodebuild test -workspace {{workspace}} -scheme SmartTube -destination "platform=iOS Simulator,name={{sim}}" -derivedDataPath {{derived}} -only-testing:{{id}} 2>&1 | grep -E "Test Case|TEST SUCCEEDED|TEST FAILED|error:" | tail -20
 
-ci: secrets-check doc-links format-check lint test-unit
+# CI runs the package tests on the simulator (the iOS slice that ships), not on the macOS host.
+ci: secrets-check doc-links format-check lint test-unit-sim
     @echo "CI gate passed"
 
 # regenerate the Unreleased section of CHANGELOG.md from Conventional Commits since the last tag

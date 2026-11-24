@@ -12,17 +12,30 @@ Architecture map: docs/architecture.md · Glossary: CONTEXT.md · Decisions: doc
 - `just ci` — secrets check + format check + lint + unit tests. Run before every commit.
 - `just build` / `just build-tvos` — simulator builds, no signing needed.
 - `just test-unit` / `just test-unit-filter <Name>` — Swift Testing package tests (no simulator).
+- `just test-unit-sim` — the same package tests through `xcodebuild` on the simulator (the working command; see Gotchas).
 - `just test-smoke` — hermetic UI smoke plan. `just test-ui` — live UI plan (needs signed-in simulator; 3 workers max, see docs/how-to/run-tests.md).
 - `just format` — swift-format in place. `just lint` — SwiftLint against the committed baseline.
+
+## Lint and format on every code change
+Any change to a `.swift` file is checked before you commit and before you report it done. Run these on the files you touched:
+1. `just format`, or `xcrun swift-format format --in-place --configuration .swift-format <files>`.
+2. `xcrun swift-format lint --strict --configuration .swift-format <files>` — must print nothing.
+3. `swiftlint lint --quiet --config .swiftlint.yml <files> 2>&1 | grep -E "error:|warning:"` — count the violations before and after your change. A change must not add any.
+Then `just ci` before the commit. If `just` is not installed, run what its recipes run: `scripts/check-no-secrets.sh`, `scripts/check-doc-links.sh`, the format and lint commands above, and the unit tests (see Gotchas for the test command that works). Say in the commit body which checks ran.
+- Fix violations; do not add them to `.swiftlint.baseline`. Regenerating the baseline is a deliberate, separate change (`just lint-baseline`).
+- SwiftLint aborts unless `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` is set (when `xcode-select` points at the Command Line Tools), and it writes violations to stderr, so use `2>&1`. Install with `brew install swiftlint`.
+- Repo-wide `just format-check` and `just lint` currently fail on code that predates any given change. Judge your change by the files you touched; the cleanup plan is in `docs/superpowers/plans/`.
+- A Claude Code hook (`scripts/hooks/swift-post-edit.sh`, registered in `.claude/settings.json`) runs after every Edit/Write of a `.swift` file: it formats the file, then reports any SwiftLint or swift-format violation the edit added compared with the committed version (exit 2 sends the message back to the agent). It does not replace the checks above or `just ci`.
+- A subagent does not read this file unless told to. When you brief one to edit Swift, put these commands in its brief and ask for the before and after violation counts in its report.
 
 ## Rules that differ from defaults
 - Swift 6 strict concurrency everywhere. View models are `@MainActor @Observable`. No `ObservableObject`, `@Published`, Combine, `DispatchQueue`, completion handlers in new code.
 - `SmartTubeIOSCore` must stay Foundation-only (no SwiftUI/UIKit/AVFoundation/WebKit). Put platform code in `SmartTubeIOS`.
-- One definition per constant/identifier/threshold. Accessibility identifiers come from `AccessibilityID`; SF Symbols from `AppSymbol`; playback timeouts from `PlaybackTuning`.
+- One definition per constant/identifier/threshold. SF Symbols come from `AppSymbol` (`Views/ViewHelpers.swift`). Accessibility identifiers come from `AccessibilityID` (`Views/Common/AccessibilityID.swift`); add new ids there and keep every value byte-identical to the string UI tests match. There is no `PlaybackTuning` type yet (it is planned; a SwiftLint custom rule already warns on raw `accessibilityIdentifier("…")`). Until it exists, keep a new timeout as one named constant, and reuse an existing identifier rather than adding a near-duplicate.
 - Wrap UIKit-only API in `#if os(iOS)`; provide AppKit/tvOS branches. Never nest `NavigationStack`s.
 - Never hand-edit `project.pbxproj` (a hook blocks it). New Swift files under synchronized folders are picked up automatically; UI-test files must be added in Xcode.
-- Tests: Swift Testing for unit tests; no `Task.sleep`, no live network, fakes at protocol seams. UI tests use `AccessibilityID` and `waitForExistence`, never `sleep`.
-- Logging via `os.Logger` (subsystem `AppSubsystem`), never `print`.
+- Tests: Swift Testing for unit tests; no `Task.sleep`, no live network, fakes at protocol seams. UI tests use the same identifiers and `waitForExistence`, never `sleep`.
+- Logging via `os.Logger` (subsystem `appSubsystem`), never `print`.
 - Commits: Conventional Commits with the task ID, e.g. `fix(player): … (#312)`.
 
 ## Gotchas
@@ -33,7 +46,7 @@ Architecture map: docs/architecture.md · Glossary: CONTEXT.md · Decisions: doc
 - Playback fallback code (`PlaybackViewModel+Fallback.swift`) is under active decomposition (WS4). Do not add branches there; add a `StreamSource`.
 - YouTube-side fixes go in `Sources/InnerTubeKit/` (ADR-0010). It must not import `SmartTubeIOSCore`; expose what Core needs as `package`. Tests touching its internals need `@testable import InnerTubeKit`.
 - tvOS has a second, opt-in player engine: mpv (`Views/Player/MPV/`, ADR-0011), routed by `PlayerScreen`. It is tvOS-only (`#if os(tvOS)`, MPVKit links only there) and does not use `PlaybackViewModel`. Launch with `--uitesting-enable-mpv-player --uitesting-deeplink-video=<id>` to open a video straight in it.
-- `swift test` (and `just test-unit`) currently fails to build: `TOSPlayerView.swift`/`TOSPlayerViewModel+WebBridge.swift` have a native-macOS-only compile break (missing `onWindowReady` param, `NSImage.pngData()` doesn't exist) — pre-existing, tracked in `docs/modernization/workstreams/WS1-entry-point-and-gates.md` Discovered. Fix is WS4/WS5 scope.
+- `swift test` (and `just test-unit`) builds on native macOS again (the `TOSPlayerView` `onWindowReady` and `NSImage.pngData()` break is fixed). `just test-unit-sim` runs the package tests through `xcodebuild` on the simulator and is what `just ci` uses; it runs with parallel testing off, because the view-model suites (Home, Browse, Search/Channel/Playlist feed-hide, TOS autoplay) starve each other and fail intermittently when run in parallel; with it off they pass.
 
 ## Where things are
 - Playback: docs/architecture.md#playback · Tests how-to: docs/how-to/run-tests.md · Device logs: docs/how-to/device-logs.md

@@ -774,6 +774,22 @@ extension PlayerView {
         return false
     }
 
+    /// Plain-language text for errors people can't act on; everything else keeps its own message.
+    private func friendlyMessage(_ err: Error) -> String {
+        if let apiError = err as? APIError, case .unavailable(let reason) = apiError,
+            reason.localizedCaseInsensitiveContains("decryption")
+        {
+            return String(localized: "This video can't be played in the built-in player.", bundle: .module)
+        }
+        return err.localizedDescription
+    }
+
+    /// True when the failure is one the web player is likely to get around.
+    private func canTryWebPlayer(_ err: Error) -> Bool {
+        if let apiError = err as? APIError, case .unavailable = apiError { return true }
+        return false
+    }
+
     @ViewBuilder
     func errorBanner(_ err: Error) -> some View {
         // IP-block errors show a specific message and no retry button — retrying
@@ -784,10 +800,26 @@ extension PlayerView {
             HStack {
                 Image(systemName: AppSymbol.warning)
                     .foregroundStyle(.yellow)
-                Text(err.localizedDescription)
+                Text(friendlyMessage(err))
                     .font(.callout)
                     .foregroundStyle(.white)
             }
+            #if os(iOS)
+            if !isIPBlock && !isSignInRequired && canTryWebPlayer(err) {
+                Button {
+                    playerRouter.openInWebPlayer(video: video, api: innerTubeAPI)
+                } label: {
+                    Text("Play in YouTube Player")
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(.black)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 8)
+                        .background(Color.white)
+                        .clipShape(Capsule())
+                }
+                .accessibilityIdentifier(AccessibilityID.Player.openWebPlayerButton)
+            }
+            #endif
             if !isIPBlock && !isSignInRequired {
                 Button {
                     vm.retryLoad()

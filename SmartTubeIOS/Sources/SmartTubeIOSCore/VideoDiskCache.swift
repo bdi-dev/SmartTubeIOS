@@ -58,6 +58,11 @@ final class VideoDiskCache: @unchecked Sendable {
         }
     }
 
+    /// Blocks until every write queued by `store` has finished. Test seam.
+    func waitForPendingWrites() {
+        queue.sync {}
+    }
+
     // MARK: - Read (synchronous, called from consume() cold path on actor context)
 
     func load<T: Decodable>(_ type: T.Type, videoId: String, dataType: String) -> T? {

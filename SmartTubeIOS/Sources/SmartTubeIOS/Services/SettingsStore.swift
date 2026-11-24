@@ -25,16 +25,15 @@ public final class SettingsStore {
         }
     }
 
-    /// Whether the YouTube IFrame-based TOS-compliant player is used instead of the
-    /// AVPlayer-based pipeline on iOS. Always `true` — there is no user-facing
-    /// setting for this and it is never persisted. Existing iOS UI tests that
-    /// exercise the AVPlayer-based pipeline (quality picker, captions, SponsorBlock,
-    /// mini player, PIP, DASH switching, etc.) opt out via
-    /// `--uitesting-disable-tos-player-on-ios`. Has no effect on macOS or tvOS —
-    /// PlayerRouter (the only reader) is `#if os(iOS)`.
-    public var useTOSPlayerOnIOS: Bool = true
+    /// Whether iOS uses the YouTube IFrame (TOS-compliant) player instead of AVPlayer.
+    /// Persisted in `AppSettings`; UI tests override it with launch arguments. Read only by
+    /// PlayerRouter (`#if os(iOS)`).
+    public var useTOSPlayerOnIOS: Bool {
+        get { settings.useTOSPlayerOnIOS }
+        set { settings.useTOSPlayerOnIOS = newValue }
+    }
 
-    private static let key = "smarttube_app_settings"
+    private static let key = AppSettings.persistenceKey
 
     public init() {
         if let data = UserDefaults.standard.data(forKey: Self.key),
@@ -64,7 +63,7 @@ public final class SettingsStore {
         if ProcessInfo.processInfo.arguments.contains("--uitesting-enable-tos-player-on-ios") {
             self.useTOSPlayerOnIOS = true
         }
-        // useTOSPlayerOnIOS is true by default on iOS, so suites that exercise the
+        // useTOSPlayerOnIOS defaults to true on iOS, so suites that exercise the
         // AVPlayer-based pipeline (quality picker, captions, SponsorBlock, mini player,
         // PIP, DASH switching, etc.) opt back into it with this flag.
         if ProcessInfo.processInfo.arguments.contains("--uitesting-disable-tos-player-on-ios") {

@@ -1,21 +1,41 @@
-// Downloading is compiled out (App Store guideline 5.2.3). Define ENABLE_DOWNLOADS to build it.
-#if ENABLE_DOWNLOADS
 import Foundation
 import Observation
+import os
+
+private let downloadStoreLog = Logger(subsystem: appSubsystem, category: "DownloadStore")
 
 // MARK: - DownloadedVideo
 
-/// A record representing a video that has been downloaded to the device's local storage.
+/// A record representing a video that has been (or is being) downloaded to the device's local storage.
 /// Persisted in `Documents/SmartTubeDownloads/manifest.json`.
+///
+/// The file is referenced by `fileName` relative to the store's downloads directory, never by an
+/// absolute URL: the app container path changes across reinstalls/updates.
 public struct DownloadedVideo: Codable, Sendable, Identifiable {
+    public enum Status: String, Codable, Sendable {
+        case queued, downloading, merging, complete, failed
+    }
+
     public var id: String { videoId }
     public let videoId: String
     public let title: String
     public let channelTitle: String
     public let thumbnailURL: URL?
     public let duration: Double
-    public let fileURL: URL
+    public let fileName: String
     public let downloadedAt: Date
+    public var status: Status
+    public var errorMessage: String?
+    /// 0…1. Only meaningful while `status == .downloading`.
+    public var progress: Double
+    /// `true` for a download that saved only the audio track (smaller; plays as audio).
+    public let isAudioOnly: Bool
+    /// `true` while a running download is suspended by the user. Only meaningful for `.downloading`.
+    public var isPaused: Bool
+    /// Live transfer figures for the row (not persisted; zero when unknown or not downloading).
+    public var bytesPerSecond: Double = 0
+    public var bytesReceived: Int64 = 0
+    public var bytesExpected: Int64 = 0
 
     public init(
         videoId: String,
@@ -23,21 +43,78 @@ public struct DownloadedVideo: Codable, Sendable, Identifiable {
         channelTitle: String,
         thumbnailURL: URL?,
         duration: Double,
-        fileURL: URL,
-        downloadedAt: Date
+        fileName: String,
+        downloadedAt: Date,
+        status: Status = .queued,
+        errorMessage: String? = nil,
+        progress: Double = 0,
+        isAudioOnly: Bool = false,
+        isPaused: Bool = false
     ) {
         self.videoId = videoId
         self.title = title
         self.channelTitle = channelTitle
         self.thumbnailURL = thumbnailURL
         self.duration = duration
-        self.fileURL = fileURL
+        self.fileName = fileName
         self.downloadedAt = downloadedAt
+        self.status = status
+        self.errorMessage = errorMessage
+        self.progress = progress
+        self.isAudioOnly = isAudioOnly
+        self.isPaused = isPaused
     }
 
-    /// Synthesises a `Video` value with `localFileURL` set to `fileURL`,
-    /// suitable for handing to `PlaybackViewModel.load(video:)`.
-    public var video: Video {
+    private enum CodingKeys: String, CodingKey {
+        case videoId, title, channelTitle, thumbnailURL, duration, fileName, downloadedAt
+        case status, errorMessage, progress, isAudioOnly, isPaused
+        /// Legacy manifests stored an absolute `fileURL` and had no `status`.
+        case fileURL
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        videoId = try container.decode(String.self, forKey: .videoId)
+        title = try container.decode(String.self, forKey: .title)
+        channelTitle = try container.decode(String.self, forKey: .channelTitle)
+        thumbnailURL = try container.decodeIfPresent(URL.self, forKey: .thumbnailURL)
+        duration = try container.decode(Double.self, forKey: .duration)
+        downloadedAt = try container.decode(Date.self, forKey: .downloadedAt)
+        errorMessage = try container.decodeIfPresent(String.self, forKey: .errorMessage)
+        progress = try container.decodeIfPresent(Double.self, forKey: .progress) ?? 0
+        isAudioOnly = try container.decodeIfPresent(Bool.self, forKey: .isAudioOnly) ?? false
+        isPaused = try container.decodeIfPresent(Bool.self, forKey: .isPaused) ?? false
+        if let name = try container.decodeIfPresent(String.self, forKey: .fileName) {
+            fileName = name
+            status = try container.decodeIfPresent(Status.self, forKey: .status) ?? .complete
+        } else {
+            // Legacy entry: absolute fileURL, implicitly complete.
+            let legacy = try container.decode(URL.self, forKey: .fileURL)
+            fileName = legacy.lastPathComponent
+            status = try container.decodeIfPresent(Status.self, forKey: .status) ?? .complete
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(videoId, forKey: .videoId)
+        try container.encode(title, forKey: .title)
+        try container.encode(channelTitle, forKey: .channelTitle)
+        try container.encodeIfPresent(thumbnailURL, forKey: .thumbnailURL)
+        try container.encode(duration, forKey: .duration)
+        try container.encode(fileName, forKey: .fileName)
+        try container.encode(downloadedAt, forKey: .downloadedAt)
+        try container.encode(status, forKey: .status)
+        try container.encodeIfPresent(errorMessage, forKey: .errorMessage)
+        try container.encode(progress, forKey: .progress)
+        try container.encode(isAudioOnly, forKey: .isAudioOnly)
+        try container.encode(isPaused, forKey: .isPaused)
+    }
+
+    /// Synthesises a `Video` with `localFileURL` resolved against `directory`, suitable for
+    /// `PlaybackViewModel.load(video:)`. Returns `nil` unless the download is complete.
+    public func video(in directory: URL) -> Video? {
+        guard status == .complete else { return nil }
         var v = Video(
             id: videoId,
             title: title,
@@ -45,7 +122,7 @@ public struct DownloadedVideo: Codable, Sendable, Identifiable {
             thumbnailURL: thumbnailURL,
             duration: duration
         )
-        v.localFileURL = fileURL
+        v.localFileURL = directory.appendingPathComponent(fileName)
         return v
     }
 }
@@ -59,10 +136,10 @@ public struct DownloadedVideo: Codable, Sendable, Identifiable {
 /// each download so the `DownloadsView` can display title, thumbnail, and duration
 /// without opening each MP4.
 ///
-/// `VideoDownloadService` calls `add(_:)` after a successful save.
+/// `VideoDownloadService` calls `upsert(_:)`, `setProgress`, `setStatus` and `finalize`.
 /// `DownloadsView` calls `remove(videoId:)` when the user swipes to delete.
 /// `PlaybackViewModel+Loading` reads `Video.localFileURL` (populated by
-/// `DownloadedVideo.video`) to skip the network fetch entirely.
+/// `video(for:)`) to skip the network fetch entirely.
 @Observable
 @MainActor
 public final class DownloadStore {
@@ -70,46 +147,182 @@ public final class DownloadStore {
 
     public private(set) var entries: [DownloadedVideo] = []
 
-    private var downloadsDirectory: URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("SmartTubeDownloads")
-    }
+    public let downloadsDirectory: URL
 
     private var manifestURL: URL {
         downloadsDirectory.appendingPathComponent("manifest.json")
     }
 
-    private init() {
+    /// `Documents/SmartTubeDownloads`. Nonisolated so the background `URLSession` delegate can
+    /// compute the staging directory without hopping to the main actor.
+    nonisolated public static var defaultDirectory: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("SmartTubeDownloads")
+    }
+
+    private convenience init() {
+        if ProcessInfo.processInfo.arguments.contains(DownloadTuning.resetLaunchArgument) {
+            try? FileManager.default.removeItem(at: Self.defaultDirectory)
+        }
+        self.init(directory: Self.defaultDirectory)
+    }
+
+    /// Where finished background transfers and per-video job records wait for post-processing.
+    public var staging: DownloadStaging {
+        DownloadStaging(root: downloadsDirectory.appendingPathComponent("Staging", isDirectory: true))
+    }
+
+    /// Creates a store rooted at `directory` (tests inject a temp directory).
+    public init(directory: URL) {
+        downloadsDirectory = directory
         loadManifest()
+        reconcile()
     }
 
     // MARK: - Public API
 
-    /// The on-disk destination for a downloaded video.
+    /// The on-disk file name for a downloaded video.
     /// Percent-encodes the `videoId` to guarantee a 1-to-1 mapping between any
     /// video ID and its filename — avoids the theoretical collision that could
     /// occur when two IDs differ only in special characters stripped by a
-    /// character-filter approach. For standard YouTube 11-char IDs
-    /// (`[A-Za-z0-9_-]`) the result is identical to the raw ID.
-    public func destinationURL(for videoId: String) -> URL {
+    /// character-filter approach.
+    public func fileName(for videoId: String) -> String {
         let encoded = videoId.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? videoId
-        return downloadsDirectory.appendingPathComponent("\(encoded).mp4")
+        return "\(encoded).mp4"
+    }
+
+    /// The on-disk destination for a downloaded video.
+    public func destinationURL(for videoId: String) -> URL {
+        downloadsDirectory.appendingPathComponent(fileName(for: videoId))
+    }
+
+    /// Resolves an entry's file against the current downloads directory.
+    public func fileURL(for entry: DownloadedVideo) -> URL {
+        downloadsDirectory.appendingPathComponent(entry.fileName)
+    }
+
+    /// A playable `Video` for `entry`, or `nil` unless the download is complete.
+    public func video(for entry: DownloadedVideo) -> Video? {
+        entry.video(in: downloadsDirectory)
+    }
+
+    public func entry(for videoId: String) -> DownloadedVideo? {
+        entries.first { $0.videoId == videoId }
     }
 
     /// Adds or replaces a download record and persists the manifest.
-    public func add(_ entry: DownloadedVideo) {
-        entries.removeAll { $0.videoId == entry.videoId }
-        entries.append(entry)
+    public func upsert(_ entry: DownloadedVideo) {
+        if let index = entries.firstIndex(where: { $0.videoId == entry.videoId }) {
+            entries[index] = entry
+        } else {
+            entries.append(entry)
+        }
         saveManifest()
+    }
+
+    /// Updates in-flight progress (0…1). Not persisted: progress is meaningless across launches.
+    public func setProgress(videoId: String, progress: Double) {
+        guard let index = entries.firstIndex(where: { $0.videoId == videoId }) else { return }
+        entries[index].progress = min(max(progress, 0), 1)
+    }
+
+    /// Updates the live transfer figures shown on the row. Not persisted.
+    public func setTransferStats(videoId: String, bytesPerSecond: Double, received: Int64, expected: Int64) {
+        guard let index = entries.firstIndex(where: { $0.videoId == videoId }) else { return }
+        entries[index].bytesPerSecond = bytesPerSecond
+        entries[index].bytesReceived = received
+        entries[index].bytesExpected = expected
+    }
+
+    /// Marks a running download as paused/resumed by the user and persists it.
+    public func setPaused(videoId: String, _ paused: Bool) {
+        guard let index = entries.firstIndex(where: { $0.videoId == videoId }),
+            entries[index].status == .downloading
+        else { return }
+        entries[index].isPaused = paused
+        if paused { entries[index].bytesPerSecond = 0 }
+        saveManifest()
+    }
+
+    public func setStatus(videoId: String, status: DownloadedVideo.Status, error: String? = nil) {
+        guard let index = entries.firstIndex(where: { $0.videoId == videoId }) else { return }
+        entries[index].status = status
+        entries[index].errorMessage = error
+        if status != .downloading {
+            entries[index].isPaused = false
+            entries[index].bytesPerSecond = 0
+        }
+        if status == .complete { entries[index].progress = 1 }
+        saveManifest()
+    }
+
+    /// Moves a finished temp file into the downloads directory and marks the entry complete.
+    /// The status flips to `.complete` only after the final file is in place.
+    /// Returns `false` (and marks the entry failed) if any step fails.
+    @discardableResult
+    public func finalize(videoId: String, from tempURL: URL) -> Bool {
+        guard let entry = entry(for: videoId) else { return false }
+        let fm = FileManager.default
+        let finalURL = downloadsDirectory.appendingPathComponent(entry.fileName)
+        let partialURL = finalURL.deletingPathExtension().appendingPathExtension("partial")
+        do {
+            try ensureDirectory()
+            try? fm.removeItem(at: partialURL)
+            try fm.moveItem(at: tempURL, to: partialURL)
+            if fm.fileExists(atPath: finalURL.path) {
+                _ = try fm.replaceItemAt(finalURL, withItemAt: partialURL)
+            } else {
+                try fm.moveItem(at: partialURL, to: finalURL)
+            }
+        } catch {
+            downloadStoreLog.error(
+                "finalize failed for \(videoId, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            try? fm.removeItem(at: partialURL)
+            setStatus(videoId: videoId, status: .failed, error: error.localizedDescription)
+            return false
+        }
+        setStatus(videoId: videoId, status: .complete)
+        return true
     }
 
     /// Deletes the MP4 file and removes the record from the manifest.
     public func remove(videoId: String) {
-        if let entry = entries.first(where: { $0.videoId == videoId }) {
-            try? FileManager.default.removeItem(at: entry.fileURL)
+        if let entry = entry(for: videoId) {
+            try? FileManager.default.removeItem(at: fileURL(for: entry))
         }
+        staging.remove(videoId: videoId)
         entries.removeAll { $0.videoId == videoId }
         saveManifest()
+    }
+
+    // MARK: - Reconcile
+
+    /// Repairs state left over from a previous launch: missing files and stray `.partial` files.
+    /// Queued / downloading / merging entries are deliberately left alone: with a background
+    /// `URLSession` they may still be running or fully staged. `VideoDownloadService` decides
+    /// their fate after asking the session for its live tasks.
+    func reconcile() {
+        let fm = FileManager.default
+        var changed = false
+        for index in entries.indices {
+            switch entries[index].status {
+            case .complete:
+                let path = downloadsDirectory.appendingPathComponent(entries[index].fileName).path
+                if !fm.fileExists(atPath: path) {
+                    entries[index].status = .failed
+                    entries[index].errorMessage = "File missing"
+                    changed = true
+                }
+            case .queued, .downloading, .merging, .failed:
+                break
+            }
+        }
+        if let names = try? fm.contentsOfDirectory(atPath: downloadsDirectory.path) {
+            for name in names where name.hasSuffix(".partial") {
+                try? fm.removeItem(at: downloadsDirectory.appendingPathComponent(name))
+            }
+        }
+        if changed { saveManifest() }
     }
 
     // MARK: - Persistence
@@ -120,43 +333,21 @@ public final class DownloadStore {
         else {
             return
         }
-        // Migrate entries whose stored fileURL no longer exists on disk.
-        // The old destinationURL used a character-filter sanitiser; the new one uses
-        // percent-encoding. For standard YouTube IDs these are identical, but migrate
-        // any edge-case entries by trying the new path before dropping them.
-        let fm = FileManager.default
-        var migrated: [DownloadedVideo] = []
-        for entry in decoded {
-            if fm.fileExists(atPath: entry.fileURL.path) {
-                migrated.append(entry)
-            } else {
-                let newURL = destinationURL(for: entry.videoId)
-                if fm.fileExists(atPath: newURL.path) {
-                    var updated = entry
-                    // DownloadedVideo is a struct — recreate with the corrected fileURL.
-                    let corrected = DownloadedVideo(
-                        videoId: entry.videoId,
-                        title: entry.title,
-                        channelTitle: entry.channelTitle,
-                        thumbnailURL: entry.thumbnailURL,
-                        duration: entry.duration,
-                        fileURL: newURL,
-                        downloadedAt: entry.downloadedAt
-                    )
-                    _ = updated  // silence unused warning
-                    migrated.append(corrected)
-                }
-                // If neither path exists, the file was deleted — drop the entry.
-            }
-        }
-        entries = migrated
+        entries = decoded
     }
 
     private func saveManifest() {
-        let fm = FileManager.default
-        try? fm.createDirectory(at: downloadsDirectory, withIntermediateDirectories: true)
+        try? ensureDirectory()
         guard let data = try? JSONEncoder().encode(entries) else { return }
         try? data.write(to: manifestURL, options: .atomic)
     }
+
+    /// Creates the downloads directory and excludes it from iCloud/device backup.
+    private func ensureDirectory() throws {
+        try FileManager.default.createDirectory(at: downloadsDirectory, withIntermediateDirectories: true)
+        var dir = downloadsDirectory
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? dir.setResourceValues(values)
+    }
 }
-#endif  // ENABLE_DOWNLOADS

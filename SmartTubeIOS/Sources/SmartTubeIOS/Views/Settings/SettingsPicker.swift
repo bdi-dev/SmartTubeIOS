@@ -47,7 +47,11 @@ struct SettingsPicker<Value: Hashable>: View {
             ForEach(options) { option in
                 if option.separatorBefore { Divider() }
                 if let icon = option.icon {
-                    Label { Text(option.title) } icon: { icon }.tag(option.value)
+                    Label {
+                        Text(option.title)
+                    } icon: {
+                        icon
+                    }.tag(option.value)
                 } else {
                     Text(option.title).tag(option.value)
                 }

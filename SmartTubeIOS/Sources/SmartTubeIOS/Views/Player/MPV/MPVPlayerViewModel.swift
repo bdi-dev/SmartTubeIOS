@@ -126,6 +126,9 @@ final class MPVPlayerViewModel {
     /// The shelf card focus last rested on, so reopening the shelf within this video
     /// returns there. Nil until a card has been focused.
     private(set) var relatedShelfFocusID: String?
+    /// The card the shelf's scroll view is parked on, kept so leaving and re-entering the shelf
+    /// does not reset or re-centre the scroll position.
+    var relatedScrollID: String?
     /// The shelf closes after this long with no focus movement across its cards.
     static let relatedShelfIdleTimeout: Duration = .seconds(12)
     private var relatedShelfIdleTask: Task<Void, Never>?
@@ -568,7 +571,8 @@ final class MPVPlayerViewModel {
         guard let engine, let plan = activePlan else { return }
         if let failed = currentAudioURL(for: plan) { failedAudioURLs.insert(failed) }
         guard audioRecoveryAttempts < Self.maxAudioRecoveryAttempts else {
-            mpvPlayerLog.notice("no audio for \(video.id) after \(audioRecoveryAttempts) recoveries — continuing video only")
+            mpvPlayerLog.notice(
+                "no audio for \(video.id) after \(audioRecoveryAttempts) recoveries — continuing video only")
             return
         }
         audioRecoveryAttempts += 1
@@ -896,7 +900,8 @@ final class MPVPlayerViewModel {
         }
         isLoading = true
         mpvPlayerLog.notice("quality → \(plan.label) at \(Int(self.currentTime))s")
-        engine.load(plan, startAt: currentTime, userAgent: activeClient?.userAgent, audioOverride: audioOverride(for: plan))
+        engine.load(
+            plan, startAt: currentTime, userAgent: activeClient?.userAgent, audioOverride: audioOverride(for: plan))
         engine.setSpeed(playbackSpeed)
         if !isPlaying { engine.setPaused(true) }
     }

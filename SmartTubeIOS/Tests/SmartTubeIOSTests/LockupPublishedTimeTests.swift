@@ -23,7 +23,9 @@ struct LockupPublishedTimeTests {
                 "contentType": "LOCKUP_CONTENT_TYPE_VIDEO",
                 "contentImage": [
                     "thumbnailViewModel": [
-                        "image": ["sources": [["url": "https://i.ytimg.com/vi/\(id)/hq720.jpg", "width": 720, "height": 404]]]
+                        "image": [
+                            "sources": [["url": "https://i.ytimg.com/vi/\(id)/hq720.jpg", "width": 720, "height": 404]]
+                        ]
                     ]
                 ],
                 "metadata": [

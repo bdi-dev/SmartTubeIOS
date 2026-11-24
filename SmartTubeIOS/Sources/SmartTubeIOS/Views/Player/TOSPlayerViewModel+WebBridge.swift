@@ -381,4 +381,16 @@ extension TOSPlayerViewModel {
         }
     }
 }
+
+#if os(macOS)
+import AppKit
+
+extension NSImage {
+    /// PNG encoding for the snapshot path; UIImage already has `pngData()` on iOS and Catalyst.
+    fileprivate func pngData() -> Data? {
+        guard let tiff = tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) else { return nil }
+        return rep.representation(using: .png, properties: [:])
+    }
+}
+#endif
 #endif  // !os(tvOS)

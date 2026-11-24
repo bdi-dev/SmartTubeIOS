@@ -853,14 +853,14 @@ extension PlayerView {
         .navigationDestination(item: $channelDestination) { dest in
             ChannelView(channelId: dest.channelId)
         }
-        #if !os(tvOS) && ENABLE_DOWNLOADS
+        #if !os(tvOS)
         .onChange(of: downloadService.state) { _, newState in
             switch newState {
             case .done:
                 let title = vm.playerInfo?.video.title ?? video.title
                 downloadAlertItem = DownloadAlertItem(
-                    title: String(localized: "Saved to Gallery", bundle: .module),
-                    message: String(localized: "\"\(title)\" has been saved to your Photos library.", bundle: .module)
+                    title: String(localized: "Download Complete", bundle: .module),
+                    message: String(localized: "\"\(title)\" has been saved to Downloads.", bundle: .module)
                 )
                 downloadService.reset()
             case .failed(let reason):
@@ -873,10 +873,11 @@ extension PlayerView {
                 break
             }
         }
-        .alert(item: $downloadAlertItem) { item in
-            Alert(title: Text(item.title), message: Text(item.message), dismissButton: .default(Text("OK")))
-        }
+        .onAppear { downloadService.playerOwnsCompletionAlert = true }
+        .onDisappear { downloadService.playerOwnsCompletionAlert = false }
+        .toast(item: $downloadAlertItem)
         #endif
+        .toastHost()
         // Intercept smarttube://seek/<seconds> links emitted by timestamp spans in
         // descriptions and comments, and forward them to the player seek function.
         .environment(

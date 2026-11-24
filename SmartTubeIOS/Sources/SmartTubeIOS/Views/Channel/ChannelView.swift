@@ -39,10 +39,10 @@ public struct ChannelView: View {
                 ProgressView("Loading channel…")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     #if os(tvOS)
-                    // Keeps focus in the page while it loads. With nothing focusable here the
-                    // focus engine moves focus to the sidebar, and it stays there once the
-                    // channel's buttons and grid appear.
-                    .focusable()
+                // Keeps focus in the page while it loads. With nothing focusable here the
+                // focus engine moves focus to the sidebar, and it stays there once the
+                // channel's buttons and grid appear.
+                .focusable()
                     #endif
                     .accessibilityIdentifier("channel.view")
             } else {
@@ -171,7 +171,7 @@ public struct ChannelView: View {
         ContentUnavailableView(
             "No Shorts",
             systemImage: "play.rectangle.on.rectangle",
-            description: Text("This channel hasn't posted any Shorts, or they couldn't be loaded.")
+            description: Text("This channel hasn't posted any Shorts.")
         )
         .frame(maxWidth: .infinity)
         .padding(.top, 40)
@@ -298,7 +298,7 @@ public struct ChannelView: View {
                                 ShortsCardView(video: video, onTap: { selectShort(video, from: videos) })
                                     .aspectRatio(9 / 16, contentMode: .fit)
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(ShortsFocusButtonStyle())
                             .frame(maxWidth: .infinity)
                             .accessibilityIdentifier("shorts.card.\(video.id)")
                         } else {
@@ -463,3 +463,18 @@ public struct ChannelView: View {
         }
     }
 }
+
+#if os(tvOS)
+/// Focus treatment for portrait Shorts tiles: a small lift and a soft shadow. The system
+/// `.plain` poster effect scales and glows far past the tile's edges on a narrow 9:16 card.
+private struct ShortsFocusButtonStyle: ButtonStyle {
+    @Environment(\.isFocused) private var isFocused
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(isFocused ? 1.05 : 1)
+            .shadow(color: .black.opacity(isFocused ? 0.45 : 0), radius: 10, y: 6)
+            .animation(.easeOut(duration: 0.15), value: isFocused)
+    }
+}
+#endif

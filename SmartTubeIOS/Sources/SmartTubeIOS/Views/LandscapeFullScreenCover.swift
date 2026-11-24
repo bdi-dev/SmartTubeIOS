@@ -88,6 +88,11 @@ private struct LandscapePresenter<Item: Identifiable & Hashable>: UIViewControll
     // no ancestor providing TOSPlayerStateStore and `tosState.vm!` force-unwrap path
     // crashes with "No Observable object of type TOSPlayerStateStore found".
     @Environment(TOSPlayerStateStore.self) private var tosState
+    // The web player's More menu has a Download item that reads this; the cover's fresh
+    // UIHostingController hierarchy would otherwise crash looking it up.
+    @Environment(VideoDownloadService.self) private var downloadService
+    @Environment(PlayerRouter.self) private var playerRouter
+    @Environment(\.innerTubeAPI) private var innerTubeAPI
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -109,6 +114,9 @@ private struct LandscapePresenter<Item: Identifiable & Hashable>: UIViewControll
         let capturedAuth = authService
         let capturedPlayerState = playerState
         let capturedTosState = tosState
+        let capturedDownloadService = downloadService
+        let capturedRouter = playerRouter
+        let capturedAPI = innerTubeAPI
         coordinator.contentBuilder = { [content] item in
             AnyView(
                 content(item)
@@ -116,6 +124,9 @@ private struct LandscapePresenter<Item: Identifiable & Hashable>: UIViewControll
                     .environment(capturedAuth)
                     .environment(capturedPlayerState)
                     .environment(capturedTosState)
+                    .environment(capturedDownloadService)
+                    .environment(capturedRouter)
+                    .environment(\.innerTubeAPI, capturedAPI)
             )
         }
         coordinator.latestBinding = _item

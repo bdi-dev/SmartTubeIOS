@@ -1,0 +1,14 @@
+# Portainer: Stacks -> Add stack -> paste this (or point at the repo). Set YTDLP_TOKEN in the
+# stack's environment variables (generate one with: openssl rand -hex 32).
+services:
+  ytdlp:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8790:8787"
+    environment:
+      YTDLP_TOKEN: ${YTDLP_TOKEN:?set a token}
+    volumes:
+      - ytdlp-data:/data
+volumes:
+  ytdlp-data:

@@ -159,8 +159,8 @@ struct MPVPlayerView: View {
                     MPVCommentsPanel(vm: vm, focus: $focus)
                         .transition(.move(edge: .trailing).combined(with: .opacity))
                 } else if vm.relatedShelfVisible {
-                    relatedShelf(vm)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                    // The shelf itself is mounted permanently below; nothing to draw here.
+                    Color.clear.allowsHitTesting(false)
                 } else if vm.controlsVisible {
                     controlsOverlay(vm)
                         .transition(.opacity)
@@ -185,6 +185,21 @@ struct MPVPlayerView: View {
                         .transition(.opacity)
                     }
                 }
+            }
+
+            // Mounted for the whole video and only slid/faded in, so the card row keeps its
+            // scroll offset while hidden. Re-creating it per open starts at offset 0 and the
+            // focus engine then visibly scrolls to the remembered card.
+            if vm.errorMessage == nil, !vm.relatedVideos.isEmpty {
+                let shelfShown = vm.relatedShelfVisible && !vm.commentsVisible
+                relatedShelf(vm)
+                    .id(vm.relatedVideos.first?.id)
+                    .opacity(shelfShown ? 1 : 0)
+                    .offset(y: shelfShown ? 0 : 400)
+                    // Hidden cards must not take focus or touches.
+                    .disabled(!shelfShown)
+                    .allowsHitTesting(shelfShown)
+                    .accessibilityHidden(!shelfShown)
             }
 
             if vm.isLoading || vm.isBuffering {
@@ -264,8 +279,15 @@ struct MPVPlayerView: View {
         // Every fresh show of the overlay starts on Play, as it always has.
         .onChange(of: vm.controlsVisible) { _, visible in
             if visible {
-                if keepTransportFocusOnShow { keepTransportFocusOnShow = false } else { lastTransportFocus = .playPause }
-            } else { restoringTransportFocus = nil; pendingTransportMove = nil }
+                if keepTransportFocusOnShow {
+                    keepTransportFocusOnShow = false
+                } else {
+                    lastTransportFocus = .playPause
+                }
+            } else {
+                restoringTransportFocus = nil
+                pendingTransportMove = nil
+            }
         }
         .onChange(of: vm.errorMessage) { _, message in
             if message != nil { restoringTransportFocus = nil }
@@ -398,7 +420,10 @@ struct MPVPlayerView: View {
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(250))
             if restoringTransportFocus == target {
-                if focus == target { lastTransportFocus = target; transportLockReleasedAt = Date() }
+                if focus == target {
+                    lastTransportFocus = target
+                    transportLockReleasedAt = Date()
+                }
                 restoringTransportFocus = nil
                 pendingTransportMove = nil
             }
@@ -858,18 +883,24 @@ struct MPVPlayerView: View {
     }
 
     private func relatedCards(_ vm: MPVPlayerViewModel) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
+        @Bindable var vm = vm
+        return ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 28) {
                 ForEach(vm.relatedVideos.prefix(8)) { related in
                     relatedCard(related, vm)
+                        .id(related.id)
                 }
             }
+            .scrollTargetLayout()
             // Room inside the scroll content for the `.card` focus lift (~1.1x scale) and its
             // shadow; with clipping off the glow draws over the surrounding margins instead of
             // being cut at the scroll view's edges (first/last card included).
             .padding(.horizontal, Self.shelfFocusInset)
             .padding(.vertical, Self.shelfFocusInset)
         }
+        .scrollPosition(id: $vm.relatedScrollID, anchor: .leading)
+        // Restoring the parked position must not animate along with the shelf's slide-in.
+        .transaction { $0.animation = nil }
         .scrollClipDisabled()
         // Cancel the inset in layout so the cards still line up with the header text.
         .padding(.horizontal, -Self.shelfFocusInset)

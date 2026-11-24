@@ -35,7 +35,9 @@ extension InnerTubeAPI {
             return (parsedChannel, await applyingHistoryFallback(to: group, source: .tvChannelBrowse))
         }
         // WATCHDIAG-BEGIN
-        print("[WATCHDIAG] fetchChannel path=web+history tvEligible=\(usesTVChannelVideos) tvVideos=\(tvResult?.videos.count ?? -1)")
+        print(
+            "[WATCHDIAG] fetchChannel path=web+history tvEligible=\(usesTVChannelVideos) tvVideos=\(tvResult?.videos.count ?? -1)"
+        )
         // WATCHDIAG-END
         return (parsedChannel, await applyingHistoryFallback(to: parsedVideos, source: .webChannelBrowse))
     }
@@ -116,7 +118,7 @@ extension InnerTubeAPI {
         do {
             data = try await postTV(endpoint: "browse", body: body)
         } catch {
-            print("[CHANDIAG] shorts FAILED \(type(of: error))") // CHANDIAG (temporary)
+            print("[CHANDIAG] shorts FAILED \(type(of: error))")  // CHANDIAG (temporary)
             throw error
         }
         let group = Self.channelVideoGroup(try parseVideoGroup(from: data, title: nil), channelId: channelId)
@@ -125,7 +127,7 @@ extension InnerTubeAPI {
             c.isShort = true
             return c
         }
-        print("[CHANDIAG] shorts OK count=\(shorts.count)") // CHANDIAG (temporary)
+        print("[CHANDIAG] shorts OK count=\(shorts.count)")  // CHANDIAG (temporary)
         return shorts
     }
 
@@ -145,7 +147,9 @@ extension InnerTubeAPI {
         do {
             data = try await postTV(endpoint: "browse", body: body)
         } catch {
-            print("[WATCHDIAG] tv-channel-browse FAILED error=\(type(of: error)) \((error as? APIError).map { String(describing: $0) } ?? "")") // WATCHDIAG
+            print(
+                "[WATCHDIAG] tv-channel-browse FAILED error=\(type(of: error)) \((error as? APIError).map { String(describing: $0) } ?? "")"
+            )  // WATCHDIAG
             throw error
         }
         let group = Self.channelVideoGroup(try parseVideoGroup(from: data, title: nil), channelId: channelId)
@@ -187,7 +191,9 @@ extension InnerTubeAPI {
     /// via `.watchedHistoryIndexDidUpdate` so visible cards refresh themselves.
     func applyingHistoryFallback(to group: VideoGroup, source: ChannelVideoSource) async -> VideoGroup {
         guard authToken != nil else {
-            print("[WATCHDIAG] channel path=\(source.rawValue) videos=\(group.videos.count) history=SKIPPED oauthToken=absent") // WATCHDIAG
+            print(
+                "[WATCHDIAG] channel path=\(source.rawValue) videos=\(group.videos.count) history=SKIPPED oauthToken=absent"
+            )  // WATCHDIAG
             return group
         }
         let owner = historyOwnerKey

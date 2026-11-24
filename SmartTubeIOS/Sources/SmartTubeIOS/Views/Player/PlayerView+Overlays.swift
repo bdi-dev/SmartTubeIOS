@@ -189,6 +189,7 @@ extension PlayerView {
             #endif
             moreMenuQueueShuffleRow
             moreMenuDownloadRow
+            moreMenuYouTubePlayerRow
             moreMenuCaptionsRow
             moreMenuAudioTrackRow
             moreMenuDescriptionRow
@@ -589,27 +590,69 @@ extension PlayerView {
     }
 
     @ViewBuilder private var moreMenuDownloadRow: some View {
-        #if !os(tvOS) && ENABLE_DOWNLOADS
+        #if !os(tvOS)
+        let downloadStatus = downloadService.status(for: (vm.playerInfo?.video ?? video).id)
         Button {
             showMoreMenu = false
-            downloadService.download(video: vm.playerInfo?.video ?? video)
+            downloadService.enqueue(video: vm.playerInfo?.video ?? video)
         } label: {
-            Group {
-                if downloadService.state.isActive {
-                    Label("Downloading…", systemImage: AppSymbol.download)
-                } else {
-                    Label("Download to Gallery", systemImage: AppSymbol.download)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding()
-            .contentShape(Rectangle())
+            Label(DownloadActionLabel.title(for: downloadStatus), systemImage: AppSymbol.download)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding()
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .foregroundStyle(.primary)
-        .disabled(downloadService.state.isActive)
+        .disabled(!DownloadActionLabel.isEnabled(for: downloadStatus))
         .accessibilityIdentifier("player.moreMenu.downloadButton")
         Divider()
+        #endif
+    }
+
+    /// Re-opens the current video in the YouTube web player (e.g. for higher quality than the plain MP4).
+    @ViewBuilder private var moreMenuYouTubePlayerRow: some View {
+        #if os(iOS)
+        Button {
+            showMoreMenu = false
+            playerRouter.openInWebPlayer(video: vm.playerInfo?.video ?? video, api: innerTubeAPI)
+        } label: {
+            Label("Play in YouTube Player", systemImage: "play.rectangle")
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding()
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.primary)
+        .accessibilityIdentifier(AccessibilityID.Player.moreMenuPlayWebButton)
+        Divider()
+        Button {
+            showMoreMenu = false
+            playerRouter.playStream(video: vm.playerInfo?.video ?? video, api: innerTubeAPI)
+        } label: {
+            Label("Play 360p Stream", systemImage: "play.square.stack")
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding()
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.primary)
+        .accessibilityIdentifier(AccessibilityID.Player.moreMenuPlayStreamButton)
+        Divider()
+        if YtDlpServerConfig.current().isConfigured {
+            Button {
+                showMoreMenu = false
+                playerRouter.playFromServer(video: vm.playerInfo?.video ?? video)
+            } label: {
+                Label("Play from yt-dlp Server", systemImage: "server.rack")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding()
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.primary)
+            .accessibilityIdentifier(AccessibilityID.Player.moreMenuPlayServerButton)
+            Divider()
+        }
         #endif
     }
 

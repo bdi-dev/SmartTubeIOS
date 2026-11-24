@@ -38,6 +38,11 @@ private enum TVSidebarLayout {
     static let expandedWidth: CGFloat = 380
     /// Gap between the rail's edge and the content. Grids add no padding of their own on tvOS.
     static let contentLeadingGap: CGFloat = 56
+    /// Duration of the width / slide animation shared by the sidebar and the content column.
+    static let expandDuration: Double = 0.25
+    /// Labels wait until the bar is mostly open, then fade in; they fade out immediately.
+    static let labelFadeIn: Animation = .easeIn(duration: 0.15).delay(expandDuration * 0.6)
+    static let labelFadeOut: Animation = .easeOut(duration: 0.1)
 }
 
 // MARK: - Player visibility
@@ -106,7 +111,7 @@ struct TVSidebarRootView: View {
         // The rail sits close to the screen edge instead of inside the 80 pt tvOS safe area;
         // otherwise that inset stacks on top of the rail and the content's own padding.
         .ignoresSafeArea(.container, edges: .leading)
-        .animation(.easeInOut(duration: 0.25), value: isExpanded)
+        .animation(.easeInOut(duration: TVSidebarLayout.expandDuration), value: isExpanded)
         .onChange(of: contentFocused) { _, focused in
             if focused { focusCameFromContent = true }
         }
@@ -222,7 +227,8 @@ struct TVSidebarRootView: View {
     /// Signed out: opens the sign-in sheet. Signed in: opens Settings, where the account
     /// details and sign-out live.
     private var accountRow: some View {
-        let title = auth.isSignedIn
+        let title =
+            auth.isSignedIn
             ? (auth.accountName ?? String(localized: "Account", bundle: .module))
             : String(localized: "Sign In", bundle: .module)
         return Button {
@@ -267,16 +273,23 @@ private struct TVSidebarRowLabel<Icon: View>: View {
         HStack(spacing: 18) {
             icon()
                 .frame(width: 40, height: 40)
-            if showsTitle {
-                Text(verbatim: title)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-            }
+            // The label is always laid out and clipped by the row's animating width, never
+            // inserted when the sidebar starts expanding: inserting it made the text pop in
+            // while the bar was still narrow. It fades in after the bar has mostly opened and
+            // fades out first when collapsing.
+            Text(verbatim: title)  // verbatim: sidebar title is already localised by the caller
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .opacity(showsTitle ? 1 : 0)
+                .animation(
+                    showsTitle ? TVSidebarLayout.labelFadeIn : TVSidebarLayout.labelFadeOut,
+                    value: showsTitle)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
         .frame(width: width, alignment: .leading)
+        .clipped()
         .contentShape(Rectangle())
     }
 }
@@ -293,7 +306,9 @@ private struct TVSidebarRowStyle: ButtonStyle {
             .foregroundStyle(isFocused ? Color.black : Color.primary)
             .background(
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(isFocused ? Color.white.opacity(0.92) : (isSelected ? Color.primary.opacity(0.16) : Color.clear))
+                    .fill(
+                        isFocused ? Color.white.opacity(0.92) : (isSelected ? Color.primary.opacity(0.16) : Color.clear)
+                    )
                     // The white platter sits on a near-white material in Light mode and loses its
                     // edge; a soft shadow separates it there (and is barely visible in Dark).
                     .shadow(color: .black.opacity(isFocused ? 0.25 : 0), radius: 10, y: 4)

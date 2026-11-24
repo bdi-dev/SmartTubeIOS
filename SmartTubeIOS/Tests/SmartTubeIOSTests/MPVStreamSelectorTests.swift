@@ -453,7 +453,9 @@ struct MPVStreamSelectorTests {
     // MARK: External file failures
 
     private let audioURL = URL(
-        string: "https://manifest.googlevideo.com/api/manifest/hls_playlist/id/abc/itag/251/xtags=acont%3Doriginal:lang%3Den-US/file.m3u8")!
+        string:
+            "https://manifest.googlevideo.com/api/manifest/hls_playlist/id/abc/itag/251/xtags=acont%3Doriginal:lang%3Den-US/file.m3u8"
+    )!
 
     @Test("the external-file log line is recognised; other mpv lines are not")
     func externalFailure_recognisesLine() {
@@ -465,7 +467,8 @@ struct MPVStreamSelectorTests {
 
     @Test("the name in the failure line is taken as printed, without the trailing period or truncation mark")
     func externalFailure_parsesText() {
-        let full = "[cplayer] Can not open external file https://r1.googlevideo.com/videoplayback?itag=251&mime=audio%2Fwebm.\n"
+        let full =
+            "[cplayer] Can not open external file https://r1.googlevideo.com/videoplayback?itag=251&mime=audio%2Fwebm.\n"
         #expect(
             MPVStreamSelector.failedExternalFileText(logLine: full)
                 == "https://r1.googlevideo.com/videoplayback?itag=251&mime=audio%2Fwebm")
@@ -482,7 +485,8 @@ struct MPVStreamSelectorTests {
     @Test("mpv prints the audio URL percent-decoded and cut short; that still identifies it")
     func externalFailure_matchesDecodedPrintedName() {
         // The URL as mpv printed it in the field: escapes decoded, long line truncated.
-        let line = "[cplayer] Can not open external file https://manifest.googlevideo.com/api/manifest/hls_playlist/id/abc/itag/251/xtags=acont=original:lang=en-US/file.m3u8<…>"
+        let line =
+            "[cplayer] Can not open external file https://manifest.googlevideo.com/api/manifest/hls_playlist/id/abc/itag/251/xtags=acont=original:lang=en-US/file.m3u8<…>"
         let printed = MPVStreamSelector.failedExternalFileText(logLine: line)
         #expect(MPVStreamSelector.isCurrentAudioFailure(reported: printed, current: audioURL, alreadyFailed: []))
     }
@@ -490,14 +494,18 @@ struct MPVStreamSelectorTests {
     @Test("only a failure naming the audio currently playing triggers an early recovery")
     func externalFailure_currentOnly() {
         let other = URL(string: "https://example.com/other.m4a")!
-        let printed = "https://manifest.googlevideo.com/api/manifest/hls_playlist/id/abc/itag/251/xtags=acont=original:lang=en-US/file.m3u8"
+        let printed =
+            "https://manifest.googlevideo.com/api/manifest/hls_playlist/id/abc/itag/251/xtags=acont=original:lang=en-US/file.m3u8"
         // The audio in use, not yet recorded as failed: act.
         #expect(MPVStreamSelector.isCurrentAudioFailure(reported: printed, current: audioURL, alreadyFailed: []))
         // A late report about an earlier audio stream: ignore.
-        #expect(!MPVStreamSelector.isCurrentAudioFailure(reported: "https://example.com/other", current: audioURL, alreadyFailed: []))
+        #expect(
+            !MPVStreamSelector.isCurrentAudioFailure(
+                reported: "https://example.com/other", current: audioURL, alreadyFailed: []))
         #expect(!MPVStreamSelector.isCurrentAudioFailure(reported: printed, current: other, alreadyFailed: []))
         // Already recorded as failed (a repeated line): ignore.
-        #expect(!MPVStreamSelector.isCurrentAudioFailure(reported: printed, current: audioURL, alreadyFailed: [audioURL]))
+        #expect(
+            !MPVStreamSelector.isCurrentAudioFailure(reported: printed, current: audioURL, alreadyFailed: [audioURL]))
         // No name, or no audio in use: ignore; the first-frame check still runs.
         #expect(!MPVStreamSelector.isCurrentAudioFailure(reported: nil, current: audioURL, alreadyFailed: []))
         #expect(!MPVStreamSelector.isCurrentAudioFailure(reported: "", current: audioURL, alreadyFailed: []))

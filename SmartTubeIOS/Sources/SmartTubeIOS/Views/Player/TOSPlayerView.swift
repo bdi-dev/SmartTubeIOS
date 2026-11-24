@@ -62,6 +62,10 @@ public struct TOSPlayerView: View {
     /// below and passes the unwrapped vm to all helper view-builders, so
     /// there is no force-unwrap anywhere in this file.
     @Environment(TOSPlayerStateStore.self) private var tosState
+    #if os(iOS)
+    @Environment(PlayerRouter.self) private var playerRouter
+    @Environment(\.innerTubeAPI) private var innerTubeAPI
+    #endif
     #endif
 
     /// Drives `commentsOverlay` (see moreButton's Comments row). Plain view state —
@@ -513,9 +517,8 @@ public struct TOSPlayerView: View {
                 vm.handleForeground()
             }
             #endif
-            .alert(item: $reportSegmentAlert) { item in
-                Alert(title: Text(item.title), message: Text(item.message), dismissButton: .default(Text("OK")))
-            }
+            .toast(item: $reportSegmentAlert)
+            .toastHost()
         )
     }
 
@@ -769,6 +772,32 @@ public struct TOSPlayerView: View {
                 .accessibilityIdentifier("tosPlayer.moreMenu.shareRow")
             }
 
+            DownloadActionButton(video: video)
+                .accessibilityIdentifier(AccessibilityID.TOSPlayer.moreMenuDownloadRow)
+
+            #if os(iOS)
+            Button {
+                playerRouter.openInNativePlayer(video: video)
+            } label: {
+                Label("Play in Native Player", systemImage: "play.square")
+            }
+            .accessibilityIdentifier(AccessibilityID.TOSPlayer.moreMenuPlayNativeRow)
+            Button {
+                playerRouter.playStream(video: video, api: innerTubeAPI)
+            } label: {
+                Label("Play 360p Stream", systemImage: "play.square.stack")
+            }
+            .accessibilityIdentifier(AccessibilityID.TOSPlayer.moreMenuPlayStreamRow)
+            if YtDlpServerConfig.current().isConfigured {
+                Button {
+                    playerRouter.playFromServer(video: video)
+                } label: {
+                    Label("Play from yt-dlp Server", systemImage: "server.rack")
+                }
+                .accessibilityIdentifier(AccessibilityID.TOSPlayer.moreMenuPlayServerRow)
+            }
+            #endif
+
             Button {
                 showCommentsSheet = true
                 vm.loadComments()
@@ -977,9 +1006,14 @@ public struct TOSPlayerView: View {
 #if os(macOS)
 private struct YouTubeWebPlayerView: NSViewRepresentable {
     let webView: WKWebView
+    /// Mirrors the UIKit branch: fires once the representable is mounted.
+    let onWindowReady: (() -> Void)?
 
     func makeNSView(context: Context) -> WKWebView {
         webView.autoresizingMask = [.width, .height]
+        if let cb = onWindowReady {
+            DispatchQueue.main.async { cb() }
+        }
         return webView
     }
 

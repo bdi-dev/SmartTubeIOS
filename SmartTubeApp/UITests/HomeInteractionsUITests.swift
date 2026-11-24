@@ -386,13 +386,14 @@ final class HomeInteractionsUITests: XCTestCase {
         }
         button.tap()
 
-        let anyAlert = app.alerts.firstMatch
+        // Confirmations are quiet toasts (no OK button): the label is "<title>. <message>".
+        let toast = app.descendants(matching: .any)["toast.message"].firstMatch
         XCTAssertTrue(
-            anyAlert.waitForExistence(timeout: 10),
-            "An alert should appear after tapping 'Save to Watch Later'")
+            toast.waitForExistence(timeout: 10),
+            "A toast should appear after tapping 'Save to Watch Later'")
 
-        let successAlert = app.alerts["Saved to Watch Later"].firstMatch
-        let errorAlert = app.alerts["Could Not Save"].firstMatch
+        let successAlert = toast.label.hasPrefix("Saved to Watch Later") ? toast : app.alerts["__none__"]
+        let errorAlert = toast.label.hasPrefix("Could Not Save") ? toast : app.alerts["__none__"]
 
         XCTAssertFalse(
             errorAlert.exists,

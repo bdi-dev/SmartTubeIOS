@@ -49,6 +49,25 @@ public struct Video: Identifiable, Hashable, Codable, Sendable {
     /// `true` when this video refers to a local downloaded file rather than a remote stream.
     public var isDownloaded: Bool { localFileURL != nil }
 
+    /// A ready-to-play remote MP4 (used by "Play in Native Player"): the native player streams it
+    /// directly with the User-Agent the URL was signed for, skipping stream extraction.
+    /// Runtime only, never persisted.
+    public struct DirectStream: Sendable, Hashable {
+        public let url: URL
+        public let userAgent: String
+        /// Resolution of the file, e.g. "720p", shown as the player's current quality.
+        public let qualityLabel: String
+        /// Extra request headers (a bearer token when the stream comes from the yt-dlp server).
+        public let headers: [String: String]
+        public init(url: URL, userAgent: String, qualityLabel: String = "", headers: [String: String] = [:]) {
+            self.url = url
+            self.userAgent = userAgent
+            self.qualityLabel = qualityLabel
+            self.headers = headers
+        }
+    }
+    public var directStream: DirectStream?
+
     private enum CodingKeys: String, CodingKey {
         case id, title, channelTitle, channelId, description, thumbnailURL, duration
         case viewCount, publishedAt, publishedTimeText, isLive, isUpcoming, isShort, hasPortraitThumbnail
@@ -184,9 +203,41 @@ public extension Video {
         URL(string: "https://i.ytimg.com/vi/\(id)/maxresdefault.jpg")
     }
 
+    /// 1280×720 (16:9); only exists when the video was uploaded in HD (404 otherwise).
+    var hq720ThumbnailURL: URL? {
+        URL(string: "https://i.ytimg.com/vi/\(id)/hq720.jpg")
+    }
+
     /// Fallbacks after `maxResThumbnailURL`: hq720 (1280×720, 16:9) → standard chain.
     var highResThumbnailFallbackURLs: [URL] {
-        [URL(string: "https://i.ytimg.com/vi/\(id)/hq720.jpg")].compactMap { $0 } + thumbnailFallbackURLs
+        [hq720ThumbnailURL].compactMap { $0 } + thumbnailFallbackURLs
+    }
+
+    /// Native pixel widths of the static 16:9 CDN rungs. One definition each; the
+    /// rung-selection rule in `thumbnailChain(requiredPixelWidth:)` is built on them.
+    static let mqPixelWidth: CGFloat = 320
+    static let hqPixelWidth: CGFloat = 480
+    static let sdPixelWidth: CGFloat = 640
+    static let hq720PixelWidth: CGFloat = 1280
+
+    /// Static CDN chain for a thumbnail that must cover `requiredPixelWidth` device pixels
+    /// (card width in points × display scale). It starts at the smallest rung that covers
+    /// that width (hq720 when none does) and steps down through sddefault, hqdefault and
+    /// mqdefault, so the sharpest affordable rung is requested first and smaller rungs are
+    /// the failure fallbacks.
+    func thumbnailChain(requiredPixelWidth: CGFloat) -> [URL] {
+        let candidates: [(pixelWidth: CGFloat, url: URL?)] = [
+            (Video.mqPixelWidth, mqThumbnailURL),
+            (Video.hqPixelWidth, highQualityThumbnailURL),
+            (Video.sdPixelWidth, sdThumbnailURL),
+            (Video.hq720PixelWidth, hq720ThumbnailURL),
+        ]
+        let rungs: [(pixelWidth: CGFloat, url: URL)] = candidates.compactMap { rung in
+            rung.url.map { (pixelWidth: rung.pixelWidth, url: $0) }
+        }
+        guard let startIndex = rungs.firstIndex(where: { $0.pixelWidth >= requiredPixelWidth }) ?? rungs.indices.last
+        else { return [] }
+        return rungs[...startIndex].reversed().map(\.url)
     }
 
     /// Portrait (9:16) thumbnail used for Shorts cards.

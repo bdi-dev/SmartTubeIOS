@@ -1,14 +1,8 @@
-// Downloading is compiled out (App Store guideline 5.2.3). Define ENABLE_DOWNLOADS to build it.
-#if ENABLE_DOWNLOADS
-import AVFoundation
 import Foundation
 import Observation
 import SmartTubeIOSCore
 import os
 
-#if os(iOS)
-import Photos
-#endif
 #if os(iOS)
 @preconcurrency import ActivityKit
 #endif
@@ -17,15 +11,23 @@ private let downloadLog = CrashlyticsLogger(category: "Download")
 
 // MARK: - VideoDownloadService
 //
-// Downloads a YouTube video stream to the device's Photos library.
-// Uses InnerTubeAPI to resolve the best stream URL, then downloads the
-// file to a temp location before saving it via PHPhotoLibrary.
+// FIFO download queue for the personal downloads library. Files land in app storage only
+// (`DownloadStore`); there is no Photos export. Per-item progress and status live in
+// `DownloadStore.entries`.
+//
+// Pipeline per video: `DownloadFetching.resolve` (foreground, quick) -> a persisted
+// `DownloadJob` + one background `URLSession` transfer per part -> the transfer layer stages
+// each finished part under `Staging/<videoId>` and reports it -> when every part is staged,
+// `DownloadFetching.assemble` (merge + remux, inside a UIKit background task) ->
+// `DownloadStore.finalize`. Transfers keep running while the app is suspended or not running;
+// `recoverInterruptedDownloads()` re-attaches on the next launch.
+// At most `DownloadTuning.maxConcurrent` items run at once.
 
 @MainActor
 @Observable
 public final class VideoDownloadService {
 
-    // MARK: - State
+    // MARK: - Aggregate state (drives completion alerts and the Live Activity)
 
     public enum DownloadState: Equatable {
         case idle
@@ -43,12 +45,44 @@ public final class VideoDownloadService {
         }
     }
 
+    /// Aggregate of the queue: active while anything is queued/running; `.done` / `.failed`
+    /// are momentary results the UI resets via `reset()` after showing an alert.
     public private(set) var state: DownloadState = .idle
+
+    /// `true` while an AVPlayer `PlayerView` is on screen and is showing the completion
+    /// alert itself (with the video's title). `RootView` skips its own alert then, so a
+    /// finished download never produces two alerts.
+    public var playerOwnsCompletionAlert = false
 
     // MARK: - Private
 
-    private let api: InnerTubeAPI
-    private var downloadTask: Task<Void, Never>?
+    @ObservationIgnored private let store: DownloadStore
+    @ObservationIgnored private let fetcher: any DownloadFetching
+    @ObservationIgnored private let transfer: any BackgroundTransferring
+    @ObservationIgnored private let workScope: any BackgroundWorkScope
+    @ObservationIgnored private let maxConcurrent: Int
+    @ObservationIgnored private let liveActivitiesEnabled: Bool
+    @ObservationIgnored private var pending: [Video] = []
+    /// Queued videos that must be fetched from the yt-dlp server (set by `enqueue(forceServer:)`).
+    @ObservationIgnored private var forcedServer: Set<String> = []
+    /// Videos occupying a concurrency slot (resolving, transferring or post-processing).
+    @ObservationIgnored private var active: Set<String> = []
+    @ObservationIgnored private var starting: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored private var postProcessing: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored private var cancelling: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored private var jobs: [String: DownloadJob] = [:]
+    @ObservationIgnored private var fractions: [String: [DownloadPart: Double]] = [:]
+    /// Bytes received / expected per part, and the speed estimate, for the row's "3.1 MB/s".
+    @ObservationIgnored private var partBytes: [String: [DownloadPart: (written: Int64, expected: Int64)]] = [:]
+    @ObservationIgnored private var speedTrackers: [String: DownloadSpeedTracker] = [:]
+    /// Transfers suspended by the policy (downloads off / waiting for Wi-Fi), as opposed to the user.
+    @ObservationIgnored private var policySuspended: Set<String> = []
+    /// Set while running downloads are held by the "Enable downloads" / "Enable cellular" settings.
+    public private(set) var holdReason: DownloadHoldReason?
+    /// The item whose progress drives the aggregate state and the Live Activity.
+    @ObservationIgnored private var leadVideoId: String?
+    @ObservationIgnored private var eventTask: Task<Void, Never>?
+    @ObservationIgnored private var recoveryTask: Task<Void, Never>?
 
     #if os(iOS)
     @available(iOS 16.1, *)
@@ -56,64 +90,515 @@ public final class VideoDownloadService {
     private var liveActivity: Activity<DownloadActivityAttributes>?
     #endif
 
-    /// URLSession used for all YouTube CDN downloads.
-    /// httpAdditionalHeaders cannot override User-Agent on iOS — must use URLRequest.setValue.
-    private static let cdnSession = URLSession(configuration: .default)
-
-    /// Builds a URLRequest for a YouTube CDN URL.
-    /// - `alr=yes` signals the CDN to respond with the full stream rather than an
-    ///   initial probe chunk. Without it, adaptive-stream URLs often return 403.
-    /// - `userAgent` must match the client that signed the URL (`c=` parameter):
-    ///   Web → desktop Chrome, TV-auth → Cobalt, iOS → native iOS app UA.
-    nonisolated private static func cdnRequest(
-        for url: URL, userAgent: String = InnerTubeClients.iOS.userAgent
-    ) -> URLRequest {
-        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
-        var queryItems = components?.queryItems ?? []
-        if !queryItems.contains(where: { $0.name == "alr" }) {
-            queryItems.append(URLQueryItem(name: "alr", value: "yes"))
-        }
-        components?.queryItems = queryItems
-        let finalURL = components?.url ?? url
-        var req = URLRequest(url: finalURL)
-        req.setValue(userAgent, forHTTPHeaderField: "User-Agent")
-        return req
-    }
+    private var staging: DownloadStaging { transfer.staging }
 
     // MARK: - Init
 
-    public init(api: InnerTubeAPI = InnerTubeAPI()) {
-        self.api = api
+    /// - Parameter autoRecover: re-attach to background transfers left over from a previous
+    ///   launch right away. Tests pass `false` and call `recoverInterruptedDownloads()` themselves.
+    public init(
+        api: InnerTubeAPI = InnerTubeAPI(),
+        store: DownloadStore = .shared,
+        fetcher: (any DownloadFetching)? = nil,
+        transfer: (any BackgroundTransferring)? = nil,
+        workScope: (any BackgroundWorkScope)? = nil,
+        maxConcurrent: Int = DownloadTuning.maxConcurrent,
+        liveActivitiesEnabled: Bool = true,
+        autoRecover: Bool = true
+    ) {
+        self.store = store
+        self.fetcher = fetcher ?? ConfigurableDownloadFetcher(native: InnerTubeDownloadFetcher(api: api))
+        self.transfer = transfer ?? BackgroundDownloadSession.shared
+        self.workScope = workScope ?? SystemBackgroundWorkScope()
+        self.maxConcurrent = max(1, maxConcurrent)
+        self.liveActivitiesEnabled = liveActivitiesEnabled
+
+        let events = self.transfer.events
+        eventTask = Task { [weak self] in
+            for await event in events {
+                guard let self else { break }
+                self.handle(event)
+            }
+        }
+        if autoRecover {
+            recoveryTask = Task { [weak self] in await self?.recoverInterruptedDownloads() }
+        }
     }
 
     // MARK: - Public
 
+    /// Queues `video` for download. Ignored if it is already queued, downloading, merging or
+    /// complete. A previously failed entry is re-queued.
+    /// - Parameter forceServer: fetch from the yt-dlp server whatever the download mode (used by
+    ///   "Available on NAS"). Fails with the usual "not set up" message when no server is configured.
+    public func enqueue(video: Video, audioOnly: Bool = false, forceServer: Bool = false) {
+        guard AppSettings.loadPersisted().downloadsEnabled else {
+            ToastCenter.shared.show(
+                title: String(localized: "Downloads are off", bundle: .module),
+                message: String(localized: "Turn them on at the top of Downloads.", bundle: .module))
+            return
+        }
+        if let existing = store.entry(for: video.id) {
+            switch existing.status {
+            case .queued, .downloading, .merging, .complete: return
+            case .failed: break
+            }
+        }
+        // Set on every enqueue, so a stale flag from an earlier cancelled request cannot apply here.
+        if forceServer { forcedServer.insert(video.id) } else { forcedServer.remove(video.id) }
+        store.upsert(
+            DownloadedVideo(
+                videoId: video.id,
+                title: video.title,
+                channelTitle: video.channelTitle,
+                thumbnailURL: video.thumbnailURL,
+                duration: video.duration ?? 0,
+                fileName: store.fileName(for: video.id),
+                downloadedAt: Date(),
+                status: .queued,
+                isAudioOnly: audioOnly))
+        pending.append(video)
+        if !state.isActive { state = .fetching }
+        pump()
+    }
+
+    /// Current download status of `videoId`, or `nil` if it was never queued.
+    public func status(for videoId: String) -> DownloadedVideo.Status? {
+        store.entry(for: videoId)?.status
+    }
+
+    /// Compatibility shim for call sites written against the single-download API.
     public func download(video: Video) {
-        guard !state.isActive else { return }
-        state = .fetching
+        enqueue(video: video)
+    }
+
+    /// Cancels a queued or running download: stops its transfers and deletes its staging data.
+    /// The entry is kept (as failed "Cancelled") so the user can retry; call
+    /// `DownloadStore.remove` to delete it.
+    public func cancel(videoId: String) {
+        pending.removeAll { $0.id == videoId }
+        guard let entry = store.entry(for: videoId), Self.isInFlight(entry.status) else { return }
+        fail(videoId: videoId, message: Self.cancelledMessage)
+    }
+
+    /// Pauses a running download (suspends its transfers; progress is kept). No-op unless the
+    /// entry is `.downloading` with transfers started.
+    public func pause(videoId: String) {
+        guard let entry = store.entry(for: videoId), entry.status == .downloading, !entry.isPaused,
+            jobs[videoId] != nil
+        else { return }
+        store.setPaused(videoId: videoId, true)
+        speedTrackers[videoId]?.reset()
+        Task { await transfer.pause(videoId: videoId) }
+    }
+
+    /// Resumes a paused download.
+    public func resume(videoId: String) {
+        guard let entry = store.entry(for: videoId), entry.status == .downloading, entry.isPaused else { return }
+        store.setPaused(videoId: videoId, false)
+        if currentHoldReason() != nil {
+            // Still held by the settings: it will start when they allow it.
+            policySuspended.insert(videoId)
+            return
+        }
+        speedTrackers[videoId]?.reset()
+        Task { await transfer.resume(videoId: videoId) }
+    }
+
+    // MARK: - Settings policy
+
+    private func currentHoldReason(cellularOnly: Bool? = nil) -> DownloadHoldReason? {
+        let settings = AppSettings.loadPersisted()
+        return DownloadNetworkPolicy.holdReason(
+            downloadsEnabled: settings.downloadsEnabled, allowCellular: settings.allowCellularDownloads,
+            onCellularOnly: cellularOnly ?? ConnectivityMonitor.shared.isCellularOnly)
+    }
+
+    /// Re-applies "Enable downloads" / "Enable cellular" to running transfers. Call when either
+    /// setting changes or the connection changes.
+    public func refreshPolicy(cellularOnly: Bool? = nil) {
+        let reason = currentHoldReason(cellularOnly: cellularOnly)
+        holdReason = reason
+        let running = store.entries.filter { $0.status == .downloading && jobs[$0.videoId] != nil }.map(\.videoId)
+        for id in running {
+            if reason != nil {
+                guard !policySuspended.contains(id), store.entry(for: id)?.isPaused == false else { continue }
+                policySuspended.insert(id)
+                speedTrackers[id]?.reset()
+                store.setTransferStats(
+                    videoId: id, bytesPerSecond: 0, received: store.entry(for: id)?.bytesReceived ?? 0,
+                    expected: store.entry(for: id)?.bytesExpected ?? 0)
+                Task { await transfer.pause(videoId: id) }
+            } else if policySuspended.remove(id) != nil, store.entry(for: id)?.isPaused == false {
+                Task { await transfer.resume(videoId: id) }
+            }
+        }
+        if reason == nil { policySuspended = policySuspended.filter { id in running.contains(id) } }
+    }
+
+    /// Re-queues a failed download. The stream URLs are resolved again, so an expired link is fine.
+    public func retry(videoId: String) {
+        guard let entry = store.entry(for: videoId), entry.status == .failed else { return }
+        enqueue(
+            video: Video(
+                id: entry.videoId,
+                title: entry.title,
+                channelTitle: entry.channelTitle,
+                thumbnailURL: entry.thumbnailURL,
+                duration: entry.duration),
+            audioOnly: entry.isAudioOnly)
+    }
+
+    /// Clears a momentary `.done` / `.failed` result after the UI has shown it.
+    public func reset() {
+        if !state.isActive { state = .idle }
+    }
+
+    // MARK: - Recovery
+
+    /// Reconciles in-flight entries left over from a previous launch with what the background
+    /// session actually still has:
+    /// - live transfers: re-attach, the entry stays `downloading` and progress continues;
+    /// - every part staged but nothing live: resume post-processing;
+    /// - neither: `failed("Interrupted")`.
+    public func recoverInterruptedDownloads() async {
+        let live = await transfer.liveTransfers()
+        for entry in store.entries where Self.isInFlight(entry.status) {
+            let id = entry.videoId
+            if active.contains(id) || pending.contains(where: { $0.id == id }) { continue }
+            guard let job = staging.load(videoId: id) else {
+                failInterrupted(videoId: id)
+                continue
+            }
+            let hasLiveTransfer = live.contains { $0.videoId == id }
+            if hasLiveTransfer {
+                adopt(job, status: .downloading)
+                refreshAggregate()
+            } else if job.isComplete {
+                adopt(job, status: .merging)
+                startPostProcessing(videoId: id)
+            } else {
+                failInterrupted(videoId: id)
+            }
+        }
+        // Staging left behind by entries that no longer exist or are no longer in flight.
+        if let names = try? FileManager.default.contentsOfDirectory(atPath: staging.root.path) {
+            for name in names {
+                let inFlight = store.entry(for: name).map { Self.isInFlight($0.status) } ?? false
+                if !inFlight && !active.contains(name) { staging.remove(videoId: name) }
+            }
+        }
+        pump()
+    }
+
+    private func adopt(_ job: DownloadJob, status: DownloadedVideo.Status) {
+        let id = job.videoId
+        jobs[id] = job
+        active.insert(id)
+        fractions[id] = Dictionary(uniqueKeysWithValues: job.donePartNames.map { ($0, 1.0) })
+        store.setStatus(videoId: id, status: status)
+        if let entry = store.entry(for: id) { promoteLead(id, title: entry.title) }
+    }
+
+    private func failInterrupted(videoId: String) {
+        staging.remove(videoId: videoId)
+        store.setStatus(videoId: videoId, status: .failed, error: Self.interruptedMessage)
+        store.setProgress(videoId: videoId, progress: 0)
+        refreshAggregate()
+    }
+
+    // MARK: - Queue
+
+    private static let cancelledMessage = "Cancelled"
+    private static let interruptedMessage = "Interrupted"
+
+    private static func isInFlight(_ status: DownloadedVideo.Status) -> Bool {
+        switch status {
+        case .queued, .downloading, .merging: return true
+        case .complete, .failed: return false
+        }
+    }
+
+    private func pump() {
+        while active.count < maxConcurrent, !pending.isEmpty {
+            let video = pending.removeFirst()
+            guard store.entry(for: video.id)?.status == .queued else { continue }
+            active.insert(video.id)
+            starting[video.id] = Task { [weak self] in
+                await self?.begin(video)
+            }
+        }
+    }
+
+    /// Resolves the streams, persists the job record, and hands each part to the transfer layer.
+    private func begin(_ video: Video) async {
+        let id = video.id
+        store.setStatus(videoId: id, status: .downloading)
+        store.setProgress(videoId: id, progress: 0)
+        promoteLead(id, title: video.title)
+        refreshAggregate()
+
+        let endWork = workScope.begin(onExpire: {})
+        defer { endWork() }
+        // A cancel followed by a quick retry must not have the old cancel hit the new transfers.
+        await cancelling[id]?.value
+        do {
+            let audioOnly = store.entry(for: id)?.isAudioOnly ?? false
+            let plan = try await fetcher.resolve(
+                video: video, audioOnly: audioOnly, forceServer: forcedServer.contains(id))
+            try Task.checkCancellation()
+            let job = DownloadJob(videoId: id, plan: plan)
+            try staging.save(job)
+            jobs[id] = job
+            fractions[id] = [:]
+            starting[id] = nil
+            for part in plan.parts {
+                transfer.start(
+                    DownloadTransferID(videoId: id, part: part.part), url: part.url, userAgent: part.userAgent,
+                    headers: part.headers)
+            }
+            if currentHoldReason() != nil {
+                policySuspended.insert(id)
+                await transfer.pause(videoId: id)
+            }
+        } catch is CancellationError {
+            // `cancel` already cleaned up.
+        } catch let urlError as URLError where urlError.code == .cancelled {
+        } catch {
+            downloadLog.error("[download] ❌ \(id) failed to start: \(error.localizedDescription)")
+            fail(videoId: id, message: error.localizedDescription)
+        }
+    }
+
+    // MARK: - Transfer events
+
+    private func handle(_ event: BackgroundTransferEvent) {
+        switch event {
+        case .progress(let id, let written, let expected):
+            guard expected > 0, let job = trackedJob(id.videoId),
+                store.entry(for: id.videoId)?.status == .downloading
+            else { return }
+            fractions[id.videoId, default: [:]][id.part] = min(Double(written) / Double(expected), 1)
+            partBytes[id.videoId, default: [:]][id.part] = (written, expected)
+            publishTransferStats(videoId: id.videoId)
+            let parts = job.expectedParts
+            let sum = parts.reduce(0.0) { $0 + (fractions[id.videoId]?[$1] ?? 0) }
+            applyProgress(videoId: id.videoId, progress: sum / Double(max(parts.count, 1)))
+        case .staged(let id):
+            handleStaged(id)
+        case .failed(let id, let message):
+            guard trackedJob(id.videoId) != nil || active.contains(id.videoId) else { return }
+            downloadLog.error("[download] ❌ \(id.taskDescription) failed: \(message)")
+            fail(videoId: id.videoId, message: message)
+        case .sessionEventsFinished:
+            // Relayed through the ordered stream so any post-processing background task has
+            // already begun before the system is told it may suspend us again.
+            transfer.backgroundEventsDidFinish()
+        }
+    }
+
+    /// The job for an in-flight video: the in-memory one, or (events can arrive before
+    /// `recoverInterruptedDownloads` has run after a relaunch) the one persisted on disk.
+    private func trackedJob(_ videoId: String) -> DownloadJob? {
+        if let job = jobs[videoId] { return job }
+        guard let entry = store.entry(for: videoId), Self.isInFlight(entry.status),
+            !pending.contains(where: { $0.id == videoId }),
+            let job = staging.load(videoId: videoId)
+        else { return nil }
+        adopt(job, status: entry.status == .merging ? .merging : .downloading)
+        return job
+    }
+
+    private func handleStaged(_ id: DownloadTransferID) {
+        let videoId = id.videoId
+        guard var job = trackedJob(videoId), store.entry(for: videoId) != nil else {
+            // Late event for something cancelled or removed: drop its bytes.
+            if !active.contains(videoId) { staging.remove(videoId: videoId) }
+            return
+        }
+        job.donePartNames.insert(id.part)
+        jobs[videoId] = job
+        try? staging.save(job)
+        fractions[videoId, default: [:]][id.part] = 1
+        if let known = partBytes[videoId]?[id.part] { partBytes[videoId]?[id.part] = (known.expected, known.expected) }
+        if job.isComplete {
+            startPostProcessing(videoId: videoId)
+        } else {
+            let parts = job.expectedParts
+            let sum = parts.reduce(0.0) { $0 + (fractions[videoId]?[$1] ?? 0) }
+            applyProgress(videoId: videoId, progress: sum / Double(max(parts.count, 1)))
+        }
+    }
+
+    /// Totals the parts' bytes and updates the row's size and speed readout.
+    private func publishTransferStats(videoId: String) {
+        let parts = partBytes[videoId]?.values ?? [:].values
+        let received = parts.reduce(Int64(0)) { $0 + $1.written }
+        let expected = parts.reduce(Int64(0)) { $0 + $1.expected }
+        var tracker = speedTrackers[videoId] ?? DownloadSpeedTracker()
+        let speed = tracker.record(totalBytes: received, at: Date())
+        speedTrackers[videoId] = tracker
+        let paused = store.entry(for: videoId)?.isPaused ?? false
+        store.setTransferStats(
+            videoId: videoId, bytesPerSecond: paused ? 0 : speed, received: received, expected: expected)
+    }
+
+    private func applyProgress(videoId: String, progress value: Double) {
+        store.setProgress(videoId: videoId, progress: value)
+        guard videoId == leadVideoId else { return }
+        refreshAggregate()
         #if os(iOS)
-        if #available(iOS 16.1, *) {
-            startLiveActivity(video: video)
+        if liveActivitiesEnabled, #available(iOS 16.1, *) {
+            Task { await updateLiveActivity(phase: .downloading, progress: value) }
         }
         #endif
-        downloadTask = Task { await performDownload(video: video) }
     }
 
-    public func reset() {
-        downloadTask?.cancel()
-        downloadTask = nil
-        state = .idle
+    // MARK: - Post-processing
+
+    private func startPostProcessing(videoId id: String) {
+        guard postProcessing[id] == nil, let job = jobs[id] else { return }
+        store.setStatus(videoId: id, status: .merging)
+        if id == leadVideoId {
+            refreshAggregate()
+            #if os(iOS)
+            if liveActivitiesEnabled, #available(iOS 16.1, *) {
+                Task { await updateLiveActivity(phase: .saving, progress: 1) }
+            }
+            #endif
+        }
+        // Keeps the process alive for the merge when we were only woken in the background. If the
+        // system expires it anyway, the staged files remain and the next launch resumes.
+        let endWork = workScope.begin(onExpire: {
+            downloadLog.notice("[download] background time expired during post-processing of \(id)")
+        })
+        postProcessing[id] = Task { [weak self] in
+            await self?.postProcess(job, endWork: endWork)
+        }
     }
 
-    // MARK: - Private implementation
+    private func postProcess(_ job: DownloadJob, endWork: @MainActor () -> Void) async {
+        let id = job.videoId
+        defer { endWork() }
+        var stagedParts: [DownloadPart: URL] = [:]
+        for part in job.expectedParts { stagedParts[part] = staging.stagedFile(videoId: id, part: part) }
+        do {
+            let audioOnly = store.entry(for: id)?.isAudioOnly ?? false
+            let tempURL = try await fetcher.assemble(videoId: id, stagedParts: stagedParts, audioOnly: audioOnly)
+            guard !Task.isCancelled, store.entry(for: id)?.status == .merging else {
+                try? FileManager.default.removeItem(at: tempURL)
+                return
+            }
+            if store.finalize(videoId: id, from: tempURL) {
+                succeed(videoId: id)
+            } else {
+                try? FileManager.default.removeItem(at: tempURL)
+                fail(
+                    videoId: id,
+                    message: store.entry(for: id)?.errorMessage ?? "Could not save the downloaded file")
+            }
+        } catch is CancellationError {
+            // `cancel` already cleaned up.
+        } catch {
+            downloadLog.error("[download] ❌ \(id) post-processing failed: \(error.localizedDescription)")
+            if !Task.isCancelled { fail(videoId: id, message: error.localizedDescription) }
+        }
+    }
 
-    // MARK: Live Activity helpers
+    // MARK: - Completion
+
+    private func succeed(videoId id: String) {
+        postProcessing[id] = nil
+        jobs[id] = nil
+        fractions[id] = nil
+        partBytes[id] = nil
+        speedTrackers[id] = nil
+        staging.remove(videoId: id)
+        active.remove(id)
+        finish(videoId: id, failure: nil)
+        pump()
+    }
+
+    /// Marks `videoId` failed and releases everything it held: transfers, staging, slot.
+    private func fail(videoId id: String, message: String) {
+        starting[id]?.cancel()
+        starting[id] = nil
+        postProcessing[id]?.cancel()
+        postProcessing[id] = nil
+        let transfer = self.transfer
+        cancelling[id] = Task { await transfer.cancel(videoId: id) }
+        staging.remove(videoId: id)
+        jobs[id] = nil
+        fractions[id] = nil
+        partBytes[id] = nil
+        speedTrackers[id] = nil
+        pending.removeAll { $0.id == id }
+        let wasActive = active.remove(id) != nil
+        store.setStatus(videoId: id, status: .failed, error: message)
+        store.setProgress(videoId: id, progress: 0)
+        if wasActive {
+            finish(videoId: id, failure: message)
+        } else {
+            refreshAggregate()
+        }
+        pump()
+    }
+
+    private func finish(videoId: String, failure: String?) {
+        if videoId == leadVideoId {
+            leadVideoId = nil
+            #if os(iOS)
+            if liveActivitiesEnabled, #available(iOS 16.1, *) {
+                let phase: DownloadActivityAttributes.DownloadContentState.Phase =
+                    failure == nil ? .done : .failed
+                Task { await endLiveActivity(phase: phase) }
+            }
+            #endif
+        }
+        // Promote another running item to lead.
+        if leadVideoId == nil { leadVideoId = active.first }
+        // `.done` / `.failed` are momentary results for the UI; the next progress event or
+        // `reset()` restores the aggregate.
+        switch failure {
+        case nil: state = .done
+        case Self.cancelledMessage: refreshAggregate()
+        case .some(let reason): state = .failed(reason)
+        }
+    }
+
+    private func promoteLead(_ id: String, title: String) {
+        guard leadVideoId == nil else { return }
+        leadVideoId = id
+        #if os(iOS)
+        if liveActivitiesEnabled, #available(iOS 16.1, *) { startLiveActivity(title: title) }
+        #endif
+    }
+
+    private func refreshAggregate() {
+        if case .done = state, pending.isEmpty, active.isEmpty { return }
+        if case .failed = state, pending.isEmpty, active.isEmpty { return }
+        guard !pending.isEmpty || !active.isEmpty else {
+            state = .idle
+            return
+        }
+        guard let lead = leadVideoId, let entry = store.entry(for: lead) else {
+            state = .fetching
+            return
+        }
+        switch entry.status {
+        case .downloading: state = .downloading(progress: entry.progress)
+        case .merging: state = .saving
+        default: state = .fetching
+        }
+    }
+
+    // MARK: - Live Activity (driven by the lead item)
 
     #if os(iOS)
     @available(iOS 16.1, *)
-    private func startLiveActivity(video: Video) {
+    private func startLiveActivity(title: String) {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
-        let attrs = DownloadActivityAttributes(videoTitle: video.title)
+        let attrs = DownloadActivityAttributes(videoTitle: title)
         let state = DownloadActivityAttributes.DownloadContentState(progress: 0, phase: .fetching)
         do {
             liveActivity = try Activity<DownloadActivityAttributes>.request(
@@ -165,417 +650,4 @@ public final class VideoDownloadService {
         await activity.end(ActivityContent(state: state, staleDate: nil), dismissalPolicy: .after(.now + 4))
     }
     #endif
-
-    // MARK: Download orchestration
-
-    private func performDownload(video: Video) async {
-        do {
-            guard await requestPhotoAddAccess() else {
-                state = .failed("Photo library access is required to save the video")
-                #if os(iOS)
-                if #available(iOS 16.1, *) { await endLiveActivity(phase: .failed) }
-                #endif
-                return
-            }
-
-            if let tempURL = await tryDirectDownload(videoId: video.id) {
-                downloadLog.notice("[download] remuxing for Photos compatibility")
-                #if os(iOS)
-                if #available(iOS 16.1, *) { await updateLiveActivity(phase: .saving, progress: 1) }
-                #endif
-                let photosURL = try await passthroughRemux(inputURL: tempURL, videoId: video.id, suffix: "muxed")
-                try? FileManager.default.removeItem(at: tempURL)
-                state = .saving
-                try await saveToPhotoLibrary(fileURL: photosURL)
-                storeInDownloadStore(video: video, mergedFileURL: photosURL)
-                try? FileManager.default.removeItem(at: photosURL)
-                downloadLog.notice("[download] ✅ saved to Photos \(video.id)")
-                state = .done
-                #if os(iOS)
-                if #available(iOS 16.1, *) { await endLiveActivity(phase: .done) }
-                #endif
-                return
-            }
-
-            downloadLog.notice("[download] direct download failed, trying adaptive merge fallback")
-            #if os(iOS)
-            if #available(iOS 16.1, *) { await updateLiveActivity(phase: .downloading, progress: 0.1) }
-            #endif
-            let androidInfo = try await api.fetchPlayerInfoAndroid(videoId: video.id)
-            downloadLog.notice("[download] adaptive fallback formats=\(androidInfo.formats.count)")
-            for (i, fmt) in androidInfo.formats.enumerated() {
-                downloadLog.notice(
-                    "[download]   [\(i)] mime=\(fmt.mimeType) label=\(fmt.label) hasURL=\(fmt.url != nil) bitrate=\(fmt.bitrate ?? 0)"
-                )
-            }
-            guard let videoURL = androidInfo.bestAdaptiveVideoURL,
-                let audioURL = androidInfo.bestAdaptiveAudioURL
-            else {
-                downloadLog.error("[download] ❌ no adaptive video/audio streams found")
-                state = .failed("No downloadable stream found for this video")
-                #if os(iOS)
-                if #available(iOS 16.1, *) { await endLiveActivity(phase: .failed) }
-                #endif
-                return
-            }
-            downloadLog.notice("[download] merging adaptive videoURL prefix=\(videoURL.absoluteString.prefix(60))")
-            downloadLog.notice("[download] merging adaptive audioURL prefix=\(audioURL.absoluteString.prefix(60))")
-            state = .downloading(progress: 0)
-            let mergedURL = try await mergeAdaptiveStreams(
-                videoURL: videoURL, audioURL: audioURL, videoId: video.id,
-                userAgent: InnerTubeClients.Android.userAgent)
-            state = .saving
-            #if os(iOS)
-            if #available(iOS 16.1, *) { await updateLiveActivity(phase: .saving, progress: 1) }
-            #endif
-            try await saveToPhotoLibrary(fileURL: mergedURL)
-            storeInDownloadStore(video: video, mergedFileURL: mergedURL)
-            try? FileManager.default.removeItem(at: mergedURL)
-            downloadLog.notice("[download] ✅ adaptive merge saved to Photos \(video.id)")
-            state = .done
-            #if os(iOS)
-            if #available(iOS 16.1, *) { await endLiveActivity(phase: .done) }
-            #endif
-        } catch is CancellationError {
-            state = .idle
-            #if os(iOS)
-            if #available(iOS 16.1, *) { await endLiveActivity(phase: .failed) }
-            #endif
-        } catch {
-            let nsErr = error as NSError
-            downloadLog.error(
-                "[download] ❌ failed: domain=\(nsErr.domain) code=\(nsErr.code) desc=\(nsErr.localizedDescription)")
-            let userMessage: String
-            if nsErr.domain == "PHPhotosErrorDomain" {
-                userMessage =
-                    "Could not save to Photos. Please check Settings → Privacy & Security → Photos and allow SmartTube to add photos."
-            } else if let urlErr = error as? URLError, urlErr.code == .fileDoesNotExist {
-                userMessage = "Download failed — the video file was removed before saving. Please try again."
-            } else {
-                userMessage = error.localizedDescription
-            }
-            state = .failed(userMessage)
-            #if os(iOS)
-            if #available(iOS 16.1, *) { await endLiveActivity(phase: .failed) }
-            #endif
-        }
-    }
-
-    /// Tries Web client then Android client for a direct muxed MP4 download.
-    /// Returns the temp file URL on success, nil if no muxed stream could be found.
-    /// Note: TVHTML5-signed CDN URLs always return 403 when fetched without session cookies,
-    /// so the Android client (c=ANDROID URLs) is used as the reliable fallback.
-    private func tryDirectDownload(videoId: String) async -> URL? {
-        let candidates: [(String, String, () async throws -> PlayerInfo)] = [
-            (
-                "Web", InnerTubeClients.Web.userAgent,
-                { [self] in try await api.fetchPlayerInfoForDownload(videoId: videoId) }
-            ),
-            (
-                "Android", InnerTubeClients.Android.userAgent,
-                { [self] in try await api.fetchPlayerInfoAndroid(videoId: videoId) }
-            ),
-        ]
-        for (label, clientUA, fetch) in candidates {
-            guard let info = try? await fetch() else {
-                downloadLog.notice("[download] \(label) client failed or UNPLAYABLE, trying next")
-                continue
-            }
-            downloadLog.notice("[download] \(label) formats=\(info.formats.count) hlsURL=\(info.hlsURL != nil)")
-            for (i, fmt) in info.formats.enumerated() {
-                downloadLog.notice(
-                    "[download]   [\(i)] mime=\(fmt.mimeType) label=\(fmt.label) hasURL=\(fmt.url != nil) bitrate=\(fmt.bitrate ?? 0)"
-                )
-            }
-            guard let muxedURL = info.bestMuxedDownloadURL else {
-                downloadLog.notice("[download] \(label) — no muxed MP4, trying next")
-                continue
-            }
-            downloadLog.notice("[download] \(label) ✅ muxed URL found, downloading")
-            state = .downloading(progress: 0)
-            #if os(iOS)
-            if #available(iOS 16.1, *) { await updateLiveActivity(phase: .downloading, progress: 0) }
-            #endif
-            if let tempURL = try? await downloadToTemp(url: muxedURL, videoId: videoId, userAgent: clientUA) {
-                let size = (try? FileManager.default.attributesOfItem(atPath: tempURL.path)[.size] as? Int) ?? 0
-                downloadLog.notice("[download] \(label) download complete bytes=\(size)")
-                guard size > 0 else {
-                    downloadLog.notice("[download] \(label) — 0 bytes, YouTube rejected URL, trying next")
-                    try? FileManager.default.removeItem(at: tempURL)
-                    continue
-                }
-                return tempURL
-            }
-        }
-        return nil
-    }
-
-    /// Remuxes an MP4 file into a new container using passthrough (no re-encoding).
-    /// Fixes PHPhotosErrorDomain 3302 caused by moov-at-end MP4 containers from YouTube.
-    private nonisolated func passthroughRemux(inputURL: URL, videoId: String, suffix: String) async throws -> URL {
-        let destURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("\(videoId)-\(suffix)-remux.mp4")
-        try? FileManager.default.removeItem(at: destURL)
-        let asset = AVURLAsset(url: inputURL)
-        guard let session = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetPassthrough) else {
-            throw URLError(.badServerResponse)
-        }
-        session.outputURL = destURL
-        session.outputFileType = .mp4
-        await session.export()
-        if let error = session.error {
-            downloadLog.error("[download] passthrough remux error: \(error.localizedDescription)")
-            throw error
-        }
-        let size = (try? FileManager.default.attributesOfItem(atPath: destURL.path)[.size] as? Int) ?? 0
-        downloadLog.notice("[download] passthrough remux done bytes=\(size)")
-        return destURL
-    }
-
-    /// Downloads best adaptive video-only and audio-only MP4 streams concurrently,
-    /// then merges them into a single MP4 using AVAssetWriter for true passthrough
-    /// (sample-level copy, no re-encode of codec data).
-    private nonisolated func mergeAdaptiveStreams(
-        videoURL: URL, audioURL: URL, videoId: String,
-        userAgent: String = InnerTubeClients.iOS.userAgent
-    ) async throws -> URL {
-        // Download both streams concurrently with explicit UA per-request
-        let videoReq = VideoDownloadService.cdnRequest(for: videoURL, userAgent: userAgent)
-        let audioReq = VideoDownloadService.cdnRequest(for: audioURL, userAgent: userAgent)
-        async let videoTemp = VideoDownloadService.cdnSession.download(for: videoReq)
-        async let audioTemp = VideoDownloadService.cdnSession.download(for: audioReq)
-        let (videoResult, audioResult) = try await (videoTemp, audioTemp)
-
-        let videoStatus = (videoResult.1 as? HTTPURLResponse)?.statusCode ?? 0
-        let audioStatus = (audioResult.1 as? HTTPURLResponse)?.statusCode ?? 0
-        let videoFile = FileManager.default.temporaryDirectory.appendingPathComponent("\(videoId)-vid.mp4")
-        let audioFile = FileManager.default.temporaryDirectory.appendingPathComponent("\(videoId)-aud.mp4")
-        try? FileManager.default.removeItem(at: videoFile)
-        try? FileManager.default.removeItem(at: audioFile)
-        try FileManager.default.moveItem(at: videoResult.0, to: videoFile)
-        try FileManager.default.moveItem(at: audioResult.0, to: audioFile)
-
-        let videoSize = (try? FileManager.default.attributesOfItem(atPath: videoFile.path)[.size] as? Int) ?? 0
-        let audioSize = (try? FileManager.default.attributesOfItem(atPath: audioFile.path)[.size] as? Int) ?? 0
-        downloadLog.notice(
-            "[download] adaptive downloaded videoStatus=\(videoStatus) video=\(videoSize)B audioStatus=\(audioStatus) audio=\(audioSize)B"
-        )
-
-        defer {
-            try? FileManager.default.removeItem(at: videoFile)
-            try? FileManager.default.removeItem(at: audioFile)
-        }
-
-        guard videoSize > 0, audioSize > 0 else {
-            throw URLError(.zeroByteResource)
-        }
-
-        let destURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(videoId)-merged.mp4")
-        try? FileManager.default.removeItem(at: destURL)
-
-        // Use AVAssetWriter for true passthrough mux — reads compressed samples directly
-        // from the source tracks and writes them to the new container without decoding.
-        let videoAsset = AVURLAsset(url: videoFile)
-        let audioAsset = AVURLAsset(url: audioFile)
-
-        let videoTrackSrc = try await videoAsset.loadTracks(withMediaType: .video).first
-        let audioTrackSrc = try await audioAsset.loadTracks(withMediaType: .audio).first
-        guard let videoTrackSrc, let audioTrackSrc else {
-            throw URLError(.badServerResponse)
-        }
-
-        let videoFmt = try await videoTrackSrc.load(.formatDescriptions).first!
-        let audioFmt = try await audioTrackSrc.load(.formatDescriptions).first!
-        let duration = try await videoAsset.load(.duration)
-
-        let writer = try AVAssetWriter(outputURL: destURL, fileType: .mp4)
-        let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: nil, sourceFormatHint: videoFmt)
-        let audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: nil, sourceFormatHint: audioFmt)
-        videoInput.expectsMediaDataInRealTime = false
-        audioInput.expectsMediaDataInRealTime = false
-        writer.add(videoInput)
-        writer.add(audioInput)
-
-        let videoReader = try AVAssetReader(asset: videoAsset)
-        let audioReader = try AVAssetReader(asset: audioAsset)
-        let videoOut = AVAssetReaderTrackOutput(track: videoTrackSrc, outputSettings: nil)
-        let audioOut = AVAssetReaderTrackOutput(track: audioTrackSrc, outputSettings: nil)
-        videoOut.alwaysCopiesSampleData = false
-        audioOut.alwaysCopiesSampleData = false
-        videoReader.add(videoOut)
-        audioReader.add(audioOut)
-
-        writer.startWriting()
-        videoReader.startReading()
-        audioReader.startReading()
-        writer.startSession(atSourceTime: .zero)
-
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            let group = DispatchGroup()
-            let queue = DispatchQueue(label: "com.smarttube.merge", qos: .userInitiated)
-            nonisolated(unsafe) let videoInput = videoInput
-            nonisolated(unsafe) let videoOut = videoOut
-            nonisolated(unsafe) let audioInput = audioInput
-            nonisolated(unsafe) let audioOut = audioOut
-            nonisolated(unsafe) let writer = writer
-
-            group.enter()
-            videoInput.requestMediaDataWhenReady(on: queue) {
-                while videoInput.isReadyForMoreMediaData {
-                    if let buf = videoOut.copyNextSampleBuffer() {
-                        videoInput.append(buf)
-                    } else {
-                        videoInput.markAsFinished()
-                        group.leave()
-                        return
-                    }
-                }
-            }
-
-            group.enter()
-            audioInput.requestMediaDataWhenReady(on: queue) {
-                while audioInput.isReadyForMoreMediaData {
-                    if let buf = audioOut.copyNextSampleBuffer() {
-                        audioInput.append(buf)
-                    } else {
-                        audioInput.markAsFinished()
-                        group.leave()
-                        return
-                    }
-                }
-            }
-
-            group.notify(queue: queue) {
-                writer.finishWriting {
-                    if let err = writer.error {
-                        cont.resume(throwing: err)
-                    } else {
-                        cont.resume()
-                    }
-                }
-            }
-        }
-
-        let mergedSize = (try? FileManager.default.attributesOfItem(atPath: destURL.path)[.size] as? Int) ?? 0
-        downloadLog.notice("[download] adaptive merge done bytes=\(mergedSize)")
-        _ = duration  // suppress unused warning
-        return destURL
-    }
-
-    private func requestPhotoAddAccess() async -> Bool {
-        #if os(iOS)
-        let current = PHPhotoLibrary.authorizationStatus(for: .addOnly)
-        switch current {
-        case .authorized, .limited:
-            downloadLog.notice("[download] Photos access already authorized")
-            return true
-        case .notDetermined:
-            downloadLog.notice("[download] Requesting Photos add-only permission")
-            let granted = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
-            let result = granted == .authorized || granted == .limited
-            downloadLog.notice("[download] Photos permission result: \(result ? "granted" : "denied")")
-            return result
-        case .denied:
-            downloadLog.error(
-                "[download] ❌ Photos access denied — user must enable in Settings → Privacy & Security → Photos")
-            return false
-        case .restricted:
-            downloadLog.error("[download] ❌ Photos access restricted by device policy")
-            return false
-        @unknown default:
-            downloadLog.error("[download] ❌ Unknown Photos authorization status")
-            return false
-        }
-        #else
-        return false
-        #endif
-    }
-
-    /// Copies `mergedFileURL` to the DownloadStore destination and registers the download.
-    /// If the copy fails (e.g. disk full) the Photos save is unaffected — this is best-effort.
-    private func storeInDownloadStore(video: Video, mergedFileURL: URL) {
-        let destURL = DownloadStore.shared.destinationURL(for: video.id)
-        let fm = FileManager.default
-        try? fm.createDirectory(at: destURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        do {
-            // Remove a stale file from a previous download of the same video.
-            try? fm.removeItem(at: destURL)
-            try fm.copyItem(at: mergedFileURL, to: destURL)
-        } catch {
-            downloadLog.notice("[download] DownloadStore copy failed for \(video.id): \(error.localizedDescription)")
-            return
-        }
-        DownloadStore.shared.add(
-            DownloadedVideo(
-                videoId: video.id,
-                title: video.title,
-                channelTitle: video.channelTitle,
-                thumbnailURL: video.thumbnailURL,
-                duration: video.duration ?? 0,
-                fileURL: destURL,
-                downloadedAt: Date()
-            ))
-        downloadLog.notice("[download] registered in DownloadStore \(video.id)")
-    }
-
-    private func downloadToTemp(
-        url: URL, videoId: String, userAgent: String = InnerTubeClients.iOS.userAgent
-    ) async throws -> URL {
-        let req = VideoDownloadService.cdnRequest(for: url, userAgent: userAgent)
-        let (tempURL, response) = try await VideoDownloadService.cdnSession.download(for: req)
-        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-        let size = (try? FileManager.default.attributesOfItem(atPath: tempURL.path)[.size] as? Int) ?? 0
-        downloadLog.notice("[download] downloadToTemp status=\(status) bytes=\(size)")
-        let destURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("\(videoId).mp4")
-        try? FileManager.default.removeItem(at: destURL)
-        try FileManager.default.moveItem(at: tempURL, to: destURL)
-        return destURL
-    }
-
-    // nonisolated so the closures passed to performChanges carry no @MainActor
-    // isolation — Photos calls them on its own serial queue and would crash if
-    // the closures were actor-isolated (libdispatch queue assertion).
-    private nonisolated func saveToPhotoLibrary(fileURL: URL) async throws {
-        #if os(iOS)
-        guard FileManager.default.fileExists(atPath: fileURL.path) else {
-            let desc = "Video file was removed before saving to Photos: \(fileURL.lastPathComponent)"
-            downloadLog.error("[download] ❌ \(desc)")
-            throw URLError(.fileDoesNotExist, userInfo: [NSLocalizedDescriptionKey: desc])
-        }
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            PHPhotoLibrary.shared().performChanges(
-                {
-                    PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: fileURL)
-                },
-                completionHandler: { success, error in
-                    if let error {
-                        let nsErr = error as NSError
-                        downloadLog.error(
-                            "[download] ❌ PHPhotoLibrary save error: domain=\(nsErr.domain) code=\(nsErr.code) desc=\(nsErr.localizedDescription)"
-                        )
-                        continuation.resume(throwing: error)
-                    } else if success {
-                        continuation.resume()
-                    } else {
-                        // success=false, error=nil means permission was denied or restricted at save time
-                        let desc =
-                            "Could not save to Photos. Please check Settings → Privacy & Security → Photos and allow SmartTube to add photos."
-                        downloadLog.error(
-                            "[download] ❌ PHPhotoLibrary performChanges returned success=false with no error — likely permission denied"
-                        )
-                        let permissionError = NSError(
-                            domain: "PHPhotosErrorDomain",
-                            code: PHPhotosError.accessRestricted.rawValue,
-                            userInfo: [NSLocalizedDescriptionKey: desc]
-                        )
-                        continuation.resume(throwing: permissionError)
-                    }
-                })
-        }
-        #else
-        throw URLError(.unsupportedURL)
-        #endif
-    }
 }
-#endif  // ENABLE_DOWNLOADS

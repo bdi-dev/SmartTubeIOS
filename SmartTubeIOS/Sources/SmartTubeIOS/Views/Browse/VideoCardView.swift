@@ -47,11 +47,9 @@ public struct VideoCardView: View {
     @State private var playlistPickerMode: PlaylistPickerSheet.Mode?
     /// Index into `video.thumbnailFallbackURLs`. -1 = use primary `thumbnailURL`.
     @State private var thumbnailFallbackIndex: Int = -1
-    #if !os(tvOS)
-    #if ENABLE_DOWNLOADS
-    @Environment(VideoDownloadService.self) private var downloadService
-    #endif
-    #endif
+    @Environment(\.displayScale) private var displayScale
+    /// Width of the compact (list) layout's thumbnail, in points.
+    private static let compactThumbnailWidth: CGFloat = 120
     #if os(tvOS)
     @FocusState private var isFocused: Bool
     #endif
@@ -271,12 +269,47 @@ public struct VideoCardView: View {
             } label: {
                 Label("Play Next", systemImage: "text.insert")
             }
+            #if !os(tvOS)
+            DownloadActionButton(video: video)
+            DownloadAudioActionButton(video: video)
+            #endif
             #if os(iOS)
             Button {
                 playerRouter.open(video: video, api: api, incognito: true)
             } label: {
                 Label("Play Incognito", systemImage: "eyeglasses")
             }
+            Menu {
+                Button {
+                    playerRouter.openInWebPlayer(video: video, api: api)
+                } label: {
+                    Label("Play in YouTube Player", systemImage: "play.rectangle")
+                }
+                .accessibilityIdentifier(AccessibilityID.VideoCard.playWebButton)
+                Button {
+                    playerRouter.openInNativePlayer(video: video)
+                } label: {
+                    Label("Play in Native Player", systemImage: "play.square")
+                }
+                .accessibilityIdentifier(AccessibilityID.VideoCard.playNativeButton)
+                Button {
+                    playerRouter.playStream(video: video, api: api)
+                } label: {
+                    Label("Play 360p Stream", systemImage: "play.square.stack")
+                }
+                .accessibilityIdentifier(AccessibilityID.VideoCard.playStreamButton)
+                if YtDlpServerConfig.current().isConfigured {
+                    Button {
+                        playerRouter.playFromServer(video: video)
+                    } label: {
+                        Label("Play from yt-dlp Server", systemImage: "server.rack")
+                    }
+                    .accessibilityIdentifier(AccessibilityID.VideoCard.playServerButton)
+                }
+            } label: {
+                Label("Play in…", systemImage: "play.rectangle.on.rectangle")
+            }
+            .accessibilityIdentifier(AccessibilityID.VideoCard.playInMenu)
             #endif
             if authService.isSignedIn {
                 Button(role: .destructive) {
@@ -315,29 +348,6 @@ public struct VideoCardView: View {
                     }
                 }
             }
-            #if !os(tvOS) && ENABLE_DOWNLOADS
-            Button {
-                downloadService.download(video: video)
-            } label: {
-                if downloadService.state.isActive {
-                    Label("Downloading…", systemImage: AppSymbol.download)
-                } else {
-                    Label("Download to Gallery", systemImage: AppSymbol.download)
-                }
-            }
-            .disabled(downloadService.state.isActive)
-            #endif
-        } preview: {
-            Group {
-                if compact {
-                    compactLayout
-                } else {
-                    gridLayout
-                }
-            }
-            .padding(12)
-            .frame(width: 300)
-            .background(.background)
         }
         #if !os(tvOS)
         // Download state is observed at app-root level (RootView) so the alert
@@ -388,9 +398,7 @@ public struct VideoCardView: View {
             .scaleEffect(isFocused ? 1.08 : 1.0)
             .zIndex(isFocused ? 1 : 0)
             .animation(.easeInOut(duration: 0.15), value: isFocused)
-            .alert(item: $watchLaterAlert) { item in
-                Alert(title: Text(item.title), message: Text(item.message), dismissButton: .default(Text("OK")))
-            }
+            .toast(item: $watchLaterAlert)
             .sheet(item: $playlistPickerMode) { mode in
                 PlaylistPickerSheet(
                     mode: mode, video: video, sourcePlaylistId: effectivePlaylistId, api: api,
@@ -400,9 +408,7 @@ public struct VideoCardView: View {
         #else
         cardContent
             .onAppear { feedLog.info("[feed] id=\(self.video.id) title=\(self.video.title)") }
-            .alert(item: $watchLaterAlert) { item in
-                Alert(title: Text(item.title), message: Text(item.message), dismissButton: .default(Text("OK")))
-            }
+            .toast(item: $watchLaterAlert)
             .sheet(item: $playlistPickerMode) { mode in
                 PlaylistPickerSheet(
                     mode: mode, video: video, sourcePlaylistId: effectivePlaylistId, api: api,
@@ -434,7 +440,13 @@ public struct VideoCardView: View {
         VStack(alignment: .leading, spacing: 6) {
             Color.clear
                 .aspectRatio(16 / 9, contentMode: .fit)
-                .overlay(thumbnailView.clipped())
+                .overlay(
+                    GeometryReader { geo in
+                        thumbnailView(requiredPixelWidth: geo.size.width * displayScale)
+                            .frame(width: geo.size.width, height: geo.size.height)
+                            .clipped()
+                    }
+                )
                 .overlay(alignment: .bottom) {
                     if let progress = effectiveProgress, progress > 0 {
                         watchProgressBar(progress)
@@ -454,6 +466,11 @@ public struct VideoCardView: View {
                 .overlay(alignment: .topTrailing) {
                     if WatchLaterMembershipStore.shared.contains(video.id) { watchLaterSavedBadge }
                 }
+                #if !os(tvOS)
+            .overlay(alignment: .topLeading) {
+                if isDownloaded { downloadedBadge }
+            }
+                #endif
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(displayTitle)
@@ -494,8 +511,8 @@ public struct VideoCardView: View {
 
     private var compactLayout: some View {
         HStack(alignment: .top, spacing: 10) {
-            thumbnailView
-                .frame(width: 120, height: 68)
+            thumbnailView(requiredPixelWidth: Self.compactThumbnailWidth * displayScale)
+                .frame(width: Self.compactThumbnailWidth, height: 68)
                 .overlay(alignment: .bottom) {
                     if let progress = effectiveProgress, progress > 0 {
                         watchProgressBar(progress)
@@ -512,6 +529,11 @@ public struct VideoCardView: View {
                 .overlay(alignment: .topTrailing) {
                     if WatchLaterMembershipStore.shared.contains(video.id) { watchLaterSavedBadge }
                 }
+                #if !os(tvOS)
+            .overlay(alignment: .topLeading) {
+                if isDownloaded { downloadedBadge }
+            }
+                #endif
             VStack(alignment: .leading, spacing: 3) {
                 Text(displayTitle)
                     .font(.subheadline)
@@ -557,28 +579,39 @@ public struct VideoCardView: View {
         return video.title
     }
 
+    /// `requiredPixelWidth` is the card's width in device pixels (points × display scale).
     @ViewBuilder
-    private var thumbnailView: some View {
+    private func thumbnailView(requiredPixelWidth: CGFloat) -> some View {
         if video.thumbnailURL == nil, video.id == "WL" || video.id == "LL" {
             systemPlaylistThumbnail
         } else {
             // Walk a fallback chain on each successive failure:
-            //   -1 → deArrowThumbnailURL (community thumbnail), else maxresdefault.jpg when
-            //        High Resolution is on, else thumbnailURL (API-provided)
-            //    (High Resolution only: hq720.jpg, then the standard chain below)
-            //    0 → sddefault.jpg  (640×480, available for most videos)
-            //    1 → hqdefault.jpg  (480×360, always available)
-            //    2 → mqdefault.jpg  (320×180, always available — last resort)
+            //   -1 → deArrowThumbnailURL (community thumbnail), else the primary below
+            //   0.. → the fallbacks, in order
+            // Primary (-1), by mode:
+            //   High Resolution on → maxresdefault.jpg; fallbacks hq720.jpg, then the standard chain
+            //   Cards wider than hqdefault (480px), e.g. iPad grids → thumbnailChain: the smallest
+            //        rung covering the card (hq720 → sddefault → hqdefault → mqdefault)
+            //   otherwise → thumbnailURL (API-provided; too small for large cards)
+            //   Standard fallbacks: sddefault.jpg (640×480), hqdefault.jpg (480×360),
+            //        mqdefault.jpg (320×180, always available — last resort)
             // High-res URLs are built from `/vi/<id>/`, so they only make sense for real
             // videos: playlist placeholder cards (Playlists section: id == playlistId) would
             // walk the whole chain against a playlist ID and end on a grey placeholder, and
             // Shorts would swap their portrait thumbnail for a landscape one.
             let highRes =
                 store.settings.highResThumbnails && video.playlistId != video.id && !video.isShort
-            let fallbacks = highRes ? video.highResThumbnailFallbackURLs : video.thumbnailFallbackURLs
+            let largeCardRung = !highRes && !video.isShort && requiredPixelWidth > Video.hqPixelWidth
+            let chain = largeCardRung ? video.thumbnailChain(requiredPixelWidth: requiredPixelWidth) : []
+            let fallbacks =
+                highRes
+                ? video.highResThumbnailFallbackURLs
+                : (largeCardRung ? Array(chain.dropFirst()) : video.thumbnailFallbackURLs)
+            let primaryURL: URL? =
+                highRes ? video.maxResThumbnailURL : (largeCardRung ? chain.first : video.thumbnailURL)
             let url: URL? =
                 thumbnailFallbackIndex < 0
-                ? (deArrowThumbnailURL ?? (highRes ? video.maxResThumbnailURL : video.thumbnailURL) ?? fallbacks.first)
+                ? (deArrowThumbnailURL ?? primaryURL ?? fallbacks.first)
                 : (thumbnailFallbackIndex < fallbacks.count ? fallbacks[thumbnailFallbackIndex] : nil)
             AsyncImage(url: url) { phase in
                 switch phase {
@@ -716,6 +749,23 @@ public struct VideoCardView: View {
     /// #39: shown when this video was saved to Watch Later via this app. See
     /// WatchLaterMembershipStore's doc comment for why this can't reflect Watch
     /// Later state from other clients.
+    #if !os(tvOS)
+    /// `true` when a finished offline copy of this video exists (see `DownloadStore`).
+    private var isDownloaded: Bool { DownloadStore.shared.entry(for: video.id)?.status == .complete }
+
+    private var downloadedBadge: some View {
+        Image(systemName: AppSymbol.downloaded)
+            .font(.caption2)
+            .padding(5)
+            .background(.black.opacity(0.75))
+            .foregroundStyle(.green)
+            .clipShape(Circle())
+            .padding(4)
+            .accessibilityLabel(Text("Downloaded"))
+            .accessibilityIdentifier(AccessibilityID.VideoCard.downloadedBadge)
+    }
+    #endif
+
     private var watchLaterSavedBadge: some View {
         Image(systemName: "bookmark.fill")
             .font(.caption2)

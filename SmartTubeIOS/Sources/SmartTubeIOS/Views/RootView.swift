@@ -16,9 +16,7 @@ public struct RootView: View {
     @Environment(\.innerTubeAPI) private var api
     /// Shared download service — observed here so the completion alert is shown
     /// at a stable level unaffected by context menu dismiss animations on cards.
-    #if ENABLE_DOWNLOADS
     @Environment(VideoDownloadService.self) private var cardDownloadService
-    #endif
     @State private var cardDownloadAlertItem: DownloadAlertItem?
     @State private var isLandscapeLayout = false
 
@@ -30,9 +28,7 @@ public struct RootView: View {
         // @Observable tracking engine registers this view as a subscriber.
         // Without this, onChange(of: cardDownloadService.state) may not fire
         // when the state changes on an environment-injected @Observable object.
-        #if ENABLE_DOWNLOADS
         let _ = cardDownloadService.state
-        #endif
         Group {
             #if os(tvOS)
             if store.settings.useSidebarHome {
@@ -47,16 +43,22 @@ public struct RootView: View {
             #endif
         }
         .environment(\.isLandscapeLayout, isLandscapeLayout)
-        .onGeometryChange(for: Bool.self) { $0.size.width > $0.size.height } action: { isLandscapeLayout = $0 }
+        .onGeometryChange(for: Bool.self) {
+            $0.size.width > $0.size.height
+        } action: {
+            isLandscapeLayout = $0
+        }
         .tint(store.settings.accentColor.color)
         .preferredColorScheme(store.settings.themeName.colorScheme)
-        #if !os(tvOS) && ENABLE_DOWNLOADS
+        #if !os(tvOS)
         .onChange(of: cardDownloadService.state) { _, newState in
+            // PlayerView shows (and resets) the alert itself while it is on screen.
+            guard !cardDownloadService.playerOwnsCompletionAlert else { return }
             switch newState {
             case .done:
                 cardDownloadAlertItem = DownloadAlertItem(
-                    title: String(localized: "Saved to Gallery", bundle: .module),
-                    message: String(localized: "Video has been saved to your Photos library.", bundle: .module)
+                    title: String(localized: "Download Complete", bundle: .module),
+                    message: String(localized: "Video has been saved to Downloads.", bundle: .module)
                 )
                 cardDownloadService.reset()
             case .failed(let reason):
@@ -69,19 +71,9 @@ public struct RootView: View {
                 break
             }
         }
-        .alert(
-            cardDownloadAlertItem?.title ?? "",
-            isPresented: Binding(
-                get: { cardDownloadAlertItem != nil },
-                set: { if !$0 { cardDownloadAlertItem = nil } }
-            ),
-            presenting: cardDownloadAlertItem
-        ) { _ in
-            Button("OK") { cardDownloadAlertItem = nil }
-        } message: { item in
-            Text(item.message)
-        }
+        .toast(item: $cardDownloadAlertItem)
         #endif
+        .toastHost()
         .sheet(isPresented: .constant(!auth.isSignedIn && requiresAuth)) {
             // Sign-in prompt is shown as a dismissible sheet so users
             // can still browse without being signed in.
@@ -108,7 +100,13 @@ enum AppSection: String, CaseIterable, Identifiable {
     case home = "Home"
     case search = "Search"
     case library = "Library"
+    case downloads = "Downloads"
     case settings = "Settings"
+
+    #if os(tvOS)
+    // Personal downloads are not offered on tvOS — hide the tab from allCases.
+    static var allCases: [AppSection] { [.home, .search, .library, .settings] }
+    #endif
 
     var id: String { rawValue }
 
@@ -117,6 +115,7 @@ enum AppSection: String, CaseIterable, Identifiable {
         case .home: return AppSymbol.home
         case .search: return AppSymbol.search
         case .library: return AppSymbol.library
+        case .downloads: return AppSymbol.download
         case .settings: return AppSymbol.settings
         }
     }
@@ -127,6 +126,7 @@ enum AppSection: String, CaseIterable, Identifiable {
         case .home: HomeView(api: api)
         case .search: SearchView()
         case .library: LibraryView()
+        case .downloads: DownloadsView().environment(DownloadStore.shared)
         case .settings: SettingsView()
         }
     }
@@ -148,14 +148,39 @@ struct MainTabView: View {
     @State private var searchVM = SearchViewModel()
     @State private var selectedTab: AppSection = .home
     @State private var tabBarBottomInset: CGFloat = 0
+    @State private var connectivity = ConnectivityMonitor.shared
+    @State private var offlineLaunchApplied = false
     @Environment(\.innerTubeAPI) private var api
     @Environment(SettingsStore.self) private var store
     #if os(iOS)
+    @Environment(VideoDownloadService.self) private var downloadService
     @Environment(PlayerStateStore.self) private var playerState
     @Environment(TOSPlayerStateStore.self) private var tosState
     @Environment(PlayerRouter.self) private var playerRouter
     @Environment(BrowseViewModel.self) private var browseVM
     @State private var showSrcSwapSpike = false
+    #endif
+
+    #if !os(tvOS)
+    private static let offlineBannerHeight: CGFloat = 32
+
+    /// Shown while the device is offline; tapping it jumps to the Downloads tab.
+    @ViewBuilder private var offlineBanner: some View {
+        if connectivity.isOnline == false {
+            Button {
+                selectedTab = .downloads
+            } label: {
+                Label("You're offline — tap to see your downloads", systemImage: "wifi.slash")
+                    .font(.footnote)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: Self.offlineBannerHeight)
+                    .background(Color.orange.opacity(0.9), ignoresSafeAreaEdges: [])
+                    .foregroundStyle(.black)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier(AccessibilityID.Root.offlineBanner)
+        }
+    }
     #endif
 
     var body: some View {
@@ -216,6 +241,21 @@ struct MainTabView: View {
         }
         .onPreferenceChange(TabBarBottomInsetKey.self) { tabBarBottomInset = $0 }
         #if os(iOS)
+        .onChange(of: connectivity.isCellularOnly, initial: true) { _, cellularOnly in
+            downloadService.refreshPolicy(cellularOnly: cellularOnly)
+        }
+        .onChange(of: connectivity.isOnline, initial: true) { _, isOnline in
+            guard
+                OfflineLaunchPolicy.shouldOpenDownloads(
+                    isOnline: isOnline,
+                    hasCompleteDownloads: DownloadStore.shared.entries.contains { $0.status == .complete },
+                    alreadyApplied: offlineLaunchApplied)
+            else { return }
+            offlineLaunchApplied = true
+            selectedTab = .downloads
+        }
+        #endif
+        #if os(iOS)
         .background(TabBarLiquidGlassConfigurator(disableLiquidGlass: store.settings.disableLiquidGlass))
         #endif
         .environment(searchVM)
@@ -243,10 +283,30 @@ struct MainTabView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             // Reserve vertical space for whichever mini-player is visible so
             // scrollable content is not obscured (only one can be active at a time).
-            if playerState.presentation == .miniPlayer || tosState.presentation == .miniPlayer {
-                Color.clear.frame(height: 62)
+            // The offline banner (drawn by the overlay below) needs room above that as well.
+            VStack(spacing: 0) {
+                #if !os(tvOS)
+                if connectivity.isOnline == false { Color.clear.frame(height: Self.offlineBannerHeight) }
+                #endif
+                if playerState.presentation == .miniPlayer || tosState.presentation == .miniPlayer {
+                    Color.clear.frame(height: 62)
+                }
             }
         }
+        #if !os(tvOS)
+        // Offline banner: sits just above the tab bar (and above the mini player when it is showing).
+        .overlay(alignment: .bottom) {
+            VStack(spacing: 0) {
+                offlineBanner
+                Color.clear
+                .frame(
+                    height: tabBarBottomInset
+                        + (playerState.presentation == .miniPlayer || tosState.presentation == .miniPlayer ? 62 : 0)
+                )
+                .allowsHitTesting(false)
+            }
+        }
+        #endif
         // Render the single visible MiniPlayerView above the tab bar.
         // tabBarBottomInset = tab-bar height + home-indicator (e.g. 83 pt on Face ID
         // iPhones), read from inside the NavigationStack where UITabBarController has
@@ -301,7 +361,8 @@ struct MainTabView: View {
                 // work there. The standard player plays with the app's own sign-in, so
                 // this one error still falls back to it on iOS.
                 if tosState.vm?.playerError == .signInRequired {
-                    rootLog.notice("[RootView] TOS sign-in required for videoId=\(video.id) — opening the standard player")
+                    rootLog.notice(
+                        "[RootView] TOS sign-in required for videoId=\(video.id) — opening the standard player")
                     tosState.markFallback(videoId: video.id)
                     playerRouter.open(video: video, api: api)
                     return

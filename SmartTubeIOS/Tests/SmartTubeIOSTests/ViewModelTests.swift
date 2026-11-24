@@ -282,7 +282,7 @@ private func makeSearchViewModel(api: any InnerTubeAPIProtocol) -> SearchViewMod
 
 // MARK: - HomeViewModelTests
 
-@Suite("HomeViewModel")
+@Suite("HomeViewModel", .serialized)
 @MainActor
 struct HomeViewModelTests {
 
@@ -535,12 +535,12 @@ struct HomeViewModelTests {
 
 // MARK: - BrowseViewModelTests
 
-@Suite("BrowseViewModel")
+@Suite("BrowseViewModel", .serialized)
 @MainActor
 struct BrowseViewModelTests {
 
     @Test("loadContent for .subscriptions calls fetchSubscriptions and populates videoGroups")
-    func loadSubscriptionsPopulatesGroups() async {
+    func loadSubscriptionsPopulatesGroups() async throws {
         let mock = MockInnerTubeAPI()
         mock.subscriptionsResult = VideoGroup(title: "Subs", videos: [makeVideo("subvid_AAAA")])
 
@@ -551,8 +551,9 @@ struct BrowseViewModelTests {
         await waitForTasks(until: { !vm.videoGroups.isEmpty })
 
         #expect(mock.calls.contains { $0.method == "fetchSubscriptions" })
-        #expect(!vm.videoGroups.isEmpty)
-        #expect(vm.videoGroups[0].videos[0].id == "subvid_AAAA")
+        let group = try #require(vm.videoGroups.first)
+        let video = try #require(group.videos.first)
+        #expect(video.id == "subvid_AAAA")
     }
 
     @Test("Home load hands its videos to onHomeLoaded (#353 widget)")
@@ -819,12 +820,12 @@ struct BrowseViewModelTests {
 
 // MARK: - SearchViewModelTests
 
-@Suite("SearchViewModel")
+@Suite("SearchViewModel", .serialized)
 @MainActor
 struct SearchViewModelTests {
 
     @Test("search() with non-empty query populates results")
-    func searchPopulatesResults() async {
+    func searchPopulatesResults() async throws {
         let mock = MockInnerTubeAPI()
         mock.searchResult = VideoGroup(title: "Results", videos: [makeVideo("result_AAAAA")])
 
@@ -833,8 +834,8 @@ struct SearchViewModelTests {
         vm.search()
         await waitForTasks()
 
-        #expect(!vm.results.isEmpty)
-        #expect(vm.results[0].id == "result_AAAAA")
+        let first = try #require(vm.results.first)
+        #expect(first.id == "result_AAAAA")
     }
 
     @Test("search() with whitespace-only query is a no-op")
@@ -910,7 +911,7 @@ struct SearchViewModelTests {
 
 // MARK: - PlaylistViewModelTests
 
-@Suite("PlaylistViewModel")
+@Suite("PlaylistViewModel", .serialized)
 @MainActor
 struct PlaylistViewModelTests {
 
@@ -945,7 +946,7 @@ struct PlaylistViewModelTests {
     }
 
     @Test("load(refresh: true) clears videos and reloads")
-    func loadRefreshClearsAndReloads() async {
+    func loadRefreshClearsAndReloads() async throws {
         let mock = MockInnerTubeAPI()
         mock.playlistVideosResult = VideoGroup(title: "PL", videos: [makeVideo("vid_AAAAAAA")])
 
@@ -959,7 +960,8 @@ struct PlaylistViewModelTests {
         await waitForTasks()
 
         #expect(vm.videos.count == 1)
-        #expect(vm.videos[0].id == "vid_BBBBBBB")
+        let video = try #require(vm.videos.first)
+        #expect(video.id == "vid_BBBBBBB")
     }
 
     @Test("loadMoreIfNeeded appends next page when on last video")

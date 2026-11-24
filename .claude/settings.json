@@ -6,7 +6,7 @@
     ],
     "PostToolUse": [
       { "matcher": "Edit|Write|MultiEdit",
-        "hooks": [ { "type": "command", "command": "scripts/hooks/format-swift.sh" } ] }
+        "hooks": [ { "type": "command", "command": "scripts/hooks/swift-post-edit.sh", "timeout": 90, "statusMessage": "Formatting and linting Swift…" } ] }
     ]
   }
 }

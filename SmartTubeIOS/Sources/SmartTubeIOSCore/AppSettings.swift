@@ -166,6 +166,28 @@ public struct AppSettings: Codable {
     /// decoder issues. Defaults to `false` (all codecs allowed).
     public var preferH264: Bool
 
+    // MARK: Downloads
+    /// When `true` (and signed in), videos newly added to Watch Later are downloaded automatically.
+    /// Defaults to `false` (opt-in). Never deletes anything.
+    public var autoDownloadWatchLater: Bool
+    /// When `true`, automatic downloads only run on an unmetered connection (not cellular / hotspot).
+    public var autoDownloadOnlyOnWiFi: Bool
+    /// Master switch for downloads: off refuses new downloads and holds running ones.
+    public var downloadsEnabled: Bool
+    /// When off, downloads wait for Wi-Fi (or Ethernet) instead of using mobile data.
+    public var allowCellularDownloads: Bool
+
+    // MARK: yt-dlp companion server
+    /// When the app asks the user's own yt-dlp server to fetch a download (see
+    /// docs/features/ytdlp-companion-server.md). The bearer token lives in the Keychain, not here.
+    public var ytDlpMode: YtDlpMode
+    public var ytDlpServerURL: URL?
+
+    // MARK: Alerts
+    /// When `true`, followed channels are checked periodically and a local notification is shown
+    /// for new uploads. Uses local notifications only (no push, no paid capability). Opt-in.
+    public var notifyNewUploads: Bool
+
     // MARK: iCloud sync
     /// When `true`, local user data (subscriptions, RSS feeds, video state, queue) is
     /// synced to iCloud via `NSUbiquitousKeyValueStore`. Defaults to `false` (opt-in).
@@ -186,13 +208,12 @@ public struct AppSettings: Codable {
     /// previous top-tab UI. Not read on iOS or macOS.
     public var useSidebarHome: Bool
 
-    // Note: there is no `useTOSPlayerOnIOS` setting. The TOS-compliant player is
-    // always used on iOS (PlayerRouter.open(), gated #if os(iOS)) — see
-    // SettingsStore.useTOSPlayerOnIOS, which is a non-persisted, hardcoded-true
-    // property (overridable only by UI test launch arguments). It has no effect
-    // on macOS or tvOS. Automatically falls back to the AVPlayer pipeline for a
-    // given video if the embed reports a fatal error (TOSPlayerStateStore.markFallback
-    // — see TOSPlayerView.onFallback).
+    /// iOS only: play through YouTube's IFrame (TOS-compliant) player in a WKWebView
+    /// instead of the AVPlayer pipeline. Defaults to `true`. Turning it off gives native
+    /// PiP, background audio and the quality picker, at the cost of the stream-extraction
+    /// failure modes ADR-0006 describes. A video that hits a fatal embed error still falls
+    /// back to AVPlayer per-video (TOSPlayerStateStore.markFallback). No effect on macOS or tvOS.
+    public var useTOSPlayerOnIOS: Bool
 
     // MARK: Schema version
     /// Persisted schema version. Starts at 1 for newly stored settings.
@@ -209,6 +230,12 @@ public struct AppSettings: Codable {
     public static let availableSeekOptions: [Int] = [5, 10, 15, 20, 30, 45, 60]
 
     public static let availableGridColumnCounts: ClosedRange<Int> = 1...3
+
+    /// Clamps a decoded grid column count into `availableGridColumnCounts`.
+    private static func clampGridColumns(_ value: Int) -> Int {
+        let columns = availableGridColumnCounts
+        return min(max(value, columns.lowerBound), columns.upperBound)
+    }
 
     /// `.system` keeps the `AccentColor` asset from the app bundle.
     public enum AccentColorChoice: String, Codable, CaseIterable, Sendable {
@@ -322,12 +349,20 @@ public struct AppSettings: Codable {
         audioOnlyMode = false
         preferH264 = false
         iCloudSyncEnabled = false
+        autoDownloadWatchLater = false
+        autoDownloadOnlyOnWiFi = true
+        downloadsEnabled = true
+        allowCellularDownloads = true
+        notifyNewUploads = false
+        ytDlpMode = .off
+        ytDlpServerURL = nil
         #if os(macOS)
         useTOSPlayerOnMac = true
         #else
         useTOSPlayerOnMac = false
         #endif
         useMPVPlayerOnTV = false
+        useTOSPlayerOnIOS = true
         #if os(tvOS)
         useSidebarHome = true
         #else
@@ -405,8 +440,15 @@ extension AppSettings {
         case audioOnlyMode
         case preferH264
         case iCloudSyncEnabled
+        case autoDownloadWatchLater
+        case autoDownloadOnlyOnWiFi
+        case downloadsEnabled, allowCellularDownloads
+        case notifyNewUploads
+        case ytDlpMode
+        case ytDlpServerURL
         case useTOSPlayerOnMac
         case useMPVPlayerOnTV
+        case useTOSPlayerOnIOS
         case useSidebarHome
     }
 
@@ -446,13 +488,10 @@ extension AppSettings {
             Bool.self, forKey: .perDeviceRecommendationsEnabled, default: d.perDeviceRecommendationsEnabled)
         themeName = c.safeDecode(ThemeName.self, forKey: .themeName, default: d.themeName)
         accentColor = c.safeDecode(AccentColorChoice.self, forKey: .accentColor, default: d.accentColor)
-        let columns = Self.availableGridColumnCounts
-        gridColumnsPortrait = min(
-            max(c.safeDecode(Int.self, forKey: .gridColumnsPortrait, default: d.gridColumnsPortrait), columns.lowerBound),
-            columns.upperBound)
-        gridColumnsLandscape = min(
-            max(c.safeDecode(Int.self, forKey: .gridColumnsLandscape, default: d.gridColumnsLandscape), columns.lowerBound),
-            columns.upperBound)
+        gridColumnsPortrait = Self.clampGridColumns(
+            c.safeDecode(Int.self, forKey: .gridColumnsPortrait, default: d.gridColumnsPortrait))
+        gridColumnsLandscape = Self.clampGridColumns(
+            c.safeDecode(Int.self, forKey: .gridColumnsLandscape, default: d.gridColumnsLandscape))
         enabledSections = c.safeDecode(
             [BrowseSection.SectionType].self, forKey: .enabledSections, default: d.enabledSections)
         historyState = c.safeDecode(HistoryState.self, forKey: .historyState, default: d.historyState)
@@ -474,8 +513,35 @@ extension AppSettings {
         audioOnlyMode = c.safeDecode(Bool.self, forKey: .audioOnlyMode, default: d.audioOnlyMode)
         preferH264 = c.safeDecode(Bool.self, forKey: .preferH264, default: d.preferH264)
         iCloudSyncEnabled = c.safeDecode(Bool.self, forKey: .iCloudSyncEnabled, default: d.iCloudSyncEnabled)
+        autoDownloadWatchLater = c.safeDecode(
+            Bool.self, forKey: .autoDownloadWatchLater, default: d.autoDownloadWatchLater)
+        autoDownloadOnlyOnWiFi = c.safeDecode(
+            Bool.self, forKey: .autoDownloadOnlyOnWiFi, default: d.autoDownloadOnlyOnWiFi)
+        downloadsEnabled = c.safeDecode(Bool.self, forKey: .downloadsEnabled, default: d.downloadsEnabled)
+        allowCellularDownloads = c.safeDecode(
+            Bool.self, forKey: .allowCellularDownloads, default: d.allowCellularDownloads)
+        notifyNewUploads = c.safeDecode(Bool.self, forKey: .notifyNewUploads, default: d.notifyNewUploads)
+        ytDlpMode = c.safeDecode(YtDlpMode.self, forKey: .ytDlpMode, default: d.ytDlpMode)
+        ytDlpServerURL = c.safeDecode(URL?.self, forKey: .ytDlpServerURL, default: d.ytDlpServerURL)
         useTOSPlayerOnMac = c.safeDecode(Bool.self, forKey: .useTOSPlayerOnMac, default: d.useTOSPlayerOnMac)
         useMPVPlayerOnTV = c.safeDecode(Bool.self, forKey: .useMPVPlayerOnTV, default: d.useMPVPlayerOnTV)
+        useTOSPlayerOnIOS = c.safeDecode(Bool.self, forKey: .useTOSPlayerOnIOS, default: d.useTOSPlayerOnIOS)
         useSidebarHome = c.safeDecode(Bool.self, forKey: .useSidebarHome, default: d.useSidebarHome)
+    }
+}
+
+// MARK: - Persistence helper
+
+extension AppSettings {
+    /// The `UserDefaults` key the settings JSON is stored under.
+    public static let persistenceKey = "smarttube_app_settings"
+
+    /// The settings as last saved by the app (defaults if none or unreadable). Lets code that runs
+    /// outside the SwiftUI environment, such as the download fetcher, see current values.
+    public static func loadPersisted(defaults: UserDefaults = .standard) -> AppSettings {
+        guard let data = defaults.data(forKey: persistenceKey),
+            let decoded = try? JSONDecoder().decode(AppSettings.self, from: data)
+        else { return AppSettings() }
+        return decoded
     }
 }
