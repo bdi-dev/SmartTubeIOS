@@ -22,6 +22,8 @@ enum AccessibilityID {
         static let nasMessage = "downloads.nas.message"
         static func nasRow(_ videoId: String) -> String { "downloads.nas.row.\(videoId)" }
         static func nasKeep(_ videoId: String) -> String { "downloads.nas.keep.\(videoId)" }
+        static func nasDownload(_ videoId: String) -> String { "downloads.nas.download.\(videoId)" }
+        static func nasPin(_ videoId: String) -> String { "downloads.nas.pin.\(videoId)" }
         static func nasDelete(_ videoId: String) -> String { "downloads.nas.delete.\(videoId)" }
     }
 

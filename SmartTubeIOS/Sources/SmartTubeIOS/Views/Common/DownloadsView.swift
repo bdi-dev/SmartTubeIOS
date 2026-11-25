@@ -158,37 +158,57 @@ struct DownloadsView: View {
         return NASLibraryViewModel(client: client, store: store)
     }
 
-    /// "Available on NAS": the server's copies this device does not hold. Tap downloads to the
-    /// device; leading swipe deletes the NAS copy; trailing swipe keeps or unkeeps it.
+    /// "Available on NAS": the server's copies this device does not hold. Row taps do nothing; the
+    /// download button at the row's end (or the long-press menu) downloads to the device. Tapping
+    /// the pin toggles keep; leading swipe deletes the NAS copy; trailing swipe keeps or unkeeps.
     @ViewBuilder
     private func nasSection(_ nas: NASLibraryViewModel) -> some View {
         Section {
             ForEach(nas.available) { item in
-                NASLibraryRow(item: item)
-                    .contentShape(Rectangle())
-                    .onTapGesture {
+                NASLibraryRow(
+                    item: item,
+                    onDownload: { downloadService.enqueue(video: Video(libraryItem: item), forceServer: true) },
+                    onToggleKeep: { Task { await nas.setKeep(videoId: item.videoId, keep: !item.keep) } }
+                )
+                .contextMenu {
+                    Button {
                         downloadService.enqueue(video: Video(libraryItem: item), forceServer: true)
+                    } label: {
+                        Label("Download to device", systemImage: AppSymbol.download)
                     }
-                    .swipeActions(edge: .leading) {
-                        Button(role: .destructive) {
-                            Task { await nas.deleteFromNAS(videoId: item.videoId) }
-                        } label: {
-                            Label("Delete from NAS", systemImage: AppSymbol.trash)
-                        }
-                        .accessibilityIdentifier(AccessibilityID.Downloads.nasDelete(item.videoId))
+                    Button {
+                        Task { await nas.setKeep(videoId: item.videoId, keep: !item.keep) }
+                    } label: {
+                        Label(
+                            item.keep ? "Unkeep" : "Keep",
+                            systemImage: item.keep ? AppSymbol.pinSlash : AppSymbol.pin)
                     }
-                    .swipeActions(edge: .trailing) {
-                        Button {
-                            Task { await nas.setKeep(videoId: item.videoId, keep: !item.keep) }
-                        } label: {
-                            Label(
-                                item.keep ? "Unkeep" : "Keep",
-                                systemImage: item.keep ? AppSymbol.pinSlash : AppSymbol.pin)
-                        }
-                        .accessibilityIdentifier(AccessibilityID.Downloads.nasKeep(item.videoId))
+                    Button(role: .destructive) {
+                        Task { await nas.deleteFromNAS(videoId: item.videoId) }
+                    } label: {
+                        Label("Delete from NAS", systemImage: AppSymbol.trash)
                     }
-                    .task(id: item.videoId) { await nas.loadMoreIfNeeded(after: item.videoId) }
-                    .accessibilityIdentifier(AccessibilityID.Downloads.nasRow(item.videoId))
+                }
+                .swipeActions(edge: .leading) {
+                    Button(role: .destructive) {
+                        Task { await nas.deleteFromNAS(videoId: item.videoId) }
+                    } label: {
+                        Label("Delete from NAS", systemImage: AppSymbol.trash)
+                    }
+                    .accessibilityIdentifier(AccessibilityID.Downloads.nasDelete(item.videoId))
+                }
+                .swipeActions(edge: .trailing) {
+                    Button {
+                        Task { await nas.setKeep(videoId: item.videoId, keep: !item.keep) }
+                    } label: {
+                        Label(
+                            item.keep ? "Unkeep" : "Keep",
+                            systemImage: item.keep ? AppSymbol.pinSlash : AppSymbol.pin)
+                    }
+                    .accessibilityIdentifier(AccessibilityID.Downloads.nasKeep(item.videoId))
+                }
+                .task(id: item.videoId) { await nas.loadMoreIfNeeded(after: item.videoId) }
+                .accessibilityIdentifier(AccessibilityID.Downloads.nasRow(item.videoId))
             }
             if let message = nas.message {
                 Text(message)
@@ -412,6 +432,8 @@ private struct DownloadedVideoRow: View {
 /// One "Available on NAS" row: thumbnail, title, channel, duration, size, and a pin when kept.
 private struct NASLibraryRow: View {
     let item: YtDlpLibraryItem
+    let onDownload: () -> Void
+    let onToggleKeep: () -> Void
 
     var body: some View {
         HStack(spacing: 12) {
@@ -445,14 +467,29 @@ private struct NASLibraryRow: View {
                             .foregroundStyle(.secondary)
                     }
                     if item.keep {
-                        Image(systemName: AppSymbol.pin)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .accessibilityLabel("Kept on NAS")
+                        Button(action: onToggleKeep) {
+                            Image(systemName: AppSymbol.pin)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .frame(minWidth: 32, minHeight: 32)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel("Kept on NAS. Tap to unkeep")
+                        .accessibilityIdentifier(AccessibilityID.Downloads.nasPin(item.videoId))
                     }
                 }
             }
             Spacer()
+            Button(action: onDownload) {
+                Image(systemName: AppSymbol.download)
+                    .font(.title3)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel("Download to device")
+            .accessibilityIdentifier(AccessibilityID.Downloads.nasDownload(item.videoId))
         }
         .padding(.vertical, 4)
     }
