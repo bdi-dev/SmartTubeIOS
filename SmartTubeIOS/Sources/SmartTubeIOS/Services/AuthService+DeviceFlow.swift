@@ -3,6 +3,10 @@ import SmartTubeIOSCore
 
 extension AuthService {
 
+    /// Consecutive transient answers (server errors, rate limits) tolerated before sign-in fails.
+    /// At the 5-second poll interval this is about a minute of Google being unwell.
+    static let maxConsecutiveTransientFailures = 12
+
     // MARK: - Device Code request
 
     struct DeviceCodeResponse {
@@ -53,6 +57,7 @@ extension AuthService {
     ) async {
         authLog.notice("Starting poll loop (interval \(Int(interval))s, immediate=\(pollImmediately))")
         var skipInitialSleep = pollImmediately
+        var transientFailures = 0
         while !Task.isCancelled {
             if skipInitialSleep {
                 skipInitialSleep = false
@@ -63,6 +68,7 @@ extension AuthService {
 
             do {
                 try await exchangeDeviceCode(deviceCode: deviceCode, creds: creds)
+                transientFailures = 0
                 authLog.notice("✅ Token exchanged — fetching user info")
                 try await fetchUserInfo()
                 authLog.notice("✅ Signed in as \(self.accountName ?? "unknown")")
@@ -74,6 +80,16 @@ extension AuthService {
                 return
             } catch AuthError.authorizationPending {
                 authLog.debug("Polling… (authorization_pending)")
+                continue
+            } catch AuthError.transientTokenFailure {
+                transientFailures += 1
+                if transientFailures >= Self.maxConsecutiveTransientFailures {
+                    authLog.error("Giving up after \(transientFailures) transient token failures in a row")
+                    self.error = AuthError.transientTokenFailure
+                    pendingActivation = nil
+                    pollTask = nil
+                    return
+                }
                 continue
             } catch AuthError.slowDown {
                 authLog.notice("slow_down received — waiting extra 5s")
@@ -108,27 +124,22 @@ extension AuthService {
         let (data, response) = try await URLSession.shared.data(for: req)
         let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
 
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        switch DeviceTokenResponse.classify(statusCode: statusCode, data: data) {
+        case .authorizationPending: throw AuthError.authorizationPending
+        case .slowDown: throw AuthError.slowDown
+        case .accessDenied: throw AuthError.cancelled
+        case .expired: throw AuthError.deviceCodeExpired
+        case .transient(let reason):
+            authLog.notice("Token poll got a transient answer (\(reason)); will retry")
+            throw AuthError.transientTokenFailure
+        case .permanent(let reason):
+            // The OAuth error code or HTTP status only: never the body, which can hold tokens.
+            authLog.error("Token exchange failed permanently (\(reason))")
             throw AuthError.tokenExchangeFailed
-        }
-
-        // RFC 8628 §3.5 error codes
-        if let oauthError = json["error"] as? String {
-            switch oauthError {
-            case "authorization_pending": throw AuthError.authorizationPending
-            case "slow_down": throw AuthError.slowDown
-            case "access_denied": throw AuthError.cancelled
-            case "expired_token": throw AuthError.deviceCodeExpired
-            default: throw AuthError.tokenExchangeFailed
-            }
-        }
-
-        guard (200..<300).contains(statusCode) else { throw AuthError.tokenExchangeFailed }
-
-        accessToken = json["access_token"] as? String
-        if let r = json["refresh_token"] as? String { refreshToken = r }
-        if let exp = json["expires_in"] as? TimeInterval {
-            tokenExpiry = Date().addingTimeInterval(exp - 60)
+        case .tokens(let tokens):
+            accessToken = tokens.accessToken
+            if let newRefresh = tokens.refreshToken { refreshToken = newRefresh }
+            if let exp = tokens.expiresIn { tokenExpiry = Date().addingTimeInterval(exp - 60) }
         }
         isSignedIn = accessToken != nil
         saveToKeychain()

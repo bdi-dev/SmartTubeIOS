@@ -12,6 +12,8 @@ public enum AuthError: LocalizedError {
     case authorizationPending
     case slowDown
     case deviceCodeExpired
+    /// A server error or rate limit while polling; the poll loop retries these.
+    case transientTokenFailure
 
     public var errorDescription: String? {
         switch self {
@@ -24,6 +26,7 @@ public enum AuthError: LocalizedError {
         case .authorizationPending: return "Waiting for authorisation…"
         case .slowDown: return "Too many requests — slowing down"
         case .deviceCodeExpired: return "The sign-in code expired. Please try again."
+        case .transientTokenFailure: return "Google is not responding right now. Please try again."
         }
     }
 }
