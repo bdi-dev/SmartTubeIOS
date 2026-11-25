@@ -37,11 +37,19 @@ enum DownloadExport {
 struct DownloadExportItem: Transferable {
     let source: URL
     let fileName: String
+    /// Audio-only downloads are `.m4a`; they must be offered as audio, not as an MPEG-4 movie,
+    /// because share destinations filter and import by the advertised content type.
+    let isAudioOnly: Bool
 
     static var transferRepresentation: some TransferRepresentation {
         FileRepresentation(exportedContentType: .mpeg4Movie) { item in
             SentTransferredFile(try DownloadExport.stage(source: item.source, fileName: item.fileName))
         }
+        .exportingCondition { !$0.isAudioOnly }
+        FileRepresentation(exportedContentType: .mpeg4Audio) { item in
+            SentTransferredFile(try DownloadExport.stage(source: item.source, fileName: item.fileName))
+        }
+        .exportingCondition { $0.isAudioOnly }
     }
 }
 #endif

@@ -84,7 +84,8 @@ struct DownloadsView: View {
                                 ShareLink(
                                     item: DownloadExportItem(
                                         source: downloadStore.fileURL(for: entry),
-                                        fileName: DownloadExport.fileName(for: entry)),
+                                        fileName: DownloadExport.fileName(for: entry),
+                                        isAudioOnly: entry.isAudioOnly),
                                     preview: SharePreview(entry.title)
                                 ) {
                                     Label("Share / Save to Files", systemImage: "square.and.arrow.up")
@@ -108,10 +109,10 @@ struct DownloadsView: View {
                 .refreshable { await nasLibrary?.refresh() }
             }
         }
-        .task {
-            if nasLibrary == nil {
-                nasLibrary = Self.makeNASLibrary(store: downloadStore)
-            }
+        .task(id: serverIdentity) {
+            // A new model per server configuration: the old one holds a client for the old URL and
+            // token, and its rows must not stay actionable against the wrong server.
+            nasLibrary = Self.makeNASLibrary(store: downloadStore)
             await nasLibrary?.appear()
         }
         .alert(
@@ -134,6 +135,17 @@ struct DownloadsView: View {
         } message: {
             Text("This video will be removed from your device. You can re-download it from the player.")
         }
+    }
+
+    /// Changes whenever the server URL or token does (the token only as a hash, so it is not kept
+    /// in view state), so `.task(id:)` rebuilds the NAS model.
+    private var serverIdentity: Int {
+        var hasher = Hasher()
+        let cfg = YtDlpServerConfig.current()
+        hasher.combine(cfg.baseURL)
+        hasher.combine(cfg.token)
+        hasher.combine(settingsStore.settings.ytDlpMode)
+        return hasher.finalize()
     }
 
     /// The server is consulted only when a URL and token are set; otherwise the section stays hidden.

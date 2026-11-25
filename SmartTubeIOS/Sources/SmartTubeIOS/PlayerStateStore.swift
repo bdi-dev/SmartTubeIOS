@@ -111,7 +111,9 @@ public final class PlayerStateStore {
     // MARK: - Actions
 
     /// Load `video` (if not already loaded) and present the full-screen player.
-    public func play(video: Video) {
+    /// `replacingSource` reloads even when `video` is already current, so a new stream for the same
+    /// video id replaces the one playing (otherwise the id-only check below would skip the load).
+    public func play(video: Video, replacingSource: Bool = false) {
         storeLog.notice(
             "[PlayerStateStore] play — id=\(video.id) currentPresentation=\(String(describing: self.presentation))")
         // Stamp intended_video_id immediately — before load() runs and before the
@@ -124,7 +126,8 @@ public final class PlayerStateStore {
         //   3. Not playing — item is parked (fix12 park path): stop() keeps the
         //      AVPlayerItem alive but pauses and sets isPlaying=false. On re-tap,
         //      call load() so the park fast-path in PlaybackViewModel resumes it.
-        if vm.currentVideoId != video.id || vm.player.currentItem == nil || !vm.isPlaying {
+        if replacingSource { vm.discardCurrentLoad() }
+        if replacingSource || vm.currentVideoId != video.id || vm.player.currentItem == nil || !vm.isPlaying {
             vm.load(video: video)
         }
         currentVideo = video

@@ -136,6 +136,30 @@ struct NewUploadNotifierTests {
         #expect(poster.posted == ["s3"])
     }
 
+    @Test("switching account takes a new silent baseline instead of announcing its existing uploads")
+    func accountSwitchIsSilent() async {
+        let clock = Clock()
+        let seen = SeenUploadsStore(suiteName: "test-\(UUID().uuidString)")
+        let poster = FakePoster()
+        let feed = FeedBox([video("a1")])
+        let scope = ScopeBox("primary")
+        let notifier = NewUploadNotifier(
+            sources: [(SeenUploadsStore.subscriptionsSource, ScopedFeed(box: feed, scope: scope))],
+            poster: poster, seen: seen, now: { clock.date })
+        #expect(await notifier.checkIfDue(settings: settings()) == 0)  // primary baseline
+
+        scope.value = "brand-1"  // user switches to a Brand Account with its own existing uploads
+        feed.videos = [video("b1"), video("b2")]
+        clock.date.addTimeInterval(NewUploadNotifier.minInterval + 1)
+        #expect(await notifier.checkIfDue(settings: settings()) == 0)
+        #expect(poster.posted.isEmpty)
+
+        feed.videos = [video("b3")] + feed.videos  // a genuinely new upload is still announced
+        clock.date.addTimeInterval(NewUploadNotifier.minInterval + 1)
+        #expect(await notifier.checkIfDue(settings: settings()) == 1)
+        #expect(poster.posted == ["b3"])
+    }
+
     @Test("a video present in both feeds is announced once, and the total is capped")
     func dedupedAndCapped() async {
         let clock = Clock()
@@ -165,6 +189,22 @@ struct NewUploadNotifierTests {
 private final class FeedBox: @unchecked Sendable {
     var videos: [Video]
     init(_ videos: [Video]) { self.videos = videos }
+}
+
+private final class ScopeBox: @unchecked Sendable {
+    var value: String
+    init(_ value: String) { self.value = value }
+}
+
+private struct ScopedFeed: UploadFeedSource {
+    let box: FeedBox
+    let scope: ScopeBox
+    // Reason: protocol witness must stay async.
+    // swiftlint:disable:next async_without_await
+    func latestUploads() async -> [Video] { box.videos }
+    // Reason: protocol witness must stay async.
+    // swiftlint:disable:next async_without_await
+    func baselineScope() async -> String? { scope.value }
 }
 
 private struct FakeFeedBox: UploadFeedSource {

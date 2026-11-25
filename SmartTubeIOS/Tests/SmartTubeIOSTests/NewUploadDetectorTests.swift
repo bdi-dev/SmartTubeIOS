@@ -51,6 +51,13 @@ struct SeenUploadsStoreTests {
         #expect(await reopened.hasBaseline())
     }
 
+    @Test("repeats inside one batch do not eat the entry budget or evict distinct ids")
+    func batchRepeatsDoNotEvict() async {
+        let store = SeenUploadsStore(suiteName: "test-\(UUID().uuidString)")
+        await store.markSeen(["keep"] + Array(repeating: "dup", count: SeenUploadsStore.maxEntries))
+        #expect(await store.seenIds() == ["keep", "dup"])
+    }
+
     @Test("an empty feed does not establish the baseline")
     func emptyFeedIsNotABaseline() async {
         let store = SeenUploadsStore(suiteName: "test-\(UUID().uuidString)")
