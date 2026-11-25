@@ -49,3 +49,8 @@ Lower value / not planned: CarPlay audio (needs an Apple-approved entitlement).
 
 Also done: `scripts/free-account.sh` switches the paid-only iCloud entitlement off without removing it
 ([how-to](../how-to/free-account-build.md)).
+
+## Planned: NAS
+
+- [NAS status and usage](../superpowers/plans/2026-11-25-nas-status-usage.md): info icon and a Settings sub page.
+- [NAS multiple users](../superpowers/plans/2026-11-25-nas-multi-user.md): separated, personalised lists on a shared server (not secure).
