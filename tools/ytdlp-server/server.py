@@ -309,6 +309,65 @@ class JobManager:
                 evicted.append(vid)
         return evicted
 
+    def _fetch_metadata(self, video_id):
+        """Asks yt-dlp (no download) for a video's metadata. Returns a dict, or None on any failure."""
+        cmd = [self.config.ytdlp_bin, "--no-playlist", "--skip-download", "--dump-single-json"]
+        if self.config.cookies:
+            cmd += ["--cookies", self.config.cookies]
+        cmd.append("https://www.youtube.com/watch?v=" + video_id)  # argv list: never a shell
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            if out.returncode != 0:
+                return None
+            info = json.loads(out.stdout)
+        except (OSError, subprocess.SubprocessError, ValueError):
+            return None
+        if not isinstance(info, dict) or not info.get("title"):
+            return None
+        duration = info.get("duration")
+        return {
+            "title": str(info["title"]),
+            "channelTitle": str(info.get("channel") or info.get("uploader") or ""),
+            "duration": int(duration) if isinstance(duration, (int, float)) else None,
+            "thumbnailURL": info.get("thumbnail") or "https://i.ytimg.com/vi/%s/hqdefault.jpg" % video_id,
+        }
+
+    def backfill_metadata(self):
+        """Fills in title, channel, duration and thumbnail for downloads whose sidecar has none
+        (files made before metadata was recorded). Runs once per start, one video at a time; a video
+        yt-dlp cannot describe is skipped and tried again at the next start. Returns how many were
+        filled. Never touches the keep flag, download time or size."""
+        with self.lock:
+            missing = [
+                vid
+                for vid in sorted(self._sidecar_ids())
+                if (side := self._read_sidecar(vid)) is not None and not side.get("title")
+            ]
+        filled = 0
+        for vid in missing:
+            meta = self._fetch_metadata(vid)
+            if meta is None:
+                sys.stderr.write("metadata backfill: could not describe %s\n" % vid)
+                continue
+            with self.lock:  # re-read: keep may have changed, or the file may have been deleted
+                side = self._read_sidecar(vid)
+                if side is None or side.get("title") or not os.path.exists(self.file_path(vid)):
+                    continue
+                side.update(meta)
+                try:
+                    self._store_sidecar(vid, side)
+                except OSError:
+                    continue
+            filled += 1
+        return filled
+
+    def _sidecar_ids(self):
+        return [
+            name[:-5]
+            for name in os.listdir(self.config.data_dir)
+            if name.endswith(".json") and VIDEO_ID_RE.match(name[:-5])
+        ]
+
     def startup_cleanup(self):
         """Migrates legacy .mp4 files to unkept sidecars, removes orphan sidecars and stale partial
         downloads (older than an hour), then enforces the cap."""
@@ -568,6 +627,7 @@ def main():
     if not config.token:
         sys.exit("YTDLP_TOKEN is required (a long random string the app will send as a bearer token).")
     server = build_server(config)
+    threading.Thread(target=server.manager.backfill_metadata, daemon=True).start()
     sys.stderr.write("SmartTube yt-dlp server on %s:%d, data in %s\n" % (config.host, config.port, config.data_dir))
     try:
         server.serve_forever()
