@@ -24,10 +24,13 @@ stopgap until the paid developer account is approved (1-year profiles, TestFligh
 ## Building the app for SideStore
 
 ```bash
-scripts/free-account.sh on          # strip the paid-only iCloud entitlement (working copy only)
 scripts/build-sidestore-ipa.sh      # -> build/sidestore/SmartTube.ipa (unsigned)
-scripts/free-account.sh off         # restore entitlements before committing
 ```
+
+The script switches the paid-only iCloud entitlement off and the bundle IDs to the personal prefix
+for the build, then restores the committed files (it refuses to start if you have uncommitted changes
+under `SmartTubeApp/` or `SmartTubeIOS/Sources/`). `DEVELOPER_DIR` must point at Xcode if
+`xcode-select` points at the Command Line Tools.
 
 AirDrop or copy the `.ipa` to the phone, then in SideStore: **My Apps → +** and choose the file.
 SideStore signs it with the secondary ID, rewriting the bundle ID.
@@ -35,13 +38,15 @@ SideStore signs it with the secondary ID, rewriting the bundle ID.
 ## Updating in place (keeping your data)
 
 Installing a newer IPA over the installed app keeps its data **only if the bundle ID is unchanged**.
-The build is pinned to `com.void.smarttube.app`; `build-sidestore-ipa.sh` fails if it would produce
-any other ID (for example when `scripts/personal-bundle-id.sh on` is left enabled). A different ID
-installs as a second app, which uses one of the free account's three app slots and starts empty.
+Every SideStore build uses `com.bdi.smarttube.app` (prefix `com.bdi.smarttube`, applied by the
+script); it fails if the built ID is anything else. A different ID installs as a second app, which
+uses one of the free account's three app slots and starts empty.
 
 - Do not delete the installed app before updating; choose the new `.ipa` under **My Apps → +**.
-- Never switch the ID after you have data you want to keep. If you must (set `SIDESTORE_BUNDLE_ID`),
+- Never switch the prefix once you have data you want to keep. If you must (`SIDESTORE_BUNDLE_PREFIX`),
   expect a fresh install and delete the old app afterwards.
+- A `com.void.smarttube.app` build (the committed default, e.g. from an earlier export) is a
+  different app: delete it once, then install the `com.bdi` one.
 
 ## Things that behave differently
 
