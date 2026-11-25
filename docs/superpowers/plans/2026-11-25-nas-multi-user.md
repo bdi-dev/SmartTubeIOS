@@ -4,61 +4,63 @@
 > Follows [NAS library](2026-11-23-nas-library.md). Do one task at a time, verify, then commit.
 
 ## Goal
-Let more than one person share the same NAS server while each sees a personalised "Available on
-NAS" list. This is **separation, not security**: it keeps people's lists tidy and keeps one
-person's pins and deletes from affecting another's view. Anyone with the server address can
-still reach any file. The README and the settings screen say so plainly.
+Let more than one person use the same NAS server, each with their **own** downloads. This is
+**separation, not security**: it keeps people's lists apart and personal. Anyone with the shared
+token can still send another profile's id and see its list. The README and the Settings screen say
+so plainly.
 
-## Model
-- Each person has a **profile**: a short id (`[a-z0-9_-]{1,32}`) and a display name. Profiles live
-  in `profiles.json` in the data volume; the first request from an unknown profile id is rejected
-  unless auto-create is on (`YTDLP_AUTO_CREATE_PROFILES`, default on for a home network).
-- Video files stay **shared and deduplicated**: one copy of `<id>.mp4` on disk, however many
-  people want it. A download request from any profile reuses the existing file.
-- Per-profile state is a small **ownership record**: which profiles have the video in their list,
-  and each profile's `keep` flag for it. The existing sidecar keeps the shared facts (title,
-  channel, duration, size, downloadedAt).
-- **Private** means "only in my list". A private video is hidden from other profiles' lists. It is
-  still a shared file, and anyone who knows the video id can fetch `/v1/files/<id>.mp4`.
-- The shared token stays. The profile is sent as a header `X-SmartTube-Profile: <id>`; absent
-  means the `default` profile, so existing installs keep working with no change.
+## Decisions
+1. **No shared files.** Every download belongs to exactly one profile. If two people download the
+   same video, the NAS holds two copies. There is no deduplication across profiles and no
+   "shared" or "private" toggle: everything is the owner's.
+2. **Per-profile storage.** Each profile has its own folder: `<data>/profiles/<id>/` holding the
+   `.mp4` files and sidecars exactly as today. The existing layout becomes the `default` profile.
+3. **Everything is per profile**: the library list, keep flags, delete, job status, and the
+   unkept cap. The 20 GB unkept cap applies **per profile**, and eviction only touches that
+   profile's own unkept files.
+4. **One shared token.** The profile travels in a header, `X-SmartTube-Profile: <id>`. No header
+   means `default`, so existing installs keep working unchanged.
+5. **Profile ids** match `[a-z0-9_-]{1,32}`. An unknown id is created on first use when
+   `YTDLP_AUTO_CREATE_PROFILES` is on (default on for a home network); otherwise it is rejected.
 
 ## Behaviour
-- **Available list** shows videos owned by the caller, plus videos marked shared (the default for
-  new downloads is configurable per profile: "Share my downloads" on or off).
-- **Keep** is per profile. A file is unkept (eligible for the 20 GB cap eviction) only when **no**
-  profile keeps it. Eviction removes the file and every ownership record.
-- **Delete from NAS** removes the caller's ownership. The file is deleted only when no owners
-  remain; otherwise the caller just stops seeing it. A "Delete for everyone" action is out of
-  scope.
-- Migration: existing sidecars become owned by `default` with their current `keep`, shared on.
+- **Available on NAS** lists only the caller's files. Other profiles' files never appear.
+- **Download request** by a profile fetches a fresh copy into that profile's folder, even if
+  another profile already holds the video.
+- **Keep, unkeep, delete from NAS** affect only the caller's copy.
+- **File serving** (`/v1/files/<id>.mp4`) resolves inside the caller's folder only; a request for a
+  video the caller does not own returns 404.
+- **Storage cost** is the sum of every profile's copies. The status screen
+  ([NAS status](2026-11-25-nas-status-usage.md)) should show usage per profile.
 
 ## Server work (`tools/ytdlp-server/server.py`)
-1. Profile resolution from the header, validated against the id pattern; `profiles.json` with
-   atomic writes under the existing lock.
-2. Ownership records alongside sidecars (`<id>.owners.json`) and a one-time migration at startup.
-3. `GET /v1/library` filters by caller; `PUT /v1/files/<id>/keep` and `DELETE` act per profile as
-   above; `POST` submits add the caller as an owner even when the file already exists.
-4. `GET /v1/profiles` (list, for the picker) and `PUT /v1/profile` (rename, share default).
-5. Bump `API_VERSION` to 4; older apps keep working as `default`.
-6. Tests: two profiles see different lists; shared file counted once; keep is the OR of owners;
-   deleting with other owners keeps the file; eviction clears owners; migration; bad ids.
-7. README: state clearly that this is not an access control. Redeploy stack 42.
+1. Resolve the profile once per request from the header and validate it; map it to its folder and
+   give each profile its own lock and eviction state, so profiles cannot block each other.
+2. One-time migration at startup: if files exist in the old flat layout, move them into
+   `profiles/default/`. It is idempotent and logs counts only.
+3. Route every existing endpoint through the profile's folder. Add `GET /v1/profiles` (ids and
+   display names, for a picker) and `PUT /v1/profile` (set a display name).
+4. Bump `API_VERSION` to 4. Older apps keep working as `default`.
+5. Tests: two profiles download the same id and get separate files; lists are disjoint; keep and
+   delete do not cross over; eviction is per profile; the file route 404s across profiles; bad
+   ids are rejected; migration moves old files and is safe to re-run.
+6. README: state clearly this is separation, not access control. Redeploy stack 42, and take a
+   volume backup first because of the migration.
 
 ## App work
-1. Settings > NAS: profile name field (stored in `AppSettings`), "Share my downloads" toggle, and
-   a note that this separates lists but is not private.
-2. Send the profile header from `YtDlpLibraryClient` and the fetcher, when set.
-3. `NASLibraryViewModel` is unchanged apart from the client; the list is just filtered server
-   side. Show a small "shared" badge on rows owned by someone else and a "Private" toggle in the
-   row long-press menu.
-4. Handle `serverTooOld` (no profile support) by hiding the profile controls.
-5. Tests with fake clients: header sent, badge and toggle states, old-server fallback.
+1. `AppSettings` gains a profile id and display name. Settings > NAS shows a "Who is using this
+   device" field and the not-secure note.
+2. `YtDlpLibraryClient` and the fetcher send the profile header when set.
+3. No view-model changes: the list is already scoped server side. Changing the profile reloads the
+   NAS list (the existing `serverIdentity` task hash gains the profile id).
+4. Handle an old server (no profile support) by hiding the profile field.
+5. Tests with fake clients: header sent only when set, list reloads on profile change, old-server
+   fallback.
 
 ## Non-goals
-- No passwords, per-user tokens, or encryption (that would be real security and a different
-  plan). No per-user quotas or admin screen.
+- No passwords, per-user tokens or encryption (that is real security and a different plan).
+- No sharing, copying or transferring a download between profiles, no admin screen, no quotas
+  beyond the per-profile unkept cap.
 
 ## Open questions
-- Should "Private" be the default for new profiles? (Proposed: shared, since this is a family box.)
-- Fold the per-user usage breakdown into [NAS status](2026-11-25-nas-status-usage.md)?
+- Should a "Copy from another profile" action exist later? (Not now; decision 1 says no sharing.)

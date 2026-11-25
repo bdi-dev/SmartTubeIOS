@@ -52,4 +52,4 @@ a sheet with the same summary as the Settings page, plus a "Refresh" action.
 
 ## Open questions
 - Should the cap be editable from the app, or stay a server environment variable? (Default: stay.)
-- Show the per-user breakdown once [multiple users](2026-11-25-nas-multi-user.md) lands.
+- Show per-profile usage once [multiple users](2026-11-25-nas-multi-user.md) lands.

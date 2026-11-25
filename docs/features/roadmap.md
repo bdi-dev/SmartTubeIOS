@@ -53,4 +53,4 @@ Also done: `scripts/free-account.sh` switches the paid-only iCloud entitlement o
 ## Planned: NAS
 
 - [NAS status and usage](../superpowers/plans/2026-11-25-nas-status-usage.md): info icon and a Settings sub page.
-- [NAS multiple users](../superpowers/plans/2026-11-25-nas-multi-user.md): separated, personalised lists on a shared server (not secure).
+- [NAS multiple users](../superpowers/plans/2026-11-25-nas-multi-user.md): separate per-user downloads on one server, no shared files (not secure).
