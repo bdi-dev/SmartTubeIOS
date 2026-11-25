@@ -32,6 +32,17 @@ scripts/free-account.sh off         # restore entitlements before committing
 AirDrop or copy the `.ipa` to the phone, then in SideStore: **My Apps → +** and choose the file.
 SideStore signs it with the secondary ID, rewriting the bundle ID.
 
+## Updating in place (keeping your data)
+
+Installing a newer IPA over the installed app keeps its data **only if the bundle ID is unchanged**.
+The build is pinned to `com.void.smarttube.app`; `build-sidestore-ipa.sh` fails if it would produce
+any other ID (for example when `scripts/personal-bundle-id.sh on` is left enabled). A different ID
+installs as a second app, which uses one of the free account's three app slots and starts empty.
+
+- Do not delete the installed app before updating; choose the new `.ipa` under **My Apps → +**.
+- Never switch the ID after you have data you want to keep. If you must (set `SIDESTORE_BUNDLE_ID`),
+  expect a fresh install and delete the old app afterwards.
+
 ## Things that behave differently
 
 - **App Groups.** SideStore rewrites the bundle and App Group IDs, but the app's group constants are

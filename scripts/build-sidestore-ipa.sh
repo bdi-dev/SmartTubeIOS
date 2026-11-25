@@ -24,6 +24,18 @@ xcodebuild build \
 app="$(find "$dd/Build/Products/Release-iphoneos" -maxdepth 1 -name '*.app' | head -n 1)"
 [ -n "$app" ] || { echo "No .app produced" >&2; exit 1; }
 
+# SideStore updates an installed app in place (keeping its data) only when the bundle ID is the same
+# as before; a different ID installs as a NEW app, which on a free account hits the 3-app limit and
+# starts with no data. Pin the ID so a stray `personal-bundle-id.sh on` cannot change it silently.
+expected_id="${SIDESTORE_BUNDLE_ID:-com.void.smarttube.app}"
+actual_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.plist")"
+if [ "$actual_id" != "$expected_id" ]; then
+  echo "Bundle ID is $actual_id but SideStore installs are pinned to $expected_id." >&2
+  echo "Run scripts/personal-bundle-id.sh off, or set SIDESTORE_BUNDLE_ID if you really mean to switch" >&2
+  echo "(switching installs as a new app and loses the old app's data)." >&2
+  exit 1
+fi
+
 rm -rf "$out/Payload" "$out/SmartTube.ipa"
 mkdir -p "$out/Payload"
 cp -R "$app" "$out/Payload/"
