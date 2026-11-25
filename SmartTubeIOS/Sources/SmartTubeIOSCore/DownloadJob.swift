@@ -55,13 +55,31 @@ public struct DownloadPlan: Codable, Sendable, Equatable {
 
         private enum CodingKeys: String, CodingKey { case part, url, userAgent, headers }
 
-        /// Tolerant: job records written before `headers` existed decode with no headers.
+        /// Header names that carry credentials. They live only on the in-memory request and are
+        /// never written to `job.json`: the token belongs in the Keychain, not in a plaintext file.
+        private static let credentialHeaders: Set<String> = ["authorization", "proxy-authorization", "cookie"]
+
+        private static func withoutCredentials(_ headers: [String: String]) -> [String: String] {
+            headers.filter { !credentialHeaders.contains($0.key.lowercased()) }
+        }
+
+        /// Tolerant: job records written before `headers` existed decode with no headers, and
+        /// credential headers saved by older builds are discarded.
         public init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             part = try container.decode(DownloadPart.self, forKey: .part)
             url = try container.decode(URL.self, forKey: .url)
             userAgent = try container.decode(String.self, forKey: .userAgent)
-            headers = try container.decodeIfPresent([String: String].self, forKey: .headers) ?? [:]
+            let stored = try container.decodeIfPresent([String: String].self, forKey: .headers) ?? [:]
+            headers = Self.withoutCredentials(stored)
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(part, forKey: .part)
+            try container.encode(url, forKey: .url)
+            try container.encode(userAgent, forKey: .userAgent)
+            try container.encode(Self.withoutCredentials(headers), forKey: .headers)
         }
     }
 
