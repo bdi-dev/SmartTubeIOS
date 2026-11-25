@@ -416,6 +416,20 @@ struct YtDlpConfigTests {
             from: JSONEncoder().encode(DownloadPlan.Part(part: .muxed, url: base, userAgent: "U", headers: ["A": "B"])))
         #expect(round.headers == ["A": "B"])
     }
+
+    @Test("credential headers are never persisted and are dropped from old records")
+    func credentialsNotPersisted() throws {
+        let part = DownloadPlan.Part(
+            part: .muxed, url: base, userAgent: "U", headers: ["Authorization": "Bearer secret", "X-Keep": "1"])
+        #expect(part.headers["Authorization"] == "Bearer secret")  // in-memory request still has it
+        let data = try JSONEncoder().encode(part)
+        #expect(String(bytes: data, encoding: .utf8)?.contains("secret") == false)
+        let round = try JSONDecoder().decode(DownloadPlan.Part.self, from: data)
+        #expect(round.headers == ["X-Keep": "1"])
+        let legacy =
+            #"{"part":"muxed","url":"https://x.test/a","userAgent":"UA","headers":{"authorization":"Bearer old"}}"#
+        #expect(try JSONDecoder().decode(DownloadPlan.Part.self, from: Data(legacy.utf8)).headers.isEmpty)
+    }
 }
 
 @Suite("YtDlpServerStream")

@@ -13,6 +13,16 @@ private let uploadLog = Logger(subsystem: appSubsystem, category: "NewUploads")
 /// needed), through the same RSS-first service the Subscriptions feed uses.
 public protocol UploadFeedSource: Sendable {
     func latestUploads() async -> [Video]
+    /// Identity the feed belongs to (the signed-in account or Brand Account), appended to the
+    /// baseline tag so switching identity takes its own silent baseline instead of announcing
+    /// uploads that were already there. `nil` for device-wide feeds.
+    func baselineScope() async -> String?
+}
+
+extension UploadFeedSource {
+    // Reason: protocol witness must stay async.
+    // swiftlint:disable:next async_without_await
+    public func baselineScope() async -> String? { nil }
 }
 
 /// Raises the actual alerts. Production: `UNUserNotificationCenter` local notifications.
@@ -36,6 +46,7 @@ struct SubscriptionsUploadSource: UploadFeedSource {
     func latestUploads() async -> [Video] {
         (try? await api.fetchSubscriptions(continuationToken: nil).videos) ?? []
     }
+    func baselineScope() async -> String? { await api.historyOwnerKey }
 }
 
 /// Local (not push) notifications: no entitlement or paid membership involved. Tapping one opens
@@ -135,7 +146,8 @@ public final class NewUploadNotifier {
         var knownIds = await seen.seenIds()
         var toNotify: [Video] = []
         var checked = 0
-        for (tag, source) in sources {
+        for (baseTag, source) in sources {
+            let tag = await source.baselineScope().map { "\(baseTag):\($0)" } ?? baseTag
             let feed = await source.latestUploads()
             checked += feed.count
             let result = NewUploadDetector.evaluate(

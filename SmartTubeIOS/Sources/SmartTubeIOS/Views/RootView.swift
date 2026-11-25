@@ -103,8 +103,9 @@ enum AppSection: String, CaseIterable, Identifiable {
     case downloads = "Downloads"
     case settings = "Settings"
 
-    #if os(tvOS)
-    // Personal downloads are not offered on tvOS — hide the tab from allCases.
+    #if os(tvOS) || os(macOS)
+    // Personal downloads are not offered on tvOS or native macOS (`DownloadsView` has no list or
+    // playback path there, only an empty state) — hide the tab from allCases.
     static var allCases: [AppSection] { [.home, .search, .library, .settings] }
     #endif
 

@@ -91,7 +91,7 @@ public final class PlayerRouter {
             var direct = video
             direct.directStream = try await YtDlpServerStream.resolve(videoId: video.id, config: config)
             if tosState.presentation != .hidden { tosState.stop() }
-            playerState.play(video: direct)
+            playerState.play(video: direct, replacingSource: true)
         } catch {
             ToastCenter.shared.show(
                 title: String(localized: "Server could not play this", bundle: .module),
@@ -111,7 +111,7 @@ public final class PlayerRouter {
         var direct = video
         direct.directStream = stream
         if tosState.presentation != .hidden { tosState.stop() }
-        playerState.play(video: direct)
+        playerState.play(video: direct, replacingSource: true)
         return true
     }
 

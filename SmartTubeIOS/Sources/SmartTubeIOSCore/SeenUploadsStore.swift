@@ -73,8 +73,9 @@ public actor SeenUploadsStore: UserDefaultsBackedStore {
     /// everything already in it.
     public func markSeen(_ ids: [String], source: String = SeenUploadsStore.localSource) {
         guard !ids.isEmpty else { return }
-        let existing = Set(value.seen)
-        value.seen.append(contentsOf: ids.filter { !existing.contains($0) })
+        var known = Set(value.seen)
+        // `insert` also dedupes repeats inside this batch, which would otherwise eat the budget.
+        value.seen.append(contentsOf: ids.filter { known.insert($0).inserted })
         if value.seen.count > Self.maxEntries {
             value.seen.removeFirst(value.seen.count - Self.maxEntries)
         }
