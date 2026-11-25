@@ -56,6 +56,11 @@ curl -s -X DELETE -H "$A" $B/v1/files/$ID              # free the disk space (40
 | `PUT /v1/files/{id}/keep` `{keep}` | `{ok, keep}`; `404` if unknown. |
 | `DELETE /v1/files/{id}` | Removes the file and its sidecar. `200 {deleted: true}`, `404 {deleted: false}`, `409` while the job is running. |
 
+Downloads made before metadata was recorded have an empty title and thumbnail. At every start the
+server asks yt-dlp (no download) to describe each of them, one at a time, and fills the sidecar in
+(keep, download time and size are untouched). A video yt-dlp cannot describe is retried at the next
+start. Downloads and the data volume survive restarts and image updates; only a job in progress is lost.
+
 Safety: ids must match `^[A-Za-z0-9_-]{11}$`; yt-dlp is started with an argument list (never a
 shell); kept downloads never expire and unkept downloads are capped at `YTDLP_UNKEPT_CAP_GB`
 (oldest evicted first); logs show method and path only, never tokens.

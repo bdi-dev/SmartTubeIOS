@@ -489,6 +489,25 @@ class StorageTests(unittest.TestCase):
             self.assertFalse(os.path.exists(self.path(name)), name)
         self.assertTrue(os.path.exists(self.path("FRESHvid001.part")))
 
+    def test_backfill_fills_empty_metadata_and_keeps_everything_else(self):
+        self.add("BACKFILLvid", "2026-01-02T00:00:00Z", keep=True, size=7)
+        self.assertEqual(self.manager.backfill_metadata(), 1)
+        with open(self.path("BACKFILLvid.json")) as f:
+            side = json.load(f)
+        self.assertEqual((side["title"], side["channelTitle"]), ("Title BACKFILLvid", "Channel"))
+        self.assertEqual((side["duration"], side["thumbnailURL"]), (42, "https://t.test/BACKFILLvid"))
+        self.assertEqual((side["keep"], side["downloadedAt"], side["fileSize"]), (True, "2026-01-02T00:00:00Z", 7))
+        self.assertEqual(self.manager.backfill_metadata(), 0)  # nothing left to fill
+
+    def test_backfill_skips_a_video_yt_dlp_cannot_describe(self):
+        self.add("FAILvid0001", "2026-01-02T00:00:00Z")
+        self.add("GOODvid0001", "2026-01-03T00:00:00Z")
+        self.assertEqual(self.manager.backfill_metadata(), 1)
+        with open(self.path("FAILvid0001.json")) as f:
+            self.assertEqual(json.load(f)["title"], "")  # left for the next start
+        with open(self.path("GOODvid0001.json")) as f:
+            self.assertEqual(json.load(f)["title"], "Title GOODvid0001")
+
     def test_startup_evict_keeps_kept_file(self):
         self.add("KEEPvid0001", "2026-01-00T00:00:00Z", keep=True, size=500)
         server.build_server(self.cfg).server_close()  # runs startup_cleanup
