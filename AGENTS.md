@@ -50,4 +50,4 @@ Then `just ci` before the commit. If `just` is not installed, run what its recip
 
 ## Where things are
 - Playback: docs/architecture.md#playback · Tests how-to: docs/how-to/run-tests.md · Device logs: docs/how-to/device-logs.md
-- Tasks: tasks/README.md (open items) · Modernization program: docs/modernization/PLAN.md
+- Open items and feature status: docs/features/roadmap.md · Plans: docs/superpowers/plans/ · The modernization program lives in a private repo (see docs/README.md)

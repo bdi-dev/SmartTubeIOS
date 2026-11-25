@@ -2,7 +2,7 @@
 
 > How to update this doc: regenerate the module table's line counts with `just metrics`;
 > update the target list whenever WS8 changes `Package.swift` targets. This doc describes
-> the system as it is, not the target state — see `docs/modernization/PLAN.md` for that.
+> the system as it is, not the target state — the modernization plan (private repo, see [docs/README.md](README.md)) describes that.
 
 ## Containers
 
