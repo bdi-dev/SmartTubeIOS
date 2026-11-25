@@ -16,8 +16,9 @@ so plainly.
 2. **Per-profile storage.** Each profile has its own folder: `<data>/profiles/<id>/` holding the
    `.mp4` files and sidecars exactly as today. The existing layout becomes the `default` profile.
 3. **Everything is per profile**: the library list, keep flags, delete, job status, and the
-   unkept cap. The 20 GB unkept cap applies **per profile**, and eviction only touches that
-   profile's own unkept files.
+   unkept cap. The unkept cap (default 20 GB) applies **per profile**, is **editable per
+   profile** from the app ([NAS status](2026-11-25-nas-status-usage.md)), and eviction only touches
+   that profile's own unkept files. The cap is stored per profile in its `settings.json`.
 4. **One shared token.** The profile travels in a header, `X-SmartTube-Profile: <id>`. No header
    means `default`, so existing installs keep working unchanged.
 5. **Profile ids** match `[a-z0-9_-]{1,32}`. An unknown id is created on first use when
