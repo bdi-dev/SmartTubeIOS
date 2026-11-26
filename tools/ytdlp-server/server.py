@@ -1,28 +1,37 @@
 #!/usr/bin/env python3
-"""SmartTube yt-dlp companion server (Phase 0).
+"""SmartTube yt-dlp companion server.
 
 A small, dependency-free HTTP service that runs yt-dlp for SmartTube. The app asks for a video by
-ID, polls until it is ready, then downloads the finished MP4 (with Range support).
-See docs/features/ytdlp-companion-server.md for the design.
+ID, polls until it is ready, then downloads the finished MP4 (with Range support). Several people
+can share one server: each has a personal token, their own list, keep flags and unkept cap, and each
+video is stored once on disk. See README.md for the API and the limits.
 
 Configuration (environment):
-  YTDLP_TOKEN            required. Bearer token the app must send.
+  YTDLP_TOKEN            the admin token. Only read when the admin profile is first created (startup
+                         migration); after that, manage tokens from /admin or the CLI.
   YTDLP_BIN              yt-dlp executable (default: yt-dlp).
   YTDLP_DATA_DIR         where files live (default: ./data).
   YTDLP_HOST / YTDLP_PORT  bind address (default 127.0.0.1:8787). Put it behind Tailscale/LAN only.
   YTDLP_MAX_CONCURRENT   simultaneous yt-dlp jobs (default 2).
-  YTDLP_UNKEPT_CAP_GB    cap on unkept downloads, in GB of 1024^3 bytes (default 20). Kept files
-                         have no cap. Unkept files are evicted oldest-first when over the cap.
+  YTDLP_UNKEPT_CAP_GB    default unkept cap for new profiles, in GB of 1024^3 bytes (default 20).
   YTDLP_MAX_HEIGHT       default quality cap when the app sends none (default 1080).
   YTDLP_COOKIES          optional cookies.txt passed to yt-dlp (never leaves this machine).
+  YTDLP_PUBLIC_URL       optional address users reach the server at; used to print invite links.
+
+Command line (run in the container with docker exec):
+  python3 server.py add-user NAME [--admin]    create a profile and print its token once
+  python3 server.py revoke-user USER           revoke a profile's token (its list is kept)
+  python3 server.py reissue-user USER          give a profile a new token (the old one stops working)
 """
 import base64
 import fnmatch
+import hashlib
 import hmac
 import json
 import math
 import os
 import re
+import secrets
 import subprocess
 import sys
 import tempfile
@@ -30,14 +39,23 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, quote
 
-API_VERSION = 2  # 2 = sidecar metadata, library listing, keep and delete
+API_VERSION = 4  # 2 = sidecar metadata, library, keep, delete; 3 = unused; 4 = profiles and ownership
 VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}\Z")  # \Z, not $: "$" also matches before a newline
+PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,47}\Z")
 DOWNLOADED_AT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\Z")
 LIBRARY_DEFAULT_LIMIT = 50
 LIBRARY_MAX_LIMIT = 200
 PROGRESS_RE = re.compile(r"\[download\]\s+(\d+(?:\.\d+)?)%")
+ADMIN_ID = "admin"
+ROLES = ("admin", "user")
+NAME_MAX = 60
+CAP_MAX = 1 << 50  # bytes; a sanity bound, not a policy
+MAX_BODY = 1 << 20
+LAST_SEEN_WRITE_INTERVAL = 60  # seconds between persisted lastSeen updates
+ADMIN_USER_RE = re.compile(r"^/v1/admin/users/([a-z0-9][a-z0-9-]{0,47})\Z")
+ADMIN_TOKEN_RE = re.compile(r"^/v1/admin/users/([a-z0-9][a-z0-9-]{0,47})/token\Z")
 # AVPlayer-friendly: H.264 + AAC in MP4, falling back to whatever yt-dlp can merge into MP4.
 FORMAT_TEMPLATE = (
     "bv*[vcodec^=avc1][height<=?{h}]+ba[ext=m4a]/b[ext=mp4][height<=?{h}]/bv*[height<=?{h}]+ba/b"
@@ -56,18 +74,123 @@ class Config:
         self.unkept_cap_bytes = int(round(float(env.get("YTDLP_UNKEPT_CAP_GB", "20")) * 1024**3))
         self.max_height = int(env.get("YTDLP_MAX_HEIGHT", "1080"))
         self.cookies = env.get("YTDLP_COOKIES", "")
+        self.public_url = env.get("YTDLP_PUBLIC_URL", "").rstrip("/")
+
+
+class ApiError(Exception):
+    def __init__(self, status, message):
+        super().__init__(message)
+        self.status = status
+        self.message = message
+
+
+def now_iso(ts=None):
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() if ts is None else ts))
+
+
+def new_token():
+    return secrets.token_urlsafe(32)
+
+
+def token_hash(token):
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def atomic_write_json(path, obj):
+    """Writes JSON to a uniquely named temp file in the same directory, then os.replace()s it."""
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=os.path.basename(path) + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(obj, f)
+        os.replace(tmp, path)
+    except OSError:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
+
+
+def new_profile(pid, name, role, digest, cap_bytes):
+    return {
+        "id": pid,
+        "name": name,
+        "role": role,
+        "tokenHash": digest,
+        "createdAt": now_iso(),
+        "lastSeen": None,
+        "capBytes": cap_bytes,
+    }
+
+
+def public_profile(p):
+    """Profile fields that may leave the server. Never the token hash."""
+    return {
+        "id": p["id"],
+        "name": p["name"],
+        "role": p["role"],
+        "createdAt": p.get("createdAt"),
+        "lastSeen": p.get("lastSeen"),
+        "capBytes": p["capBytes"],
+        "hasToken": bool(p.get("tokenHash")),
+    }
+
+
+def me_view(p):
+    return {"id": p["id"], "name": p["name"], "role": p["role"], "capBytes": p["capBytes"]}
+
+
+def parse_fields(body, allowed):
+    """Validates the profile fields present in body. Raises ValueError(field) if one is unknown or bad."""
+    for key in body:
+        if key not in allowed:
+            raise ValueError(key)
+    out = {}
+    if "name" in body:
+        name = body["name"]
+        if not isinstance(name, str) or not 1 <= len(name.strip()) <= NAME_MAX:
+            raise ValueError("name")
+        out["name"] = name.strip()
+    if "role" in body:
+        if body["role"] not in ROLES:
+            raise ValueError("role")
+        out["role"] = body["role"]
+    if "capBytes" in body:
+        cap = body["capBytes"]
+        if isinstance(cap, bool) or not isinstance(cap, int) or not 0 <= cap <= CAP_MAX:
+            raise ValueError("capBytes")
+        out["capBytes"] = cap
+    return out
 
 
 class JobManager:
-    """Tracks yt-dlp jobs. One job per video id; posting the same id again is idempotent."""
+    """Tracks yt-dlp jobs, profiles and per-profile ownership of the downloaded files.
+
+    Files live once in the data dir (<id>.mp4 + <id>.json sidecar). Who may see a file, and whether
+    each profile keeps it, lives in owners/<profile>.json. Everything below is guarded by self.lock.
+    """
 
     def __init__(self, config):
         self.config = config
         os.makedirs(config.data_dir, exist_ok=True)
+        os.makedirs(self.owners_dir, exist_ok=True)
         self.pool = ThreadPoolExecutor(max_workers=max(1, config.max_concurrent))
-        self.lock = threading.Lock()
-        self.jobs = {}  # video_id -> dict(status, progress, error)
+        self.lock = threading.RLock()
+        self.jobs = {}  # video_id -> dict(status, progress, error?, owners={profile id: keep})
         self.meta = {}  # video_id -> posted metadata, kept apart from job state
+        self.profiles = []  # persisted in profiles.json
+        self.owners = {}  # profile id -> {video_id: {"keep": bool, "addedAt": str}}
+        self.migrated = False  # True once existing sidecars were given to the admin profile
+        self._last_saved = {}  # profile id -> time.time() of the last persisted lastSeen
+        self._load_profiles()
+        self._ensure_admin()
+
+    # -- paths and persistence --
+    @property
+    def profiles_path(self):
+        return os.path.join(self.config.data_dir, "profiles.json")
+
+    @property
+    def owners_dir(self):
+        return os.path.join(self.config.data_dir, "owners")
 
     def file_path(self, video_id):
         return os.path.join(self.config.data_dir, video_id + ".mp4")
@@ -75,18 +198,276 @@ class JobManager:
     def sidecar_path(self, video_id):
         return os.path.join(self.config.data_dir, video_id + ".json")
 
-    def _store_sidecar(self, video_id, record):
-        """Atomically replaces <id>.json: write a uniquely named temp file, then os.replace.
-        The caller must hold self.lock."""
-        fd, tmp = tempfile.mkstemp(dir=self.config.data_dir, prefix=video_id + ".", suffix=".tmp")
+    def _owners_path(self, pid):
+        return os.path.join(self.owners_dir, pid + ".json")
+
+    def _load_profiles(self):
         try:
-            with os.fdopen(fd, "w") as f:
-                json.dump(record, f)
-            os.replace(tmp, self.sidecar_path(video_id))
-        except OSError:
-            if os.path.exists(tmp):
-                os.remove(tmp)
-            raise
+            with open(self.profiles_path) as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            data = {}
+        except (OSError, ValueError):
+            raise RuntimeError("profiles.json is unreadable; restore it from backup before starting")
+        if not isinstance(data, dict):
+            raise RuntimeError("profiles.json has the wrong shape; restore it from backup before starting")
+        self.migrated = data.get("ownershipMigrated") is True
+        for p in data.get("profiles", []):
+            if (
+                isinstance(p, dict)
+                and isinstance(p.get("id"), str)
+                and PROFILE_ID_RE.match(p["id"])
+                and p.get("role") in ROLES
+                and isinstance(p.get("capBytes"), int)
+            ):
+                self.profiles.append(p)
+        for p in self.profiles:
+            self.owners[p["id"]] = self._load_owner_file(p["id"])
+
+    def _load_owner_file(self, pid):
+        try:
+            with open(self._owners_path(pid)) as f:
+                raw = json.load(f)
+        except FileNotFoundError:
+            return {}
+        except (OSError, ValueError):
+            sys.stderr.write("owner record for profile %s is unreadable; starting it empty\n" % pid)
+            return {}
+        out = {}
+        if isinstance(raw, dict):
+            for vid, rec in raw.items():
+                if VIDEO_ID_RE.match(vid) and isinstance(rec, dict) and isinstance(rec.get("keep"), bool):
+                    out[vid] = {"keep": rec["keep"], "addedAt": str(rec.get("addedAt", ""))}
+        return out
+
+    def _save_profiles(self):
+        """Persists profiles.json. The caller must hold self.lock."""
+        atomic_write_json(
+            self.profiles_path,
+            {"version": 1, "ownershipMigrated": self.migrated, "profiles": self.profiles},
+        )
+
+    def _save_owners(self, pid):
+        """Persists one profile's owner record. The caller must hold self.lock."""
+        os.makedirs(self.owners_dir, exist_ok=True)
+        atomic_write_json(self._owners_path(pid), self.owners.get(pid, {}))
+
+    def _profile(self, pid):
+        for p in self.profiles:
+            if p["id"] == pid:
+                return p
+        return None
+
+    def _require(self, pid):
+        p = self._profile(pid)
+        if p is None:
+            raise ApiError(404, "unknown user")
+        return p
+
+    def _admin_count(self):
+        return sum(1 for p in self.profiles if p["role"] == "admin")
+
+    def _ensure_admin(self):
+        """Creates the admin profile from YTDLP_TOKEN the first time only (idempotent)."""
+        if not self.config.token:
+            return
+        with self.lock:
+            if self._profile(ADMIN_ID) is None:
+                self.profiles.append(
+                    new_profile(ADMIN_ID, "Admin", "admin", token_hash(self.config.token), self.config.unkept_cap_bytes)
+                )
+                self.owners.setdefault(ADMIN_ID, {})
+                self._save_profiles()
+
+    # -- auth and profile admin --
+    def authenticate(self, token):
+        """Returns a copy of the profile that owns this token, or None. Compares hashes in constant time."""
+        if not token:
+            return None
+        digest = token_hash(token)
+        with self.lock:
+            found = None
+            for p in self.profiles:
+                stored = p.get("tokenHash")
+                if isinstance(stored, str) and hmac.compare_digest(stored, digest):
+                    found = p
+            if found is None:
+                return None
+            now = time.time()
+            found["lastSeen"] = now_iso(now)
+            if now - self._last_saved.get(found["id"], 0) >= LAST_SEEN_WRITE_INTERVAL:
+                self._last_saved[found["id"]] = now
+                self._save_profiles()
+            return dict(found)
+
+    def _usage_locked(self, pid):
+        count = total = unkept = 0
+        for vid, rec in self.owners.get(pid, {}).items():
+            size = self._size(vid)
+            if size is None:
+                continue
+            count += 1
+            total += size
+            if not rec["keep"]:
+                unkept += size
+        return {"videoCount": count, "totalBytes": total, "unkeptBytes": unkept}
+
+    def _view_locked(self, p):
+        view = public_profile(p)
+        view.update(self._usage_locked(p["id"]))
+        return view
+
+    def list_users(self):
+        with self.lock:
+            return [self._view_locked(p) for p in self.profiles]
+
+    def find_user(self, query):
+        """Finds a profile by id, or by name (case-insensitive). Raises ApiError if none or ambiguous."""
+        with self.lock:
+            matches = [p for p in self.profiles if p["id"] == query]
+            if not matches:
+                matches = [p for p in self.profiles if p["name"].casefold() == query.casefold()]
+            if not matches:
+                raise ApiError(404, "no such user")
+            if len(matches) > 1:
+                raise ApiError(409, "several users have that name; use the id")
+            return dict(matches[0])
+
+    def create_user(self, name, role):
+        """Creates a profile. Returns (public view, token); the token is shown once and never stored."""
+        with self.lock:
+            base = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:24] or "user"
+            pid = None
+            while pid is None or self._profile(pid) is not None:
+                pid = "%s-%s" % (base, secrets.token_hex(3))
+            token = new_token()
+            p = new_profile(pid, name, role, token_hash(token), self.config.unkept_cap_bytes)
+            self.profiles.append(p)
+            self.owners[pid] = {}
+            self._save_profiles()
+            return self._view_locked(p), token
+
+    def update_user(self, pid, changes):
+        with self.lock:
+            p = self._require(pid)
+            if "role" in changes and changes["role"] != p["role"]:
+                if p["role"] == "admin" and self._admin_count() <= 1:
+                    raise ApiError(409, "the last admin cannot be demoted")
+                p["role"] = changes["role"]
+            if "name" in changes:
+                p["name"] = changes["name"]
+            if "capBytes" in changes:
+                p["capBytes"] = changes["capBytes"]
+            self._save_profiles()
+            if "capBytes" in changes:
+                self._enforce_caps_locked([pid])
+            return self._view_locked(p)
+
+    def reissue_token(self, pid):
+        with self.lock:
+            p = self._require(pid)
+            token = new_token()
+            p["tokenHash"] = token_hash(token)
+            self._save_profiles()
+            return self._view_locked(p), token
+
+    def revoke_token(self, pid):
+        with self.lock:
+            p = self._require(pid)
+            p["tokenHash"] = None
+            self._save_profiles()
+            return self._view_locked(p)
+
+    def delete_user(self, pid):
+        """Removes a profile and its ownership. Files with no owner left are deleted. Returns the
+        number of files removed."""
+        with self.lock:
+            p = self._require(pid)
+            if p["role"] == "admin" and self._admin_count() <= 1:
+                raise ApiError(409, "the last admin cannot be deleted")
+            removed = 0
+            for vid in list(self.owners.get(pid, {})):
+                if self._drop_owner_locked(pid, vid):
+                    removed += 1
+            self.owners.pop(pid, None)
+            try:
+                os.remove(self._owners_path(pid))
+            except FileNotFoundError:
+                pass
+            for job in self.jobs.values():
+                job.get("owners", {}).pop(pid, None)
+            self.profiles.remove(p)
+            self._save_profiles()
+            return removed
+
+    # -- ownership --
+    def owns(self, pid, video_id):
+        with self.lock:
+            return video_id in self.owners.get(pid, {})
+
+    def owner_record(self, pid, video_id):
+        with self.lock:
+            rec = self.owners.get(pid, {}).get(video_id)
+            return dict(rec) if rec else None
+
+    def _grant_locked(self, pid, video_id, keep, added_at=None):
+        if self._profile(pid) is None:
+            return
+        rec = self.owners.setdefault(pid, {})
+        if video_id in rec:
+            return  # first grant wins: its keep flag and addedAt stand
+        rec[video_id] = {"keep": bool(keep), "addedAt": added_at or now_iso()}
+        self._save_owners(pid)
+
+    def grant(self, pid, video_id, keep, added_at=None):
+        with self.lock:
+            self._grant_locked(pid, video_id, keep, added_at)
+
+    def set_keep_for(self, pid, video_id, keep):
+        """Sets the caller's keep flag. Returns False if the caller does not own the video."""
+        with self.lock:
+            rec = self.owners.get(pid, {}).get(video_id)
+            if rec is None:
+                return False
+            rec["keep"] = keep
+            self._save_owners(pid)
+            return True
+
+    def _drop_owner_locked(self, pid, video_id):
+        """Removes one profile's ownership. When no owner is left, the files are removed (unless a job
+        is still writing them). Returns True if the files were removed. The caller must hold self.lock."""
+        rec = self.owners.get(pid)
+        if rec is not None and video_id in rec:
+            del rec[video_id]
+            self._save_owners(pid)
+        job = self.jobs.get(video_id)
+        if job is not None:
+            job.get("owners", {}).pop(pid, None)
+        if any(video_id in other for other in self.owners.values()):
+            return False
+        if self._active(video_id):
+            return False  # the running job sees no owners and removes its own file
+        self._remove_files(video_id)
+        self.jobs.pop(video_id, None)
+        return True
+
+    def delete_for(self, pid, video_id):
+        """Removes the caller's ownership of a video. Returns "deleted", "missing" or "busy"."""
+        with self.lock:
+            job = self.jobs.get(video_id)
+            owned = video_id in self.owners.get(pid, {})
+            joined = job is not None and pid in job.get("owners", {})
+            if self._active(video_id) and (owned or joined):
+                return "busy"
+            if not owned:
+                return "missing"
+            self._drop_owner_locked(pid, video_id)
+            return "deleted"
+
+    # -- metadata sidecars and files --
+    def _store_sidecar(self, video_id, record):
+        """Atomically replaces <id>.json. The caller must hold self.lock."""
+        atomic_write_json(self.sidecar_path(video_id), record)
 
     def _write_sidecar(self, video_id, meta, downloaded_at=None):
         """Writes the sidecar for a finished download. The caller must hold self.lock."""
@@ -96,59 +477,29 @@ class JobManager:
             "channelTitle": meta.get("channelTitle", ""),
             "duration": meta.get("duration"),
             "thumbnailURL": meta.get("thumbnailURL"),
-            "keep": meta.get("keep", True),
-            "downloadedAt": time.strftime(
-                "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() if downloaded_at is None else downloaded_at)
-            ),
+            "keep": meta.get("keep", True),  # the first requester's flag; per-profile keep is in owners
+            "downloadedAt": now_iso(downloaded_at),
             "fileSize": os.path.getsize(self.file_path(video_id)),
         }
         self._store_sidecar(video_id, record)
 
-    def set_keep(self, video_id, keep):
-        """Sets the keep flag on a download's sidecar. Returns False if it has no valid sidecar."""
-        with self.lock:
-            side = self._read_sidecar(video_id)
-            if side is None:
-                return False
-            side["keep"] = keep
-            self._store_sidecar(video_id, side)
-            return True
+    def _size(self, video_id):
+        try:
+            return os.path.getsize(self.file_path(video_id))
+        except OSError:
+            return None
 
-    def status(self, video_id):
-        with self.lock:
-            job = self.jobs.get(video_id)
-            if job:
-                out = dict(job)
-            elif os.path.exists(self.file_path(video_id)):
-                out = {"status": "ready", "progress": 1.0}  # survived a restart
-            else:
-                return None
-        if out["status"] == "ready":
+    def _remove_files(self, video_id):
+        for path in (self.file_path(video_id), self.sidecar_path(video_id)):
             try:
-                out["fileSize"] = os.path.getsize(self.file_path(video_id))
-            except OSError:
-                return None
-        return out
+                os.remove(path)
+            except FileNotFoundError:
+                pass
 
-    def submit(self, video_id, max_height=None, meta=None):
-        meta = meta or {}
-        with self.lock:
-            job = self.jobs.get(video_id)
-            if job and job["status"] in ("queued", "running", "ready"):
-                return dict(job)  # first writer wins: the new metadata is ignored
-            if not job and os.path.exists(self.file_path(video_id)):
-                if not os.path.exists(self.sidecar_path(video_id)):  # legacy file: backfill
-                    mtime = os.path.getmtime(self.file_path(video_id))
-                    self._write_sidecar(video_id, meta, downloaded_at=mtime)
-                return {"status": "ready", "progress": 1.0}
-            self.jobs[video_id] = {"status": "queued", "progress": 0.0}
-            self.meta[video_id] = meta
-        self.pool.submit(self._run, video_id, max_height or self.config.max_height)
-        return {"status": "queued", "progress": 0.0}
-
-    def _set(self, video_id, **fields):
-        with self.lock:
-            self.jobs.setdefault(video_id, {}).update(fields)
+    def _active(self, video_id):
+        """True if a job is queued or running. The caller must hold self.lock."""
+        job = self.jobs.get(video_id)
+        return bool(job) and job.get("status") in ("queued", "running")
 
     def _read_sidecar(self, video_id):
         """Returns a valid sidecar dict, or None (logging the id) if it is unreadable or wrong.
@@ -170,16 +521,78 @@ class JobManager:
             return None
         return side
 
-    def library(self, limit, after=None):
-        """One keyset page of finished downloads, newest first. `after` is a (downloadedAt, videoId)
+    # -- jobs --
+    def _state_locked(self, video_id):
+        """The public state of a video: its job while one is pending or failed, else ready from disk."""
+        job = self.jobs.get(video_id)
+        if job and job.get("status") in ("queued", "running", "failed"):
+            return public_job(job)
+        size = self._size(video_id)
+        if size is None:
+            return None
+        return {"status": "ready", "progress": 1.0, "fileSize": size}
+
+    def status(self, pid, video_id):
+        """Job state for a caller who owns the video or joined its job; None (404) otherwise."""
+        with self.lock:
+            job = self.jobs.get(video_id)
+            visible = video_id in self.owners.get(pid, {}) or (job is not None and pid in job.get("owners", {}))
+            if not visible:
+                return None
+            return self._state_locked(video_id)
+
+    def submit(self, pid, video_id, max_height=None, meta=None):
+        """Asks for a video on behalf of profile pid. Never starts a second download: an owned video
+        returns its state, a video on disk is granted to pid (dedup), and an in-flight job is joined."""
+        meta = meta or {}
+        keep = meta.get("keep", True)
+        with self.lock:
+            if video_id in self.owners.get(pid, {}):
+                state = self._state_locked(video_id)
+                if state is not None:
+                    return state
+            job = self.jobs.get(video_id)
+            if job and job.get("status") in ("queued", "running"):
+                job.setdefault("owners", {}).setdefault(pid, keep)
+                return public_job(job)
+            if self._size(video_id) is not None:  # already downloaded by someone: dedup
+                if not os.path.exists(self.sidecar_path(video_id)):  # legacy file: backfill
+                    self._write_sidecar(video_id, meta, downloaded_at=os.path.getmtime(self.file_path(video_id)))
+                self._grant_locked(pid, video_id, keep)
+                self._enforce_caps_locked([pid], skip=video_id)
+                return {"status": "ready", "progress": 1.0}
+            self.jobs[video_id] = {"status": "queued", "progress": 0.0, "owners": {pid: keep}}
+            self.meta[video_id] = meta
+        self.pool.submit(self._run, video_id, max_height or self.config.max_height)
+        return {"status": "queued", "progress": 0.0}
+
+    def _set(self, video_id, **fields):
+        with self.lock:
+            self.jobs.setdefault(video_id, {}).update(fields)
+
+    def _finish(self, video_id, meta):
+        """Writes the sidecar and grants every owner who asked while the job ran."""
+        with self.lock:
+            job = self.jobs.get(video_id, {})
+            owners = {pid: keep for pid, keep in job.get("owners", {}).items() if self._profile(pid)}
+            if not owners:  # everyone left while it ran
+                self._remove_files(video_id)
+                self.jobs.pop(video_id, None)
+                return
+            self._write_sidecar(video_id, meta)  # sidecar first, so "ready" is never seen without one
+            for pid, keep in owners.items():
+                self._grant_locked(pid, video_id, keep)
+            self.jobs.pop(video_id, None)
+            self._enforce_caps_locked(list(owners), skip=video_id)  # never evict the file just finished
+
+    def library(self, pid, limit, after=None):
+        """One keyset page of the caller's downloads, newest first. `after` is a (downloadedAt, videoId)
         key; only items strictly older than it are returned. Returns (items, nextCursor)."""
         found = []
         with self.lock:
-            for name in os.listdir(self.config.data_dir):
-                if not name.endswith(".json"):
-                    continue
-                vid = name[:-5]
-                if not VIDEO_ID_RE.match(vid) or not os.path.exists(self.file_path(vid)):
+            for vid, rec in self.owners.get(pid, {}).items():
+                size = self._size(vid)
+                if size is None:
                     continue
                 side = self._read_sidecar(vid)
                 if side is None:
@@ -187,15 +600,14 @@ class JobManager:
                 key = (side["downloadedAt"], vid)
                 if after is not None and key >= after:
                     continue
-                try:
-                    side["fileSize"] = os.path.getsize(self.file_path(vid))
-                except OSError:
-                    continue
-                found.append((key, side))
+                item = dict(side)
+                item["keep"] = rec["keep"]
+                item["fileSize"] = size
+                found.append((key, item))
         found.sort(key=lambda pair: pair[0], reverse=True)
         page = found[:limit]
         next_cursor = encode_cursor(page[-1][0]) if len(found) > limit else None
-        return [side for _, side in page], next_cursor
+        return [item for _, item in page], next_cursor
 
     def _run(self, video_id, height):
         with self.lock:
@@ -230,84 +642,53 @@ class JobManager:
             return
         if code == 0 and os.path.exists(out_path):
             try:
-                with self.lock:  # sidecar first, so "ready" is never seen without one
-                    self._write_sidecar(video_id, meta)
-                    self.jobs.setdefault(video_id, {}).update(status="ready", progress=1.0)
+                self._finish(video_id, meta)
             except OSError as e:
                 self._set(video_id, status="failed", error="Could not save the file: %s" % e)
-            else:
-                self.evict(skip=video_id)  # never evict the file that just finished
         else:
             if os.path.exists(out_path):
                 os.remove(out_path)
             message = " ".join(stderr_tail)[:300] or "yt-dlp exited with code %s" % code
             self._set(video_id, status="failed", error=message)
 
-    def delete(self, video_id):
-        """Removes the .mp4 and its sidecar. Returns "deleted", "missing", or "busy" (a job is
-        queued or running, so nothing is removed and _set cannot recreate the file)."""
-        with self.lock:
-            job = self.jobs.get(video_id)
-            if job and job["status"] in ("queued", "running"):
-                return "busy"
-            self.jobs.pop(video_id, None)
-            removed = False
-            for path in (self.file_path(video_id), self.sidecar_path(video_id)):
-                try:
-                    os.remove(path)
-                    removed = True
-                except FileNotFoundError:
-                    pass
-            return "deleted" if removed else "missing"
-
-    def _active(self, video_id):
-        """True if a job is queued or running. The caller must hold self.lock."""
-        job = self.jobs.get(video_id)
-        return bool(job) and job["status"] in ("queued", "running")
-
-    def _video_ids_with_mp4(self):
-        names = os.listdir(self.config.data_dir)
-        return [n[:-4] for n in names if n.endswith(".mp4") and VIDEO_ID_RE.match(n[:-4])]
-
-    def evict(self, skip=None):
-        """Evicts unkept downloads, oldest first, until their total is within the cap. Never
-        evicts kept files, a queued or running job, or `skip` (the file that just finished).
-        Returns the evicted ids."""
-        cap = self.config.unkept_cap_bytes
+    def _enforce_caps_locked(self, pids, skip=None):
+        """For each profile, evicts its own oldest unkept entries until its unkept total (every unkept
+        video it owns, shared files counted in full) is within its cap. Evicting removes only that
+        profile's ownership; the file goes when no owner is left. Returns the evicted ids."""
         evicted = []
-        with self.lock:
+        for pid in pids:
+            p = self._profile(pid)
+            if p is None:
+                continue
+            rows = []  # (downloadedAt, videoId, size) for unkept, idle entries
             total = 0
-            unkept = []  # (downloadedAt, videoId, size)
-            for vid in self._video_ids_with_mp4():
-                if not os.path.exists(self.sidecar_path(vid)):
-                    continue  # not in the library; startup migrates these
+            for vid, rec in self.owners.get(pid, {}).items():
+                if rec["keep"]:
+                    continue
+                size = self._size(vid)
+                if size is None:
+                    continue
                 side = self._read_sidecar(vid)
                 if side is None:
                     continue
-                try:
-                    size = os.path.getsize(self.file_path(vid))
-                except OSError:
-                    continue
-                if side["keep"]:
-                    continue
                 total += size  # active files count towards the cap but are never evicted
                 if not self._active(vid):
-                    unkept.append((side["downloadedAt"], vid, size))
-            unkept.sort()
-            for _, vid, size in unkept:
-                if total <= cap:
+                    rows.append((side["downloadedAt"], vid, size))
+            rows.sort()
+            for _, vid, size in rows:
+                if total <= p["capBytes"]:
                     break
                 if vid == skip:
                     continue
-                for path in (self.file_path(vid), self.sidecar_path(vid)):
-                    try:
-                        os.remove(path)
-                    except FileNotFoundError:
-                        pass
-                self.jobs.pop(vid, None)
+                self._drop_owner_locked(pid, vid)
                 total -= size
                 evicted.append(vid)
         return evicted
+
+    def evict(self, skip=None):
+        """Enforces every profile's cap. Returns the ids whose ownership was evicted."""
+        with self.lock:
+            return self._enforce_caps_locked([p["id"] for p in self.profiles], skip)
 
     def _fetch_metadata(self, video_id):
         """Asks yt-dlp (no download) for a video's metadata. Returns a dict, or None on any failure."""
@@ -336,7 +717,7 @@ class JobManager:
         """Fills in title, channel, duration and thumbnail for downloads whose sidecar has none
         (files made before metadata was recorded). Runs once per start, one video at a time; a video
         yt-dlp cannot describe is skipped and tried again at the next start. Returns how many were
-        filled. Never touches the keep flag, download time or size."""
+        filled. Never touches owners, download time or size."""
         with self.lock:
             missing = [
                 vid
@@ -349,7 +730,7 @@ class JobManager:
             if meta is None:
                 sys.stderr.write("metadata backfill: could not describe %s\n" % vid)
                 continue
-            with self.lock:  # re-read: keep may have changed, or the file may have been deleted
+            with self.lock:  # re-read: the file may have been deleted meanwhile
                 side = self._read_sidecar(vid)
                 if side is None or side.get("title") or not os.path.exists(self.file_path(vid)):
                     continue
@@ -369,8 +750,9 @@ class JobManager:
         ]
 
     def startup_cleanup(self):
-        """Migrates legacy .mp4 files to unkept sidecars, removes orphan sidecars and stale partial
-        downloads (older than an hour), then enforces the cap."""
+        """Migrates legacy .mp4 files to sidecars, removes orphan sidecars and stale partial downloads
+        (older than an hour), drops ownership of files that are gone, gives existing downloads to the
+        admin profile once, then enforces every cap."""
         now = time.time()
         with self.lock:
             for name in os.listdir(self.config.data_dir):
@@ -385,7 +767,27 @@ class JobManager:
                 elif name.endswith((".part", ".tmp")) or fnmatch.fnmatch(name, "*.f*.mp4"):
                     if now - os.path.getmtime(path) > 3600:  # stale partial download
                         os.remove(path)
+            for pid, rec in self.owners.items():
+                gone = [vid for vid in rec if self._size(vid) is None]
+                for vid in gone:
+                    del rec[vid]
+                if gone:
+                    self._save_owners(pid)
+            if not self.migrated and self._profile(ADMIN_ID) is not None:
+                for vid in self._sidecar_ids():
+                    side = self._read_sidecar(vid)
+                    if side is not None and self._size(vid) is not None:
+                        self._grant_locked(ADMIN_ID, vid, side["keep"], side["downloadedAt"])
+                self.migrated = True
+                self._save_profiles()
         self.evict()
+
+
+def public_job(job):
+    out = {"status": job["status"], "progress": job.get("progress", 0.0)}
+    if job.get("error"):
+        out["error"] = job["error"]
+    return out
 
 
 def encode_cursor(key):
@@ -437,6 +839,276 @@ def parse_metadata(body):
     return meta
 
 
+ADMIN_PAGE = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>SmartTube NAS admin</title>
+<style>
+:root { color-scheme: light dark; --bg:#f5f5f7; --fg:#1d1d1f; --muted:#6e6e73; --card:#ffffff; --line:#d2d2d7; --accent:#0a68d6; --bad:#c0392b; --ok:#1e8e3e; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#000000; --fg:#f5f5f7; --muted:#a1a1a6; --card:#1c1c1e; --line:#3a3a3c; --accent:#4da3ff; --bad:#ff6b5e; --ok:#32d74b; } }
+:root[data-theme="dark"] { --bg:#000000; --fg:#f5f5f7; --muted:#a1a1a6; --card:#1c1c1e; --line:#3a3a3c; --accent:#4da3ff; --bad:#ff6b5e; --ok:#32d74b; }
+* { box-sizing: border-box; }
+body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 15px/1.4 -apple-system, system-ui, sans-serif; }
+h1 { font-size: 20px; margin: 0 0 12px; }
+h2 { font-size: 16px; margin: 0 0 8px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin-bottom: 14px; }
+.muted { color: var(--muted); font-size: 13px; }
+.err { color: var(--bad); margin: 8px 0; }
+input[type=text], input[type=password], input[type=number] { font: inherit; padding: 7px 9px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); color: var(--fg); max-width: 100%; }
+button { font: inherit; padding: 6px 11px; border-radius: 7px; border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer; margin: 2px; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.danger { color: var(--bad); }
+.wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; min-width: 640px; }
+th, td { text-align: left; padding: 7px 6px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+th { font-size: 12px; color: var(--muted); font-weight: 600; }
+progress { width: 120px; height: 10px; vertical-align: middle; }
+code { font-family: ui-monospace, Menlo, monospace; font-size: 13px; word-break: break-all; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.token-box { border: 1px dashed var(--accent); border-radius: 8px; padding: 10px; margin-top: 10px; }
+</style>
+</head>
+<body>
+<h1>SmartTube NAS admin</h1>
+
+<div class="card" id="signin">
+  <h2>Admin token</h2>
+  <p class="muted">Paste an admin token. It is kept for this browser tab only and sent as a Bearer header.</p>
+  <div class="row">
+    <input type="password" id="tokenIn" autocomplete="off" aria-label="Admin token" size="40">
+    <button class="primary" id="useToken">Use token</button>
+    <button id="signOut" hidden>Sign out</button>
+  </div>
+  <div class="err" id="signErr"></div>
+</div>
+
+<div id="app" hidden>
+  <div class="card">
+    <h2>Add user</h2>
+    <div class="row">
+      <input type="text" id="newName" maxlength="60" placeholder="Name" aria-label="Name">
+      <label><input type="checkbox" id="newAdmin"> admin</label>
+      <button class="primary" id="addUser">Add user</button>
+    </div>
+    <div id="tokenOut"></div>
+    <div class="err" id="addErr"></div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="justify-content: space-between;">
+      <h2>Users</h2>
+      <button id="refresh">Refresh</button>
+    </div>
+    <div class="wrap">
+      <table>
+        <thead><tr><th>Name</th><th>Role</th><th>Last seen</th><th>Videos</th><th>Unkept usage</th><th>Cap (GB)</th><th>Actions</th></tr></thead>
+        <tbody id="users"></tbody>
+      </table>
+    </div>
+    <div class="err" id="listErr"></div>
+    <p class="muted">Counts and sizes only. Titles of other users' downloads are never shown here.</p>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var KEY = "ytdlpAdminToken";
+  var GB = 1024 * 1024 * 1024;
+
+  function $(id) { return document.getElementById(id); }
+  function getToken() {
+    try { return sessionStorage.getItem(KEY) || ""; } catch (e) { return ""; }
+  }
+  function setToken(t) {
+    try { if (t) { sessionStorage.setItem(KEY, t); } else { sessionStorage.removeItem(KEY); } } catch (e) {}
+  }
+  function el(tag, text, cls) {
+    var n = document.createElement(tag);
+    if (text !== undefined && text !== null) { n.textContent = text; }
+    if (cls) { n.className = cls; }
+    return n;
+  }
+  function button(label, handler, cls) {
+    var b = el("button", label, cls || "");
+    b.type = "button";
+    b.addEventListener("click", handler);
+    return b;
+  }
+  function gb(bytes) { return (bytes / GB).toFixed(bytes < GB ? 2 : 1) + " GB"; }
+  function when(iso) { return iso ? new Date(iso).toLocaleString() : "never"; }
+
+  async function api(method, path, body) {
+    var headers = { "Authorization": "Bearer " + getToken() };
+    var init = { method: method, headers: headers, cache: "no-store", credentials: "omit" };
+    if (body !== undefined) {
+      headers["Content-Type"] = "application/json";
+      init.body = JSON.stringify(body);
+    }
+    var res = await fetch(path, init);
+    var data = {};
+    try { data = await res.json(); } catch (e) {}
+    if (res.status === 401) {
+      setToken("");
+      showSignIn("Token rejected or revoked. Paste a valid admin token.");
+      throw new Error("unauthorised");
+    }
+    if (!res.ok) { throw new Error(data.error || ("HTTP " + res.status)); }
+    return data;
+  }
+
+  function showSignIn(message) {
+    $("app").hidden = true;
+    $("signin").hidden = false;
+    $("signOut").hidden = true;
+    $("signErr").textContent = message || "";
+  }
+  function showApp() {
+    $("signin").hidden = false;
+    $("signOut").hidden = false;
+    $("app").hidden = false;
+    $("signErr").textContent = "";
+    loadUsers();
+  }
+
+  function inviteLink(token) {
+    return "smarttube://nas?url=" + encodeURIComponent(location.origin) + "&token=" + encodeURIComponent(token);
+  }
+  function copyText(text, btn) {
+    var done = function () { var old = btn.textContent; btn.textContent = "Copied"; setTimeout(function () { btn.textContent = old; }, 1500); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, function () {});
+    }
+  }
+  function showToken(title, token, user) {
+    var box = $("tokenOut");
+    box.replaceChildren();
+    var wrap = el("div", null, "token-box");
+    wrap.appendChild(el("h2", title + " " + (user.name || "")));
+    wrap.appendChild(el("p", "Shown once. Give it to the user now; it cannot be shown again.", "muted"));
+    var t = el("code", token);
+    wrap.appendChild(t);
+    wrap.appendChild(el("div"));
+    wrap.appendChild(button("Copy token", function (e) { copyText(token, e.target); }));
+    var link = inviteLink(token);
+    wrap.appendChild(el("p", "Invite link (open it on the user's device):", "muted"));
+    wrap.appendChild(el("code", link));
+    wrap.appendChild(el("div"));
+    wrap.appendChild(button("Copy invite link", function (e) { copyText(link, e.target); }));
+    wrap.appendChild(button("Dismiss", function () { box.replaceChildren(); }));
+    box.appendChild(wrap);
+  }
+
+  function renderUsers(users) {
+    var body = $("users");
+    body.replaceChildren();
+    users.forEach(function (u) {
+      var tr = document.createElement("tr");
+      tr.appendChild(el("td", u.name));
+      tr.appendChild(el("td", u.role));
+      tr.appendChild(el("td", when(u.lastSeen)));
+      tr.appendChild(el("td", String(u.videoCount)));
+
+      var usageTd = el("td");
+      var bar = el("progress");
+      bar.max = Math.max(u.capBytes, 1);
+      bar.value = Math.min(u.unkeptBytes, bar.max);
+      usageTd.appendChild(bar);
+      usageTd.appendChild(el("div", gb(u.unkeptBytes) + " of " + gb(u.capBytes) + " unkept", "muted"));
+      tr.appendChild(usageTd);
+
+      var capTd = el("td");
+      var capIn = document.createElement("input");
+      capIn.type = "number"; capIn.step = "0.1"; capIn.min = "0"; capIn.size = 6;
+      capIn.value = (u.capBytes / GB).toFixed(1);
+      capIn.setAttribute("aria-label", "Cap for " + u.name + " in GB");
+      capTd.appendChild(capIn);
+      capTd.appendChild(button("Save", function () {
+        var gbVal = parseFloat(capIn.value);
+        if (!(gbVal >= 0)) { $("listErr").textContent = "Cap must be a number of GB."; return; }
+        patchUser(u.id, { capBytes: Math.round(gbVal * GB) });
+      }));
+      tr.appendChild(capTd);
+
+      var actions = el("td");
+      var other = u.role === "admin" ? "user" : "admin";
+      actions.appendChild(button(u.role === "admin" ? "Demote" : "Promote", function () {
+        patchUser(u.id, { role: other });
+      }));
+      actions.appendChild(button("New token", function () {
+        run(function () { return api("POST", "/v1/admin/users/" + u.id + "/token"); },
+          function (data) { showToken("New token for", data.token, data.user); });
+      }));
+      var revoke = button("Revoke token", function () {
+        if (!confirm("Revoke the token of " + u.name + "? Their list is kept.")) { return; }
+        run(function () { return api("DELETE", "/v1/admin/users/" + u.id + "/token"); }, loadUsers);
+      });
+      revoke.disabled = !u.hasToken;
+      actions.appendChild(revoke);
+      actions.appendChild(button("Delete", function () {
+        if (!confirm("Delete " + u.name + "? Their list is removed. Videos nobody else owns are deleted.")) { return; }
+        run(function () { return api("DELETE", "/v1/admin/users/" + u.id); }, loadUsers);
+      }, "danger"));
+      tr.appendChild(actions);
+      body.appendChild(tr);
+    });
+    if (!users.length) {
+      var empty = document.createElement("tr");
+      empty.appendChild(el("td", "No users yet.", "muted"));
+      body.appendChild(empty);
+    }
+  }
+
+  function run(task, then) {
+    $("listErr").textContent = "";
+    task().then(then, function (err) {
+      if (err && err.message !== "unauthorised") { $("listErr").textContent = err.message; }
+    });
+  }
+  function patchUser(id, changes) {
+    run(function () { return api("PATCH", "/v1/admin/users/" + id, changes); }, loadUsers);
+  }
+  function loadUsers() {
+    run(function () { return api("GET", "/v1/admin/users"); }, function (data) { renderUsers(data.users || []); });
+  }
+
+  $("useToken").addEventListener("click", function () {
+    var t = $("tokenIn").value.trim();
+    if (!t) { $("signErr").textContent = "Paste a token first."; return; }
+    setToken(t);
+    $("tokenIn").value = "";
+    showApp();
+  });
+  $("signOut").addEventListener("click", function () {
+    setToken("");
+    $("tokenOut").replaceChildren();
+    showSignIn("Signed out.");
+  });
+  $("refresh").addEventListener("click", loadUsers);
+  $("addUser").addEventListener("click", function () {
+    var name = $("newName").value.trim();
+    if (!name) { $("addErr").textContent = "Type a name first."; return; }
+    $("addErr").textContent = "";
+    var role = $("newAdmin").checked ? "admin" : "user";
+    run(function () { return api("POST", "/v1/admin/users", { name: name, role: role }); }, function (data) {
+      $("newName").value = "";
+      $("newAdmin").checked = false;
+      showToken("Token for", data.token, data.user);
+      loadUsers();
+    });
+  });
+
+  if (getToken()) { showApp(); } else { showSignIn(""); }
+})();
+</script>
+</body>
+</html>
+"""
+
+
 def make_handler(config, manager):
     class Handler(BaseHTTPRequestHandler):
         server_version = "SmartTubeYtDlp/0"
@@ -453,12 +1125,52 @@ def make_handler(config, manager):
             self.end_headers()
             self.wfile.write(data)
 
-        def _authorised(self):
+        def _html(self, code, text):
+            data = text.encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            self.wfile.write(data)
+
+        def _auth(self):
+            """The calling profile, or None after sending 401."""
             header = self.headers.get("Authorization", "")
-            return hmac.compare_digest(header, "Bearer " + config.token)
+            token = header[len("Bearer "):] if header.startswith("Bearer ") else ""
+            profile = manager.authenticate(token)
+            if profile is None:
+                self._json(401, {"error": "unauthorised"})
+            return profile
+
+        def _admin(self):
+            """The calling admin profile, or None after sending 401 or 403."""
+            profile = self._auth()
+            if profile is not None and profile["role"] != "admin":
+                self._json(403, {"error": "forbidden"})
+                return None
+            return profile
+
+        def _body(self):
+            """The request body as a JSON object, or None if it is not one."""
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                return None
+            if length < 0 or length > MAX_BODY:
+                return None
+            try:
+                body = json.loads(self.rfile.read(length) or b"{}")
+            except ValueError:
+                return None
+            return body if isinstance(body, dict) else None
 
         def _video_id(self, raw):
-            return raw if VIDEO_ID_RE.match(raw or "") else None
+            return raw if isinstance(raw, str) and VIDEO_ID_RE.match(raw) else None
+
+        def _api_error(self, err):
+            self._json(err.status, {"error": err.message})
 
         # -- routes --
         def do_GET(self):
@@ -467,26 +1179,37 @@ def make_handler(config, manager):
                 return self._json(
                     200, {"ok": True, "apiVersion": API_VERSION, "ytdlpVersion": _ytdlp_version(config)}
                 )
-            if not self._authorised():
-                return self._json(401, {"error": "unauthorised"})
+            if path in ("/admin", "/admin/"):
+                return self._html(200, ADMIN_PAGE)
+            me = self._auth()
+            if me is None:
+                return
+            if path == "/v1/me":
+                return self._json(200, me_view(me))
             if path == "/v1/library":
-                return self._library(query)
+                return self._library(me["id"], query)
+            if path == "/v1/admin/users":
+                if me["role"] != "admin":
+                    return self._json(403, {"error": "forbidden"})
+                return self._json(200, {"users": manager.list_users()})
             m = re.match(r"^/v1/jobs/([^/]+)$", path)
             if m:
                 vid = self._video_id(m.group(1))
                 if not vid:
                     return self._json(400, {"error": "bad video id"})
-                status = manager.status(vid)
+                status = manager.status(me["id"], vid)
                 return self._json(200, status) if status else self._json(404, {"error": "unknown job"})
             m = re.match(r"^/v1/files/([^/]+)\.mp4$", path)
             if m:
                 vid = self._video_id(m.group(1))
                 if not vid:
                     return self._json(400, {"error": "bad video id"})
+                if not manager.owns(me["id"], vid):
+                    return self._json(404, {"error": "no such file"})
                 return self._serve_file(manager.file_path(vid))
             self._json(404, {"error": "not found"})
 
-        def _library(self, query):
+        def _library(self, pid, query):
             params = parse_qs(query, keep_blank_values=True)
             raw_limit = params.get("limit", [str(LIBRARY_DEFAULT_LIMIT)])[-1]
             if not re.fullmatch(r"[0-9]{1,6}", raw_limit) or not 1 <= int(raw_limit) <= LIBRARY_MAX_LIMIT:
@@ -498,18 +1221,34 @@ def make_handler(config, manager):
                     after = decode_cursor(raw_cursor)
                 except ValueError:
                     return self._json(400, {"error": "bad cursor"})
-            items, next_cursor = manager.library(int(raw_limit), after)
+            items, next_cursor = manager.library(pid, int(raw_limit), after)
             self._json(200, {"items": items, "nextCursor": next_cursor})
 
         def do_POST(self):
-            if not self._authorised():
-                return self._json(401, {"error": "unauthorised"})
-            if self.path.split("?")[0] != "/v1/jobs":
-                return self._json(404, {"error": "not found"})
-            try:
-                length = int(self.headers.get("Content-Length", "0"))
-                body = json.loads(self.rfile.read(length) or b"{}")
-            except (ValueError, json.JSONDecodeError):
+            path = self.path.split("?")[0]
+            me = self._auth()
+            if me is None:
+                return
+            if path == "/v1/jobs":
+                return self._post_job(me)
+            if path == "/v1/admin/users":
+                if me["role"] != "admin":
+                    return self._json(403, {"error": "forbidden"})
+                return self._admin_create()
+            m = ADMIN_TOKEN_RE.match(path)
+            if m:
+                if me["role"] != "admin":
+                    return self._json(403, {"error": "forbidden"})
+                try:
+                    user, token = manager.reissue_token(m.group(1))
+                except ApiError as e:
+                    return self._api_error(e)
+                return self._json(200, {"user": user, "token": token})
+            self._json(404, {"error": "not found"})
+
+        def _post_job(self, me):
+            body = self._body()
+            if body is None:
                 return self._json(400, {"error": "bad json"})
             vid = self._video_id(body.get("videoId"))
             if not vid:
@@ -521,40 +1260,110 @@ def make_handler(config, manager):
                 meta = parse_metadata(body)
             except ValueError as e:
                 return self._json(400, {"error": "bad %s" % e})
-            self._json(202, manager.submit(vid, height, meta))
+            self._json(202, manager.submit(me["id"], vid, height, meta))
+
+        def _admin_create(self):
+            body = self._body()
+            if body is None:
+                return self._json(400, {"error": "bad json"})
+            try:
+                fields = parse_fields(body, ("name", "role"))
+                if "name" not in fields:
+                    raise ValueError("name")
+            except ValueError as e:
+                return self._json(400, {"error": "bad %s" % e})
+            user, token = manager.create_user(fields["name"], fields.get("role", "user"))
+            self._json(201, {"user": user, "token": token})
 
         def do_PUT(self):
-            if not self._authorised():
-                return self._json(401, {"error": "unauthorised"})
-            m = re.match(r"^/v1/files/([^/]+)/keep$", self.path.split("?")[0])
+            path = self.path.split("?")[0]
+            me = self._auth()
+            if me is None:
+                return
+            m = re.match(r"^/v1/files/([^/]+)/keep$", path)
             if not m:
                 return self._json(404, {"error": "not found"})
             vid = self._video_id(m.group(1))
             if not vid:
                 return self._json(400, {"error": "bad video id"})
-            try:
-                length = int(self.headers.get("Content-Length", "0"))
-                body = json.loads(self.rfile.read(length) or b"{}")
-            except (ValueError, json.JSONDecodeError):
+            body = self._body()
+            if body is None:
                 return self._json(400, {"error": "bad json"})
-            keep = body.get("keep") if isinstance(body, dict) else None
+            keep = body.get("keep")
             if not isinstance(keep, bool):
                 return self._json(400, {"error": "bad keep"})
-            if not manager.set_keep(vid, keep):
+            if not manager.set_keep_for(me["id"], vid, keep):
                 return self._json(404, {"error": "unknown file"})
             self._json(200, {"ok": True, "keep": keep})
 
+        def do_PATCH(self):
+            path = self.path.split("?")[0]
+            me = self._auth()
+            if me is None:
+                return
+            if path == "/v1/me":
+                body = self._body()
+                if body is None:
+                    return self._json(400, {"error": "bad json"})
+                try:
+                    changes = parse_fields(body, ("capBytes",))
+                except ValueError as e:
+                    return self._json(400, {"error": "bad %s" % e})
+                view = manager.update_user(me["id"], changes)
+                return self._json(200, me_view(view))
+            m = ADMIN_USER_RE.match(path)
+            if m:
+                if me["role"] != "admin":
+                    return self._json(403, {"error": "forbidden"})
+                body = self._body()
+                if body is None:
+                    return self._json(400, {"error": "bad json"})
+                try:
+                    changes = parse_fields(body, ("name", "role", "capBytes"))
+                except ValueError as e:
+                    return self._json(400, {"error": "bad %s" % e})
+                try:
+                    user = manager.update_user(m.group(1), changes)
+                except ApiError as e:
+                    return self._api_error(e)
+                return self._json(200, {"user": user})
+            self._json(404, {"error": "not found"})
+
         def do_DELETE(self):
-            if not self._authorised():
-                return self._json(401, {"error": "unauthorised"})
-            m = re.match(r"^/v1/files/([^/]+)$", self.path.split("?")[0])
-            vid = self._video_id(m.group(1)) if m else None
-            if not vid:
-                return self._json(400, {"error": "bad video id"})
-            result = manager.delete(vid)
-            if result == "busy":
-                return self._json(409, {"deleted": False, "error": "still downloading"})
-            self._json(200 if result == "deleted" else 404, {"deleted": result == "deleted"})
+            path = self.path.split("?")[0]
+            me = self._auth()
+            if me is None:
+                return
+            m = re.match(r"^/v1/files/([^/]+)$", path)
+            if m:
+                vid = self._video_id(m.group(1))
+                if not vid:
+                    return self._json(400, {"error": "bad video id"})
+                result = manager.delete_for(me["id"], vid)
+                if result == "busy":
+                    return self._json(409, {"deleted": False, "error": "still downloading"})
+                if result == "missing":
+                    return self._json(404, {"deleted": False})
+                return self._json(200, {"deleted": True})
+            m = ADMIN_TOKEN_RE.match(path)
+            if m:
+                if me["role"] != "admin":
+                    return self._json(403, {"error": "forbidden"})
+                try:
+                    user = manager.revoke_token(m.group(1))
+                except ApiError as e:
+                    return self._api_error(e)
+                return self._json(200, {"user": user})
+            m = ADMIN_USER_RE.match(path)
+            if m:
+                if me["role"] != "admin":
+                    return self._json(403, {"error": "forbidden"})
+                try:
+                    manager.delete_user(m.group(1))
+                except ApiError as e:
+                    return self._api_error(e)
+                return self._json(200, {"deleted": True})
+            self._json(404, {"error": "not found"})
 
         def _serve_file(self, path):
             try:
@@ -622,10 +1431,57 @@ def build_server(config):
     return server
 
 
-def main():
+def run_cli(config, argv):
+    """add-user, revoke-user and reissue-user. Prints tokens once, to the operator's terminal."""
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="server.py", description="Manage SmartTube NAS profiles.")
+    sub = parser.add_subparsers(dest="command", required=True)
+    add = sub.add_parser("add-user", help="create a profile and print its token once")
+    add.add_argument("name")
+    add.add_argument("--admin", action="store_true", help="make the profile an admin")
+    for name, help_text in (
+        ("revoke-user", "revoke a profile's token; its list is kept"),
+        ("reissue-user", "give a profile a new token; the old one stops working"),
+    ):
+        p = sub.add_parser(name, help=help_text)
+        p.add_argument("user", help="profile id or name")
+    args = parser.parse_args(argv)
+    manager = JobManager(config)
+    try:
+        if args.command == "add-user":
+            try:
+                fields = parse_fields({"name": args.name}, ("name",))
+            except ValueError:
+                sys.exit("the name must be 1 to %d characters" % NAME_MAX)
+            user, token = manager.create_user(fields["name"], "admin" if args.admin else "user")
+            print("Created %s (id %s, role %s)." % (user["name"], user["id"], user["role"]))
+            print("Token (shown once): %s" % token)
+            if config.public_url:
+                print(
+                    "Invite link: smarttube://nas?url=%s&token=%s"
+                    % (quote(config.public_url, safe=""), quote(token, safe=""))
+                )
+        elif args.command == "revoke-user":
+            pid = manager.find_user(args.user)["id"]
+            user = manager.revoke_token(pid)
+            print("Revoked the token of %s (id %s). Their list is kept." % (user["name"], user["id"]))
+        else:
+            pid = manager.find_user(args.user)["id"]
+            user, token = manager.reissue_token(pid)
+            print("New token for %s (id %s), shown once: %s" % (user["name"], user["id"], token))
+    except ApiError as e:
+        sys.exit(e.message)
+    return 0
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
     config = Config()
+    if argv:
+        return run_cli(config, argv)
     if not config.token:
-        sys.exit("YTDLP_TOKEN is required (a long random string the app will send as a bearer token).")
+        sys.exit("YTDLP_TOKEN is required (a long random string; it becomes the admin token on first start).")
     server = build_server(config)
     threading.Thread(target=server.manager.backfill_metadata, daemon=True).start()
     sys.stderr.write("SmartTube yt-dlp server on %s:%d, data in %s\n" % (config.host, config.port, config.data_dir))
@@ -633,7 +1489,8 @@ def main():
         server.serve_forever()
     except KeyboardInterrupt:
         pass
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
