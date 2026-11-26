@@ -37,6 +37,7 @@ struct AppEntry: App {
     #if os(iOS)
     @State private var watchLaterAutoDownloader: WatchLaterAutoDownloader
     @State private var newUploadNotifier: NewUploadNotifier
+    @State private var nasInvite = NASInviteController()
     #endif
     @Environment(\.scenePhase) private var scenePhase
 
@@ -173,6 +174,7 @@ struct AppEntry: App {
                     }
                 }
                 .onOpenURL { url in handleOpenURL(url) }
+                .nasInviteAlert(nasInvite, settings: settingsStore)
                 .onChange(of: scenePhase, initial: true) { _, phase in
                     if phase == .active {
                         consumeQueueInjectFromLaunchArgs()
@@ -277,6 +279,7 @@ struct AppEntry: App {
                         }
                     }
                     .onOpenURL { url in handleOpenURL(url) }
+                    .nasInviteAlert(nasInvite, settings: settingsStore)
                     #if os(iOS)
                 // Spotlight: tapping a video or channel result opens it.
                 .onContinueUserActivity(CSSearchableItemActionType) { activity in
@@ -344,6 +347,11 @@ struct AppEntry: App {
 
     @MainActor
     private func handleOpenURL(_ url: URL) {
+        // smarttube://nas invites only ask for confirmation; nothing is saved until the user agrees.
+        if let invite = NASInviteLink(url: url) {
+            nasInvite.receive(invite)
+            return
+        }
         // smarttube://video/ID and smarttube://watch?v=ID come from the Share Extension, the
         // widget and hand-built links (#84); the other routes from App Intents and Spotlight.
         // See SmartTubeRoute for the full list.
