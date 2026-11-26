@@ -168,6 +168,7 @@ enum AppSymbol {
     static let downloaded = "arrow.down.circle.fill"
     static let audioDownload = "music.note"
     static let pin = "pin.fill"
+    static let pinOutline = "pin"
     static let pinSlash = "pin.slash.fill"
     static let trash = "trash"
     static let watchLater = "clock.badge"

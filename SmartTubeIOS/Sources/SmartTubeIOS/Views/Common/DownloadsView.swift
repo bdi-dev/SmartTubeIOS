@@ -466,21 +466,19 @@ private struct NASLibraryRow: View {
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
-                    if item.keep {
-                        Button(action: onToggleKeep) {
-                            Image(systemName: AppSymbol.pin)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .frame(minWidth: 32, minHeight: 32)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.borderless)
-                        .accessibilityLabel("Kept on NAS. Tap to unkeep")
-                        .accessibilityIdentifier(AccessibilityID.Downloads.nasPin(item.videoId))
-                    }
                 }
             }
             Spacer()
+            Button(action: onToggleKeep) {
+                Image(systemName: item.keep ? AppSymbol.pin : AppSymbol.pinOutline)
+                    .font(.body)
+                    .foregroundStyle(item.keep ? Color.accentColor : Color.secondary)
+                    .frame(minWidth: 36, minHeight: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel(item.keep ? "Kept on NAS. Tap to unkeep" : "Not kept. Tap to keep on NAS")
+            .accessibilityIdentifier(AccessibilityID.Downloads.nasPin(item.videoId))
             Button(action: onDownload) {
                 Image(systemName: AppSymbol.download)
                     .font(.title3)
