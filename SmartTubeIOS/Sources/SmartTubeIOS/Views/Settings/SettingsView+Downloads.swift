@@ -64,6 +64,7 @@ private struct YtDlpServerSettingsRows: View {
     @State private var tokenText = ""
     @State private var testResult: String?
     @State private var isTesting = false
+    @State private var account = NASAccountViewModel()
 
     var body: some View {
         @Bindable var store = store
@@ -112,12 +113,64 @@ private struct YtDlpServerSettingsRows: View {
                         .foregroundStyle(.secondary)
                         .accessibilityIdentifier(AccessibilityID.Settings.ytDlpTestResult)
                 }
+                accountRow
+                if !tokenText.isEmpty {
+                    Button("Sign out", role: .destructive) { signOut() }
+                        .accessibilityIdentifier(AccessibilityID.Settings.ytDlpSignOutButton)
+                }
             }
         }
         .onAppear {
             urlText = store.settings.ytDlpServerURL?.absoluteString ?? ""
             tokenText = YtDlpServerConfig.current().token ?? ""
         }
+        // Re-asks the server whenever the URL or token changes (the token field saves on each edit).
+        .task(id: accountKey) {
+            await account.load(client: accountClient)
+        }
+    }
+
+    /// Changes with the URL or token, so the account check reruns.
+    private var accountKey: String {
+        "\(store.settings.ytDlpServerURL?.absoluteString ?? "")|\(tokenText)"
+    }
+
+    /// The client for the "Signed in as" check, or nil when no URL and token are entered.
+    private var accountClient: (any YtDlpServerClient)? {
+        let token = tokenText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = store.settings.ytDlpServerURL, !token.isEmpty else { return nil }
+        return URLSessionYtDlpServerClient(baseURL: url, token: token)
+    }
+
+    /// Only the states that say something: a server too old for `/v1/me` shows nothing.
+    @ViewBuilder
+    private var accountRow: some View {
+        switch account.state {
+        case .signedIn(let name, _):
+            Text("Signed in as \(name)")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier(AccessibilityID.Settings.ytDlpAccountRow)
+        case .rejected:
+            Text("Token revoked or wrong")
+                .font(.footnote)
+                .foregroundStyle(.red)
+                .accessibilityIdentifier(AccessibilityID.Settings.ytDlpAccountRow)
+        case .unreachable:
+            Text("NAS unreachable")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier(AccessibilityID.Settings.ytDlpAccountRow)
+        case .idle, .unsupported:
+            EmptyView()
+        }
+    }
+
+    /// Removes the personal token from the Keychain; the server URL stays, so a new token can be pasted.
+    private func signOut() {
+        tokenText = ""
+        YtDlpServerConfig.saveToken(nil)
+        testResult = nil
     }
 
     /// Checks the server is reachable, then that the token is accepted (an unknown job id gives
