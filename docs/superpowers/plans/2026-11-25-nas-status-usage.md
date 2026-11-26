@@ -6,7 +6,7 @@
 ## Goal
 Show what the NAS (yt-dlp companion server) is doing and how full it is, without leaving the
 app: a quick **info icon** beside the "Available on NAS" header, and a fuller **NAS** sub page in
-Settings. Mostly read-only; the one thing you can change is the **unkept cap** (default 20 GB). Nothing
+Settings. Mostly read-only; the unkept cap (default 20 GB) is shown but only an admin can change it, on the web admin page. Nothing
 here deletes anything directly (see [the roadmap](../../features/roadmap.md)).
 
 ## What the user sees
@@ -18,8 +18,8 @@ a sheet with the same summary as the Settings page, plus a "Refresh" action.
 - Server: API version, yt-dlp version, server uptime.
 - Storage: disk free and total for the data volume; kept bytes and count; unkept bytes and count
   against the cap (a gauge, e.g. "12.4 of 20 GB"); a warning colour above 90% of the cap.
-- Unkept cap: an editable value in GB (stepper or field, minimum 1). Saving it asks to confirm and
-  says that unkept files over the new cap are evicted oldest first, as the cap already does.
+- Unkept cap: shown read-only, with a note that an admin sets it. Admins change it on the web admin
+  page, where saving warns that unkept files over the new cap are evicted oldest first.
 - Activity: jobs running and queued; the last 5 failures with video id and short reason.
 
 ## Server work (`tools/ytdlp-server/server.py`)
@@ -27,15 +27,13 @@ a sheet with the same summary as the Settings page, plus a "Refresh" action.
    `{ apiVersion, ytdlpVersion, uptimeSeconds, disk: {freeBytes, totalBytes},
    kept: {count, bytes}, unkept: {count, bytes, capBytes}, jobs: {running, queued},
    recentFailures: [{videoId, message, at}] }`.
-2. Add `PUT /v1/settings` with `{unkeptCapGB}` (number, 1 to 10000). The server stores it in
-   `settings.json` in the data volume; it overrides `YTDLP_UNKEPT_CAP_GB`, which stays as the
-   first-run default. Evict immediately after a lowering, and return the new status. `/v1/status`
-   reports `capBytes` from the stored value. Invalid values get a 400.
+2. `capBytes` comes from the caller's profile (see the multi-user plan); there is no cap-setting
+   endpoint in this plan. Invalid caps are rejected by the admin API there.
 3. Compute counts and bytes from the sidecars the library already reads; disk numbers from
    `shutil.disk_usage(config.data_dir)`. Cache the result for 10 seconds so polling is cheap.
 4. Keep a bounded in-memory ring (20 entries) of recent job failures. It resets on restart; say so
    in the README.
-5. Tests in `tests/test_server.py`: empty store, mixed kept/unkept, cap exceeded, cap change persists across restart and evicts, bad cap rejected, failure ring,
+5. Tests in `tests/test_server.py`: empty store, mixed kept/unkept, cap exceeded, failure ring,
    401 without a token.
 6. Redeploy stack 42 (same Portainer update as the metadata backfill).
 
@@ -47,8 +45,7 @@ a sheet with the same summary as the Settings page, plus a "Refresh" action.
    background polling; refresh on appear and on pull to refresh.
 3. `NASStatusView` shared by both entry points; the sheet wraps it in a `NavigationStack`, the
    Settings page pushes it. Never nest `NavigationStack`s.
-4. A cap editor in the Settings page using `YtDlpLibraryClient.setUnkeptCap(gb:)`; the sheet stays
-   read-only. Disable it with a hint on a server too old for `PUT /v1/settings`.
+4. The Settings page and the sheet are both read-only; the cap is displayed, not edited.
 5. Info icon in the Downloads header (`AppSymbol.info`) and a Settings row (`SettingsView+NAS.swift`)
    shown only when a yt-dlp server URL and token are configured.
 6. Identifiers in `AccessibilityID.Downloads` / `.Settings`; symbols in `AppSymbol`.

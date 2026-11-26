@@ -104,7 +104,6 @@ curl -s -H "$A" $B/v1/admin/users                      # admin only: users with 
 |---|---|
 | `GET /v1/health` | No auth. `{ok, apiVersion, ytdlpVersion}`; `apiVersion` 4 adds profiles, ownership and the admin API. |
 | `GET /v1/me` | `{id, name, role, capBytes}` for the caller. |
-| `PATCH /v1/me` `{capBytes}` | The caller edits their own unkept cap (bytes). Returns the same shape as `GET /v1/me`. |
 | `POST /v1/jobs` `{videoId, maxHeight?, title?, channelTitle?, duration?, thumbnailURL?, keep?}` | Idempotent per caller. Dedup and joining as described above. `keep` defaults to `true`. `202` with the job state. |
 | `GET /v1/jobs/{id}` | `{status, progress, error?, fileSize?}`; `404` unless you own the video or requested it. |
 | `GET /v1/files/{id}.mp4` | The file; `Range` supported (`206`/`416`). `404` unless you own the video. |
@@ -141,3 +140,5 @@ cd tools/ytdlp-server && python3 -m unittest discover -s tests -v
 
 The tests use a fake `yt-dlp` (`tests/fake_ytdlp.py`), so they need no network and no yt-dlp. It can
 log each run (`FAKE_YTDLP_LOG`) so tests can count downloads, and sleeps for ids containing `SLOW`.
+
+Caps are admin-only: users can see their own cap in `GET /v1/me` but only an admin can change it (`/admin` page or `PATCH /v1/admin/users/<id>`).

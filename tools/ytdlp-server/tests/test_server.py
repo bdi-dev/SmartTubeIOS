@@ -704,12 +704,12 @@ class MultiUserTests(unittest.TestCase):
         self.assertEqual(sorted(self.ids(a)), [v1, v2])
         self.assertTrue(os.path.exists(self.path(v1 + ".mp4")))  # Ann still owns it
 
-    def test_user_edits_own_cap_but_not_name_or_role(self):
+    def test_user_cannot_edit_own_cap(self):
         _, b = self.make_user("Ben")
-        self.assertEqual(self.jcall("PATCH", "/v1/me", {"capBytes": 5}, token=b)[0], 200)
-        self.assertEqual(self.jcall("GET", "/v1/me", token=b)[1]["capBytes"], 5)
-        self.assertEqual(self.jcall("PATCH", "/v1/me", {"role": "admin"}, token=b)[0], 400)
-        self.assertEqual(self.jcall("PATCH", "/v1/me", {"capBytes": -1}, token=b)[0], 400)
+        before = self.jcall("GET", "/v1/me", token=b)[1]["capBytes"]
+        self.assertEqual(self.jcall("PATCH", "/v1/me", {"capBytes": 5}, token=b)[0], 404)
+        self.assertEqual(self.jcall("PATCH", "/v1/admin/users/ben", {"capBytes": 5}, token=b)[0], 403)
+        self.assertEqual(self.jcall("GET", "/v1/me", token=b)[1]["capBytes"], before)
 
     # -- admin API --
     def test_users_cannot_call_admin_routes(self):

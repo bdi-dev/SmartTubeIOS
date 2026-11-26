@@ -1301,16 +1301,6 @@ def make_handler(config, manager):
             me = self._auth()
             if me is None:
                 return
-            if path == "/v1/me":
-                body = self._body()
-                if body is None:
-                    return self._json(400, {"error": "bad json"})
-                try:
-                    changes = parse_fields(body, ("capBytes",))
-                except ValueError as e:
-                    return self._json(400, {"error": "bad %s" % e})
-                view = manager.update_user(me["id"], changes)
-                return self._json(200, me_view(view))
             m = ADMIN_USER_RE.match(path)
             if m:
                 if me["role"] != "admin":
