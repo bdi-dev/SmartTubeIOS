@@ -59,4 +59,4 @@ a sheet with the same summary as the Settings page, plus a "Refresh" action.
 - No history charts; a single snapshot is enough.
 
 ## Open questions
-- Show per-profile counts once [multiple users](2026-11-25-nas-multi-user.md) lands; the cap becomes per profile and the usage gauge counts shared videos in full for each owner.
+- Show per-profile counts once [multiple users](2026-11-25-nas-multi-user.md) lands; the cap becomes per profile and the usage gauge counts shared videos in full for each owner. The admin's per-user view lives on the web admin page in that plan, not in the app.

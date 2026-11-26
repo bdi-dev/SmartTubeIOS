@@ -53,4 +53,5 @@ Also done: `scripts/free-account.sh` switches the paid-only iCloud entitlement o
 ## Planned: NAS
 
 - [NAS status and usage](../superpowers/plans/2026-11-25-nas-status-usage.md): info icon and a Settings sub page.
-- [NAS multiple users](../superpowers/plans/2026-11-25-nas-multi-user.md): per-user lists on one server, files stored once (not secure).
+- [NAS multiple users](../superpowers/plans/2026-11-25-nas-multi-user.md): personal tokens, an admin role and a web admin page, per-user lists with files stored once.
+- [NAS HTTPS over Tailscale](../superpowers/plans/2026-11-25-nas-https-tailscale.md): TLS via Tailscale Serve, close the plain HTTP port.
