@@ -37,6 +37,7 @@ import sys
 import tempfile
 import threading
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote
@@ -54,6 +55,8 @@ NAME_MAX = 60
 CAP_MAX = 1 << 50  # bytes; a sanity bound, not a policy
 MAX_BODY = 1 << 20
 LAST_SEEN_WRITE_INTERVAL = 60  # seconds between persisted lastSeen updates
+FAILURE_RING_SIZE = 20  # recent job failures kept in memory per profile; reset on restart
+FAILURE_MESSAGE_MAX = 200  # characters of a yt-dlp error kept in the failure ring
 ADMIN_USER_RE = re.compile(r"^/v1/admin/users/([a-z0-9][a-z0-9-]{0,47})\Z")
 ADMIN_TOKEN_RE = re.compile(r"^/v1/admin/users/([a-z0-9][a-z0-9-]{0,47})/token\Z")
 # AVPlayer-friendly: H.264 + AAC in MP4, falling back to whatever yt-dlp can merge into MP4.
@@ -180,6 +183,7 @@ class JobManager:
         self.owners = {}  # profile id -> {video_id: {"keep": bool, "addedAt": str}}
         self.migrated = False  # True once existing sidecars were given to the admin profile
         self._last_saved = {}  # profile id -> time.time() of the last persisted lastSeen
+        self.failures = {}  # profile id -> deque of recent job failures (in memory only)
         self._load_profiles()
         self._ensure_admin()
 
@@ -390,6 +394,7 @@ class JobManager:
                 if self._drop_owner_locked(pid, vid):
                     removed += 1
             self.owners.pop(pid, None)
+            self.failures.pop(pid, None)
             try:
                 os.remove(self._owners_path(pid))
             except FileNotFoundError:
@@ -570,6 +575,18 @@ class JobManager:
         with self.lock:
             self.jobs.setdefault(video_id, {}).update(fields)
 
+    def _fail(self, video_id, message):
+        """Marks a job failed and records the failure in the ring of each profile that asked for it."""
+        with self.lock:
+            job = self.jobs.setdefault(video_id, {})
+            job.update(status="failed", error=message)
+            at = now_iso()
+            for pid in job.get("owners", {}):
+                if self._profile(pid) is None:
+                    continue
+                ring = self.failures.setdefault(pid, deque(maxlen=FAILURE_RING_SIZE))
+                ring.append({"videoId": video_id, "message": message[:FAILURE_MESSAGE_MAX], "at": at})
+
     def _finish(self, video_id, meta):
         """Writes the sidecar and grants every owner who asked while the job ran."""
         with self.lock:
@@ -638,18 +655,18 @@ class JobManager:
             stderr_tail = proc.stderr.read().strip().splitlines()[-3:]
             code = proc.wait()
         except OSError as e:
-            self._set(video_id, status="failed", error="Could not run yt-dlp: %s" % e)
+            self._fail(video_id, "Could not run yt-dlp: %s" % e)
             return
         if code == 0 and os.path.exists(out_path):
             try:
                 self._finish(video_id, meta)
             except OSError as e:
-                self._set(video_id, status="failed", error="Could not save the file: %s" % e)
+                self._fail(video_id, "Could not save the file: %s" % e)
         else:
             if os.path.exists(out_path):
                 os.remove(out_path)
             message = " ".join(stderr_tail)[:300] or "yt-dlp exited with code %s" % code
-            self._set(video_id, status="failed", error=message)
+            self._fail(video_id, message)
 
     def _enforce_caps_locked(self, pids, skip=None):
         """For each profile, evicts its own oldest unkept entries until its unkept total (every unkept
