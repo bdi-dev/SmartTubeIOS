@@ -87,8 +87,9 @@ deleted or demoted.
 ```bash
 B=http://127.0.0.1:8787; A="Authorization: Bearer $YTDLP_TOKEN"; ID=dQw4w9WgXcQ
 
-curl -s $B/v1/health                                   # {"ok": true, "apiVersion": 4, "ytdlpVersion": "..."}
+curl -s $B/v1/health                                   # {"ok": true, "apiVersion": 5, "ytdlpVersion": "..."}
 curl -s -H "$A" $B/v1/me                               # {"id": "admin", "name": "Admin", "role": "admin", "capBytes": 21474836480}
+curl -s -H "$A" $B/v1/status                           # your usage, jobs and recent failures (see Status)
 curl -s -X POST -H "$A" -d "{\"videoId\":\"$ID\",\"title\":\"A video\",\"keep\":true}" $B/v1/jobs   # 202 {"status":"queued",...}
 curl -s -H "$A" $B/v1/jobs/$ID                         # poll: queued | running | ready | failed
 curl -s -H "$A" -o out.mp4 $B/v1/files/$ID.mp4        # download (supports Range)
@@ -102,8 +103,9 @@ curl -s -H "$A" $B/v1/admin/users                      # admin only: users with 
 
 | Method & path | Notes |
 |---|---|
-| `GET /v1/health` | No auth. `{ok, apiVersion, ytdlpVersion}`; `apiVersion` 4 adds profiles, ownership and the admin API. |
+| `GET /v1/health` | No auth. `{ok, apiVersion, ytdlpVersion}`; `apiVersion` 4 adds profiles, ownership and the admin API; 5 adds `/v1/status`. |
 | `GET /v1/me` | `{id, name, role, capBytes}` for the caller. |
+| `GET /v1/status` | `{apiVersion, ytdlpVersion, uptimeSeconds, disk, you, jobs, recentFailures}` for the caller; `server` for admins only. See Status. |
 | `POST /v1/jobs` `{videoId, maxHeight?, title?, channelTitle?, duration?, thumbnailURL?, keep?}` | Idempotent per caller. Dedup and joining as described above. `keep` defaults to `true`. `202` with the job state. |
 | `GET /v1/jobs/{id}` | `{status, progress, error?, fileSize?}`; `404` unless you own the video or requested it. |
 | `GET /v1/files/{id}.mp4` | The file; `Range` supported (`206`/`416`). `404` unless you own the video. |
@@ -121,6 +123,32 @@ curl -s -H "$A" $B/v1/admin/users                      # admin only: users with 
 Errors are `{"error": "..."}`: `401 {"error": "unauthorised"}` for a missing or unknown token,
 `403 {"error": "forbidden"}` for a user calling an admin route, `400` for bad input (the message names
 the field, e.g. `{"error": "bad keep"}`).
+
+### Status
+
+`GET /v1/status` (any valid token) describes the server and the caller:
+
+```json
+{
+  "apiVersion": 5,
+  "ytdlpVersion": "2099.01.01",
+  "uptimeSeconds": 86400,
+  "disk": {"freeBytes": 18892943360, "totalBytes": 245107195904},
+  "you": {"videoCount": 3, "kept": {"count": 1, "bytes": 1024}, "unkept": {"count": 2, "bytes": 2048}, "capBytes": 21474836480},
+  "jobs": {"running": 0, "queued": 0},
+  "recentFailures": [{"videoId": "FAILaaaaaaa", "message": "ERROR: Video unavailable", "at": "2026-11-27T10:00:00Z"}]
+}
+```
+
+- `disk` is the data volume. `ytdlpVersion` and `disk` are shared by everyone and cached for 10 seconds.
+- `you` is your own usage, computed per request, in the same terms as the admin list. A shared file counts in
+  full toward each owner, so `you.unkept.bytes` can exceed what the files cost on disk.
+- `jobs` and `recentFailures` cover only the jobs and failures you own. `recentFailures` is newest first, at most 20.
+- Only admins get `server: {profiles, totalFiles, totalBytes}`: the whole server, each file counted once. Normal
+  users never receive it.
+- No titles and no other users' ids are ever returned.
+- **Failures are kept in memory only**: the list holds the last 20 per profile and resets when the server restarts
+  (or the container is replaced). Nothing is written to disk.
 
 Downloads made before metadata was recorded have an empty title and thumbnail. At every start the
 server asks yt-dlp (no download) to describe each of them, one at a time, and fills the sidecar in
@@ -149,4 +177,5 @@ The stack's compose file embeds `server.py` in a `RUN echo '...' | base64 -d | g
 line inside `dockerfile_inline`. **Gzip it before base64**: a plain base64 copy of the current
 `server.py` is over 64 KB, and a single Dockerfile line that long fails the build. A failed update makes
 Portainer roll the stack file back and leave no container running, so the server goes down until you
-redeploy a working file. Always keep a copy of the last good stack file before updating.
+redeploy a working file. Always keep a copy of the last good stack file before updating. Any change to
+`server.py` (including this one, for `/v1/status`) means the stack must embed the new file gzipped, as above.
