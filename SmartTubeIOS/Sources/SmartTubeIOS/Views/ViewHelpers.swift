@@ -178,6 +178,8 @@ enum AppSymbol {
     static let warning = "exclamationmark.triangle.fill"
     static let clock = "clock"
     static let questionCircle = "questionmark.circle"
+    static let info = "info.circle"
+    static let refresh = "arrow.clockwise"
     static let qrcode = "qrcode"
     static let colorSwatch = "circle.fill"
 
