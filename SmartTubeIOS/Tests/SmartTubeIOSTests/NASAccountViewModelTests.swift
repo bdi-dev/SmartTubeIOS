@@ -12,6 +12,10 @@ private final class AccountFakeClient: YtDlpServerClient, @unchecked Sendable {
     // swiftlint:disable:next async_without_await
     func me() async throws -> YtDlpMe { try reply.get() }
     // swiftlint:disable:next async_without_await
+    func status() async throws -> YtDlpServerStatus {
+        throw YtDlpServerError(message: "not used by these tests")
+    }
+    // swiftlint:disable:next async_without_await
     func createJob(_ request: YtDlpJobRequest) async throws -> YtDlpJobState {
         throw YtDlpServerError(message: "not used by these tests")
     }
