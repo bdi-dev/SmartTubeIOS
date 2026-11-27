@@ -28,8 +28,9 @@ and nothing is fetched again. An **admin** manages users from a **web page** ser
 7. **The unkept cap is per profile** (default 20 GB). A profile's total is every unkept video in
    its list, **including videos other profiles also own**: a shared file counts in full toward
    each owner, so the sum of totals can exceed what is on disk. That is intended. Over its cap, a
-   profile has its **own** oldest unkept entries evicted (ownership removed). A user edits their
-   own cap in the app; an admin can edit anyone's on the web page.
+   profile has its **own** oldest unkept entries evicted (ownership removed). Caps are **admin-only**:
+   a user can see their own cap and usage in the app but cannot change it; an admin edits anyone's
+   on the web page.
 8. **File access checks ownership.** `/v1/files/<id>.mp4` serves a video only to a profile that
    owns it, so a guessed id does not expose another user's file. Not protected against the server
    owner or an attacker on the network; HTTPS (separate plan) covers sniffing.
@@ -80,7 +81,7 @@ and nothing is fetched again. An **admin** manages users from a **web page** ser
 
 ## App work
 1. Settings > NAS: token field (Keychain, not `UserDefaults`), invite-link handler for the
-   `smarttube://nas` URL, "Signed in as" row from `GET /v1/me`, own cap editor, sign-out. An
+   `smarttube://nas` URL, "Signed in as" row from `GET /v1/me`, a read-only cap and usage line, sign-out. An
    invalid token shows a clear "token revoked or wrong" message instead of an empty list.
 2. `YtDlpLibraryClient` and the fetcher send the personal token (the setting that exists today).
 3. Changing the token reloads the NAS list (the `serverIdentity` hash already includes the token).

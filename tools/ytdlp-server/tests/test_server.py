@@ -1,11 +1,13 @@
 import base64
 import json
 import os
+import re
 import sys
 import tempfile
 import threading
 import time
 import unittest
+import unittest.mock
 import urllib.error
 import urllib.request
 
@@ -72,7 +74,7 @@ class ServerTests(unittest.TestCase):
         code, body, _ = self.call("GET", "/v1/health", token=None)
         self.assertEqual(code, 200)
         self.assertEqual(json.loads(body)["ytdlpVersion"], "2099.01.01")
-        self.assertEqual(json.loads(body)["apiVersion"], 2)
+        self.assertEqual(json.loads(body)["apiVersion"], 4)
         self.assertIs(json.loads(body)["ok"], True)
 
     def test_requires_token(self):
@@ -228,7 +230,7 @@ class LibraryTests(unittest.TestCase):
         self.addCleanup(self.srv.server_close)
 
     def add(self, vid, downloaded_at, keep=True, title=""):
-        """Writes a finished download (an .mp4 plus its sidecar) straight into the data dir."""
+        """Writes a finished download (an .mp4, its sidecar, and admin's ownership) into the data dir."""
         base = os.path.join(self.tmp.name, vid)
         with open(base + ".mp4", "wb") as f:
             f.write(b"x" * 10)
@@ -236,6 +238,7 @@ class LibraryTests(unittest.TestCase):
             "videoId": vid, "title": title, "channelTitle": "", "duration": None,
             "thumbnailURL": None, "keep": keep, "downloadedAt": downloaded_at, "fileSize": 10,
         })
+        self.srv.manager.grant("admin", vid, keep, downloaded_at)
 
     def write_json(self, vid, obj):
         with open(os.path.join(self.tmp.name, vid + ".json"), "w") as f:
@@ -326,8 +329,8 @@ class LibraryTests(unittest.TestCase):
             return e.code, json.loads(e.read() or b"{}")
 
     def sidecar_keep(self, vid):
-        with open(os.path.join(self.tmp.name, vid + ".json")) as f:
-            return json.load(f)["keep"]
+        """The admin's keep flag for a video (ownership is the source of truth)."""
+        return self.srv.manager.owner_record("admin", vid)["keep"]
 
     def test_keep_toggle_sets_true_and_false(self):
         self.add("KEEPvideo01", "2026-01-01T00:00:00Z", keep=True)
@@ -368,6 +371,7 @@ class LibraryTests(unittest.TestCase):
 
     def test_delete_removes_orphan_sidecar(self):
         self.write_json("DELorphan01", {"videoId": "DELorphan01", "downloadedAt": "2026-01-01T00:00:00Z", "keep": True})
+        self.srv.manager.grant("admin", "DELorphan01", True)  # an owner with no file: last owner leaves
         self.assertEqual(self.delete("DELorphan01"), (200, {"deleted": True}))
         self.assertFalse(self.exists("DELorphan01.json"))
 
@@ -417,6 +421,7 @@ class StorageTests(unittest.TestCase):
                  "keep": keep, "downloadedAt": downloaded_at, "fileSize": size},
                 f,
             )
+        self.manager.grant("admin", vid, keep, downloaded_at)
 
     def has_mp4(self, vid):
         return os.path.exists(self.path(vid + ".mp4"))
@@ -512,6 +517,316 @@ class StorageTests(unittest.TestCase):
         self.add("KEEPvid0001", "2026-01-00T00:00:00Z", keep=True, size=500)
         server.build_server(self.cfg).server_close()  # runs startup_cleanup
         self.assertTrue(self.has_mp4("KEEPvid0001"))
+
+
+class MultiUserTests(unittest.TestCase):
+    """Profiles, ownership, dedup, per-profile keep, delete, cap, admin API and CLI (plan item 7).
+    Each test gets its own server and data dir. Fake runs are counted in a log file."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        logdir = tempfile.TemporaryDirectory()
+        self.addCleanup(logdir.cleanup)
+        self.log = os.path.join(logdir.name, "runs.log")
+        patcher = unittest.mock.patch.dict(os.environ, {"FAKE_YTDLP_LOG": self.log})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        cfg = server.Config(
+            {"YTDLP_TOKEN": TOKEN, "YTDLP_BIN": FAKE, "YTDLP_DATA_DIR": self.tmp.name, "YTDLP_PORT": "0"}
+        )
+        self.srv = server.build_server(cfg)
+        self.base = "http://127.0.0.1:%d" % self.srv.server_address[1]
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.addCleanup(self.srv.shutdown)
+        self.addCleanup(self.srv.server_close)
+
+    # -- helpers --
+    def call(self, method, path, body=None, token=TOKEN):
+        return http(self.base, method, path, body, token)
+
+    def jcall(self, method, path, body=None, token=TOKEN):
+        code, raw, _ = http(self.base, method, path, body, token)
+        return code, json.loads(raw) if raw else None
+
+    def make_user(self, name, admin=False):
+        code, data = self.jcall("POST", "/v1/admin/users", {"name": name, "role": "admin" if admin else "user"})
+        self.assertEqual(code, 201)
+        return data["user"]["id"], data["token"]
+
+    def download_count(self, vid):
+        if not os.path.exists(self.log):
+            return 0
+        with open(self.log) as f:
+            return sum(1 for line in f if line.split() == ["download", vid])
+
+    def wait_ready(self, token, vid):
+        state = None
+        for _ in range(200):
+            code, state = self.jcall("GET", "/v1/jobs/" + vid, token=token)
+            self.assertEqual(code, 200)
+            if state["status"] == "ready":
+                return state
+            self.assertNotEqual(state["status"], "failed", state)
+            time.sleep(0.05)
+        self.fail("job %s never became ready (last %s)" % (vid, state))
+
+    def fetch(self, token, vid, keep=True):
+        code, _ = self.jcall("POST", "/v1/jobs", {"videoId": vid, "keep": keep}, token=token)
+        self.assertEqual(code, 202)
+        return self.wait_ready(token, vid)
+
+    def library(self, token):
+        code, page = self.jcall("GET", "/v1/library?limit=200", token=token)
+        self.assertEqual(code, 200)
+        return page["items"]
+
+    def ids(self, token):
+        return [item["videoId"] for item in self.library(token)]
+
+    def item(self, token, vid):
+        return next(i for i in self.library(token) if i["videoId"] == vid)
+
+    def path(self, name):
+        return os.path.join(self.tmp.name, name)
+
+    # -- auth and identity --
+    def test_missing_or_wrong_token_is_401(self):
+        cases = [
+            ("GET", "/v1/me", None),
+            ("GET", "/v1/library", None),
+            ("POST", "/v1/jobs", {"videoId": GOOD}),
+            ("GET", "/v1/admin/users", None),
+            ("PATCH", "/v1/me", {"capBytes": 1}),
+            ("DELETE", "/v1/files/" + GOOD, None),
+        ]
+        for method, path, body in cases:
+            for token in (None, "wrong"):
+                code, raw, _ = self.call(method, path, body, token=token)
+                self.assertEqual((code, json.loads(raw)), (401, {"error": "unauthorised"}), path)
+
+    def test_me_reports_identity_without_the_token_hash(self):
+        code, me = self.jcall("GET", "/v1/me")
+        self.assertEqual((code, me["id"], me["name"], me["role"]), (200, "admin", "Admin", "admin"))
+        self.assertEqual(set(me), {"id", "name", "role", "capBytes"})
+        uid, token = self.make_user("Sam")
+        code, me = self.jcall("GET", "/v1/me", token=token)
+        self.assertEqual((code, me["id"], me["role"]), (200, uid, "user"))
+        self.assertNotIn("tokenHash", json.dumps(me))
+
+    def test_health_stays_public(self):
+        self.assertEqual(self.call("GET", "/v1/health", token=None)[0], 200)
+
+    # -- dedup, lists, keep --
+    def test_second_user_gets_the_existing_file_without_a_ytdlp_run(self):
+        _, a = self.make_user("Ann")
+        _, b = self.make_user("Ben")
+        self.fetch(a, GOOD)
+        self.assertEqual(self.download_count(GOOD), 1)
+        code, body = self.jcall("POST", "/v1/jobs", {"videoId": GOOD, "keep": False}, token=b)
+        self.assertEqual((code, body["status"]), (202, "ready"))
+        self.assertEqual(self.download_count(GOOD), 1)
+        self.assertEqual(self.ids(b), [GOOD])
+        self.assertIs(self.item(b, GOOD)["keep"], False)
+
+    def test_lists_are_disjoint_and_keep_is_per_profile(self):
+        _, a = self.make_user("Ann")
+        _, b = self.make_user("Ben")
+        v1, v2 = "LISTone0001", "LISTtwo0002"
+        self.fetch(a, v1)
+        self.fetch(b, v2)
+        self.assertEqual((self.ids(a), self.ids(b)), ([v1], [v2]))
+        self.jcall("POST", "/v1/jobs", {"videoId": v1, "keep": False}, token=b)  # shared, Ben unkept
+        self.assertIs(self.item(a, v1)["keep"], True)
+        self.assertIs(self.item(b, v1)["keep"], False)
+        self.assertEqual(self.call("PUT", "/v1/files/%s/keep" % v1, {"keep": True}, token=b)[0], 200)
+        self.assertIs(self.item(b, v1)["keep"], True)
+        self.assertIs(self.item(a, v1)["keep"], True)
+
+    def test_non_owner_gets_404_on_file_and_job_routes(self):
+        _, a = self.make_user("Ann")
+        _, c = self.make_user("Cal")
+        self.fetch(a, GOOD)
+        self.assertEqual(self.call("GET", "/v1/files/%s.mp4" % GOOD, token=c)[0], 404)
+        self.assertEqual(self.call("GET", "/v1/jobs/" + GOOD, token=c)[0], 404)
+        self.assertEqual(self.call("GET", "/v1/files/%s.mp4" % GOOD, token=a)[0], 200)
+
+    def test_request_for_an_in_flight_video_joins_the_job(self):
+        slow = "SLOWvideo01"
+        _, a = self.make_user("Ann")
+        _, b = self.make_user("Ben")
+        self.assertEqual(self.jcall("POST", "/v1/jobs", {"videoId": slow}, token=a)[0], 202)
+        code, body = self.jcall("POST", "/v1/jobs", {"videoId": slow}, token=b)
+        self.assertEqual(code, 202)
+        self.assertIn(body["status"], ("queued", "running"))
+        self.wait_ready(a, slow)
+        self.wait_ready(b, slow)
+        self.assertEqual(self.download_count(slow), 1)
+        self.assertEqual((self.ids(a), self.ids(b)), ([slow], [slow]))
+
+    # -- delete and cap --
+    def test_delete_removes_only_the_callers_ownership(self):
+        _, a = self.make_user("Ann")
+        _, b = self.make_user("Ben")
+        self.fetch(a, GOOD)
+        self.jcall("POST", "/v1/jobs", {"videoId": GOOD}, token=b)
+        self.assertEqual(self.jcall("DELETE", "/v1/files/" + GOOD, token=a), (200, {"deleted": True}))
+        self.assertTrue(os.path.exists(self.path(GOOD + ".mp4")))  # Ben still owns it
+        self.assertEqual((self.ids(a), self.ids(b)), ([], [GOOD]))
+        self.assertEqual(self.call("GET", "/v1/files/%s.mp4" % GOOD, token=a)[0], 404)
+        self.assertEqual(self.call("DELETE", "/v1/files/" + GOOD, token=a)[0], 404)
+        self.assertEqual(self.jcall("DELETE", "/v1/files/" + GOOD, token=b)[0], 200)
+        self.assertFalse(os.path.exists(self.path(GOOD + ".mp4")))
+        self.assertFalse(os.path.exists(self.path(GOOD + ".json")))
+
+    def test_deleting_a_user_keeps_shared_files_until_the_last_owner_leaves(self):
+        uid_a, a = self.make_user("Ann")
+        uid_b, b = self.make_user("Ben")
+        self.fetch(a, GOOD)
+        self.jcall("POST", "/v1/jobs", {"videoId": GOOD}, token=b)
+        self.assertEqual(self.jcall("DELETE", "/v1/admin/users/" + uid_b)[0], 200)
+        self.assertTrue(os.path.exists(self.path(GOOD + ".mp4")))
+        self.assertEqual(self.ids(a), [GOOD])
+        self.assertEqual(self.jcall("DELETE", "/v1/admin/users/" + uid_a)[0], 200)
+        self.assertFalse(os.path.exists(self.path(GOOD + ".mp4")))
+
+    def test_cap_evicts_only_that_profiles_entries_and_counts_shared_files_in_full(self):
+        _, a = self.make_user("Ann")
+        uid_b, b = self.make_user("Ben")
+        v1, v2 = "CAPvideo001", "CAPvideo002"  # 1024 bytes each; the cap is 2000 bytes
+        self.fetch(a, v1, keep=False)
+        self.fetch(a, v2, keep=False)
+        self.assertEqual(self.jcall("PATCH", "/v1/admin/users/" + uid_b, {"capBytes": 2000})[0], 200)
+        self.jcall("POST", "/v1/jobs", {"videoId": v1, "keep": False}, token=b)  # shared: 1024 for Ben
+        self.assertEqual(self.ids(b), [v1])
+        self.jcall("POST", "/v1/jobs", {"videoId": v2, "keep": False}, token=b)  # Ben: 2048, over the cap
+        self.assertEqual(self.ids(b), [v2])  # Ben's own oldest entry went, not Ann's
+        self.assertEqual(sorted(self.ids(a)), [v1, v2])
+        self.assertTrue(os.path.exists(self.path(v1 + ".mp4")))  # Ann still owns it
+
+    def test_user_cannot_edit_own_cap(self):
+        _, b = self.make_user("Ben")
+        before = self.jcall("GET", "/v1/me", token=b)[1]["capBytes"]
+        self.assertEqual(self.jcall("PATCH", "/v1/me", {"capBytes": 5}, token=b)[0], 404)
+        self.assertEqual(self.jcall("PATCH", "/v1/admin/users/ben", {"capBytes": 5}, token=b)[0], 403)
+        self.assertEqual(self.jcall("GET", "/v1/me", token=b)[1]["capBytes"], before)
+
+    # -- admin API --
+    def test_users_cannot_call_admin_routes(self):
+        _, b = self.make_user("Ben")
+        self.assertEqual(self.jcall("GET", "/v1/admin/users", token=b)[0], 403)
+        self.assertEqual(self.jcall("POST", "/v1/admin/users", {"name": "X"}, token=b)[0], 403)
+        self.assertEqual(self.jcall("PATCH", "/v1/admin/users/admin", {"capBytes": 1}, token=b)[0], 403)
+        self.assertEqual(self.call("DELETE", "/v1/admin/users/admin", token=b)[0], 403)
+        self.assertEqual(self.call("POST", "/v1/admin/users/admin/token", token=b)[0], 403)
+        self.assertEqual(self.call("DELETE", "/v1/admin/users/admin/token", token=b)[0], 403)
+        self.assertEqual(len(self.jcall("GET", "/v1/admin/users")[1]["users"]), 2)  # nothing changed
+
+    def test_admin_list_shows_counts_and_sizes_but_no_titles(self):
+        _, b = self.make_user("Ben")
+        self.jcall("POST", "/v1/jobs", {"videoId": GOOD, "title": "Secret title", "keep": False}, token=b)
+        self.wait_ready(b, GOOD)
+        code, raw, _ = self.call("GET", "/v1/admin/users")
+        self.assertEqual(code, 200)
+        self.assertNotIn(b"Secret title", raw)
+        ben = next(u for u in json.loads(raw)["users"] if u["name"] == "Ben")
+        self.assertEqual((ben["videoCount"], ben["totalBytes"], ben["unkeptBytes"]), (1, 1024, 1024))
+        self.assertNotIn("tokenHash", raw.decode())
+
+    def test_last_admin_cannot_be_deleted_or_demoted(self):
+        self.assertEqual(self.jcall("PATCH", "/v1/admin/users/admin", {"role": "user"})[0], 409)
+        self.assertEqual(self.call("DELETE", "/v1/admin/users/admin")[0], 409)
+        uid2, t2 = self.make_user("Second", admin=True)
+        self.assertEqual(self.jcall("PATCH", "/v1/admin/users/admin", {"role": "user"})[0], 200)
+        # Second is now the only admin
+        self.assertEqual(self.jcall("PATCH", "/v1/admin/users/" + uid2, {"role": "user"}, token=t2)[0], 409)
+        self.assertEqual(self.call("DELETE", "/v1/admin/users/" + uid2, token=t2)[0], 409)
+
+    def test_revoked_token_stops_working_at_once_and_reissue_replaces_it(self):
+        uid, token = self.make_user("Sam")
+        self.fetch(token, GOOD)
+        self.assertEqual(self.call("GET", "/v1/me", token=token)[0], 200)
+        code, body = self.jcall("DELETE", "/v1/admin/users/%s/token" % uid)
+        self.assertEqual(code, 200)
+        self.assertIs(body["user"]["hasToken"], False)
+        self.assertEqual(self.call("GET", "/v1/me", token=token)[0], 401)
+        self.assertEqual(self.call("GET", "/v1/library", token=token)[0], 401)
+        new = self.jcall("POST", "/v1/admin/users/%s/token" % uid)[1]["token"]
+        self.assertEqual(self.call("GET", "/v1/me", token=token)[0], 401)
+        self.assertEqual(self.call("GET", "/v1/me", token=new)[0], 200)
+        self.assertEqual(self.ids(new), [GOOD])  # the list is untouched
+
+    def test_admin_page_is_served_without_cookies(self):
+        code, raw, headers = self.call("GET", "/admin", token=None)
+        self.assertEqual(code, 200)
+        self.assertIn("text/html", headers["Content-Type"])
+        html = raw.decode()
+        self.assertIn("sessionStorage", html)
+        self.assertNotIn("document.cookie", html)
+        self.assertIn("smarttube://nas?url=", html)
+
+    # -- migration and CLI --
+    def test_migration_is_idempotent_and_gives_existing_downloads_to_admin_once(self):
+        cfg_env = {"YTDLP_TOKEN": "migrate-token", "YTDLP_BIN": FAKE, "YTDLP_PORT": "0"}
+        with tempfile.TemporaryDirectory() as data:
+            for vid, keep, day in (("MIGvideo001", True, 1), ("MIGvideo002", False, 2)):
+                with open(os.path.join(data, vid + ".mp4"), "wb") as f:
+                    f.write(b"x" * 10)
+                with open(os.path.join(data, vid + ".json"), "w") as f:
+                    json.dump({"videoId": vid, "title": "", "channelTitle": "", "duration": None,
+                               "thumbnailURL": None, "keep": keep,
+                               "downloadedAt": "2026-01-0%dT00:00:00Z" % day, "fileSize": 10}, f)
+            cfg = server.Config(dict(cfg_env, YTDLP_DATA_DIR=data))
+
+            first = server.JobManager(cfg)
+            first.startup_cleanup()
+            self.assertIs(first.owner_record("admin", "MIGvideo001")["keep"], True)
+            self.assertIs(first.owner_record("admin", "MIGvideo002")["keep"], False)
+
+            second = server.JobManager(cfg)  # restart: nothing changes
+            second.startup_cleanup()
+            self.assertEqual(set(second.owners["admin"]), {"MIGvideo001", "MIGvideo002"})
+            self.assertEqual(len(second.profiles), 1)
+
+            _, ben_token = second.create_user("Ben", "user")
+            ben_id = second.authenticate(ben_token)["id"]
+            second.grant(ben_id, "MIGvideo001", True)
+            self.assertEqual(second.delete_for("admin", "MIGvideo001"), "deleted")
+
+            third = server.JobManager(cfg)  # restart again: the admin's removal is not undone
+            third.startup_cleanup()
+            self.assertNotIn("MIGvideo001", third.owners["admin"])
+            self.assertIn("MIGvideo001", third.owners[ben_id])
+            self.assertTrue(os.path.exists(os.path.join(data, "MIGvideo001.mp4")))
+            self.assertEqual(third.authenticate("migrate-token")["id"], "admin")
+            self.assertEqual(len(third.profiles), 2)
+
+    def test_cli_add_revoke_and_reissue(self):
+        import contextlib
+        import io
+
+        with tempfile.TemporaryDirectory() as data:
+            cfg = server.Config(
+                {"YTDLP_TOKEN": "cli-admin", "YTDLP_DATA_DIR": data, "YTDLP_PUBLIC_URL": "https://nas.example.test"}
+            )
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(server.run_cli(cfg, ["add-user", "Sam"]), 0)
+            text = out.getvalue()
+            token = re.findall(r"shown once\)?: (\S+)", text)[-1]
+            self.assertIn("smarttube://nas?url=https%3A%2F%2Fnas.example.test&token=" + token, text)
+            self.assertEqual(server.JobManager(cfg).authenticate(token)["name"], "Sam")
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(server.run_cli(cfg, ["revoke-user", "Sam"]), 0)
+            self.assertIsNone(server.JobManager(cfg).authenticate(token))
+
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(server.run_cli(cfg, ["reissue-user", "Sam"]), 0)
+            new = re.findall(r"shown once\)?: (\S+)", out.getvalue())[-1]
+            self.assertIsNone(server.JobManager(cfg).authenticate(token))
+            self.assertEqual(server.JobManager(cfg).authenticate(new)["name"], "Sam")
 
 
 if __name__ == "__main__":
