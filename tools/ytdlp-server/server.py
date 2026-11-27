@@ -984,6 +984,16 @@ code { font-family: ui-monospace, Menlo, monospace; font-size: 13px; word-break:
 </div>
 
 <div id="app" hidden>
+  <div class="card" id="serverCard">
+    <div class="row" style="justify-content: space-between;">
+      <h2>Server</h2>
+      <button id="refreshStatus">Refresh</button>
+    </div>
+    <div id="statusBody" class="muted">Loading status.</div>
+    <div class="err" id="statusErr"></div>
+    <p class="muted">Jobs and failures are yours only. Counts and sizes for the whole server; no titles.</p>
+  </div>
+
   <div class="card">
     <h2>Add user</h2>
     <div class="row">
@@ -1069,6 +1079,7 @@ code { font-family: ui-monospace, Menlo, monospace; font-size: 13px; word-break:
     $("signOut").hidden = false;
     $("app").hidden = false;
     $("signErr").textContent = "";
+    loadStatus();
     loadUsers();
   }
 
@@ -1160,6 +1171,43 @@ code { font-family: ui-monospace, Menlo, monospace; font-size: 13px; word-break:
     }
   }
 
+  function uptime(sec) {
+    var h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60);
+    return h + "h " + m + "m";
+  }
+  function renderStatus(s) {
+    var box = $("statusBody");
+    box.replaceChildren();
+    var used = s.disk.totalBytes - s.disk.freeBytes;
+    box.appendChild(el("div", "Disk: " + gb(used) + " used of " + gb(s.disk.totalBytes) + " (" + gb(s.disk.freeBytes) + " free)"));
+    var bar = el("progress");
+    bar.max = Math.max(s.disk.totalBytes, 1);
+    bar.value = Math.min(used, bar.max);
+    bar.setAttribute("aria-label", "Disk used");
+    box.appendChild(bar);
+    box.appendChild(el("div", "yt-dlp " + (s.ytdlpVersion || "unknown") + ", API " + s.apiVersion + ", up " + uptime(s.uptimeSeconds), "muted"));
+    if (s.server) {
+      box.appendChild(el("div", "Whole server: " + s.server.profiles + " users, " + s.server.totalFiles + " files, " + gb(s.server.totalBytes) + " on disk"));
+    }
+    box.appendChild(el("div", "Your jobs: " + s.jobs.running + " running, " + s.jobs.queued + " queued"));
+    box.appendChild(el("div", "Your recent failures:"));
+    if (!s.recentFailures.length) {
+      box.appendChild(el("div", "None.", "muted"));
+    }
+    var list = document.createElement("ul");
+    s.recentFailures.forEach(function (f) {
+      var li = el("li", f.videoId + ": " + f.message + " (" + when(f.at) + ")");
+      list.appendChild(li);
+    });
+    box.appendChild(list);
+  }
+  function loadStatus() {
+    $("statusErr").textContent = "";
+    api("GET", "/v1/status").then(renderStatus, function (err) {
+      if (err && err.message !== "unauthorised") { $("statusErr").textContent = err.message; }
+    });
+  }
+
   function run(task, then) {
     $("listErr").textContent = "";
     task().then(then, function (err) {
@@ -1186,6 +1234,7 @@ code { font-family: ui-monospace, Menlo, monospace; font-size: 13px; word-break:
     showSignIn("Signed out.");
   });
   $("refresh").addEventListener("click", loadUsers);
+  $("refreshStatus").addEventListener("click", loadStatus);
   $("addUser").addEventListener("click", function () {
     var name = $("newName").value.trim();
     if (!name) { $("addErr").textContent = "Type a name first."; return; }

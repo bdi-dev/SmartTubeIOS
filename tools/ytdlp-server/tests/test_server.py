@@ -1010,6 +1010,12 @@ class StatusTests(unittest.TestCase):
             self.status(TOKEN)
             self.assertEqual(usage.call_count, 1)
 
+    def test_admin_page_has_a_server_panel_fed_by_status(self):
+        code, raw, _ = http(self.base, "GET", "/admin", None, None)
+        self.assertEqual(code, 200)
+        self.assertIn(b'id="serverCard"', raw)
+        self.assertIn(b'api("GET", "/v1/status")', raw)  # through the page's Bearer helper, not the URL
+
     def test_older_routes_are_unchanged(self):
         code, health, _ = self.jcall("GET", "/v1/health", token=None)
         self.assertEqual((code, health["apiVersion"], health["ok"]), (200, 5, True))
