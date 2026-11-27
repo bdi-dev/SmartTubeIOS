@@ -32,6 +32,7 @@ import math
 import os
 import re
 import secrets
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -42,7 +43,7 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote
 
-API_VERSION = 4  # 2 = sidecar metadata, library, keep, delete; 3 = unused; 4 = profiles and ownership
+API_VERSION = 5  # 2 = sidecar metadata, library, keep, delete; 3 = unused; 4 = profiles and ownership; 5 = status
 VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}\Z")  # \Z, not $: "$" also matches before a newline
 PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,47}\Z")
 DOWNLOADED_AT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\Z")
@@ -55,6 +56,7 @@ NAME_MAX = 60
 CAP_MAX = 1 << 50  # bytes; a sanity bound, not a policy
 MAX_BODY = 1 << 20
 LAST_SEEN_WRITE_INTERVAL = 60  # seconds between persisted lastSeen updates
+STATUS_CACHE_SECONDS = 10  # disk and yt-dlp version in /v1/status are reused for this long
 FAILURE_RING_SIZE = 20  # recent job failures kept in memory per profile; reset on restart
 FAILURE_MESSAGE_MAX = 200  # characters of a yt-dlp error kept in the failure ring
 ADMIN_USER_RE = re.compile(r"^/v1/admin/users/([a-z0-9][a-z0-9-]{0,47})\Z")
@@ -184,6 +186,9 @@ class JobManager:
         self.migrated = False  # True once existing sidecars were given to the admin profile
         self._last_saved = {}  # profile id -> time.time() of the last persisted lastSeen
         self.failures = {}  # profile id -> deque of recent job failures (in memory only)
+        self.started = time.time()
+        self._shared_lock = threading.Lock()
+        self._shared = None  # (expires at time.monotonic(), shared status facts) for /v1/status
         self._load_profiles()
         self._ensure_admin()
 
@@ -304,17 +309,30 @@ class JobManager:
                 self._save_profiles()
             return dict(found)
 
-    def _usage_locked(self, pid):
-        count = total = unkept = 0
+    def _usage_detail_locked(self, pid):
+        """Per-profile usage. A shared file counts in full toward each owner that lists it."""
+        kept_count = kept_bytes = unkept_count = unkept_bytes = 0
         for vid, rec in self.owners.get(pid, {}).items():
             size = self._size(vid)
             if size is None:
                 continue
-            count += 1
-            total += size
-            if not rec["keep"]:
-                unkept += size
-        return {"videoCount": count, "totalBytes": total, "unkeptBytes": unkept}
+            if rec["keep"]:
+                kept_count += 1
+                kept_bytes += size
+            else:
+                unkept_count += 1
+                unkept_bytes += size
+        return {
+            "videoCount": kept_count + unkept_count,
+            "totalBytes": kept_bytes + unkept_bytes,
+            "unkeptBytes": unkept_bytes,
+            "kept": {"count": kept_count, "bytes": kept_bytes},
+            "unkept": {"count": unkept_count, "bytes": unkept_bytes},
+        }
+
+    def _usage_locked(self, pid):
+        detail = self._usage_detail_locked(pid)
+        return {k: detail[k] for k in ("videoCount", "totalBytes", "unkeptBytes")}
 
     def _view_locked(self, p):
         view = public_profile(p)
@@ -625,6 +643,69 @@ class JobManager:
         page = found[:limit]
         next_cursor = encode_cursor(page[-1][0]) if len(found) > limit else None
         return [item for _, item in page], next_cursor
+
+    # -- status --
+    def _shared_status(self):
+        """Facts every caller sees: disk and yt-dlp version, cached for STATUS_CACHE_SECONDS. The yt-dlp
+        call runs outside self.lock so a slow binary never blocks the other routes."""
+        with self._shared_lock:
+            now = time.monotonic()
+            if self._shared is None or now >= self._shared[0]:
+                usage = shutil.disk_usage(self.config.data_dir)
+                facts = {
+                    "ytdlpVersion": _ytdlp_version(self.config),
+                    "disk": {"freeBytes": usage.free, "totalBytes": usage.total},
+                }
+                self._shared = (now + STATUS_CACHE_SECONDS, facts)
+            return self._shared[1]
+
+    def _server_totals_locked(self):
+        """Physical files on disk, each counted once. Admin only."""
+        files = total = 0
+        for name in os.listdir(self.config.data_dir):
+            if not (name.endswith(".mp4") and VIDEO_ID_RE.match(name[:-4])):
+                continue
+            size = self._size(name[:-4])
+            if size is not None:
+                files += 1
+                total += size
+        return {"profiles": len(self.profiles), "totalFiles": files, "totalBytes": total}
+
+    def caller_status(self, pid):
+        """The body of GET /v1/status for profile pid. Shared facts plus numbers scoped to the caller;
+        the server block is added only for admins. Titles and other users' ids never appear here."""
+        shared = self._shared_status()
+        with self.lock:
+            p = self._profile(pid)
+            if p is None:
+                raise ApiError(401, "unauthorised")
+            usage = self._usage_detail_locked(pid)
+            running = queued = 0
+            for job in self.jobs.values():
+                if pid not in job.get("owners", {}):
+                    continue
+                if job.get("status") == "running":
+                    running += 1
+                elif job.get("status") == "queued":
+                    queued += 1
+            failures = [dict(f) for f in reversed(self.failures.get(pid, ()))]
+            out = {
+                "apiVersion": API_VERSION,
+                "ytdlpVersion": shared["ytdlpVersion"],
+                "uptimeSeconds": int(time.time() - self.started),
+                "disk": dict(shared["disk"]),
+                "you": {
+                    "videoCount": usage["videoCount"],
+                    "kept": usage["kept"],
+                    "unkept": usage["unkept"],
+                    "capBytes": p["capBytes"],
+                },
+                "jobs": {"running": running, "queued": queued},
+                "recentFailures": failures,
+            }
+            if p["role"] == "admin":
+                out["server"] = self._server_totals_locked()
+            return out
 
     def _run(self, video_id, height):
         with self.lock:
@@ -1203,6 +1284,11 @@ def make_handler(config, manager):
                 return
             if path == "/v1/me":
                 return self._json(200, me_view(me))
+            if path == "/v1/status":
+                try:
+                    return self._json(200, manager.caller_status(me["id"]))
+                except ApiError as e:
+                    return self._api_error(e)
             if path == "/v1/library":
                 return self._library(me["id"], query)
             if path == "/v1/admin/users":

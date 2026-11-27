@@ -74,7 +74,7 @@ class ServerTests(unittest.TestCase):
         code, body, _ = self.call("GET", "/v1/health", token=None)
         self.assertEqual(code, 200)
         self.assertEqual(json.loads(body)["ytdlpVersion"], "2099.01.01")
-        self.assertEqual(json.loads(body)["apiVersion"], 4)
+        self.assertEqual(json.loads(body)["apiVersion"], 5)
         self.assertIs(json.loads(body)["ok"], True)
 
     def test_requires_token(self):
