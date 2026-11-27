@@ -142,3 +142,11 @@ The tests use a fake `yt-dlp` (`tests/fake_ytdlp.py`), so they need no network a
 log each run (`FAKE_YTDLP_LOG`) so tests can count downloads, and sleeps for ids containing `SLOW`.
 
 Caps are admin-only: users can see their own cap in `GET /v1/me` but only an admin can change it (`/admin` page or `PATCH /v1/admin/users/<id>`).
+
+## Deploying as a Portainer stack
+
+The stack's compose file embeds `server.py` in a `RUN echo '...' | base64 -d | gunzip > server.py`
+line inside `dockerfile_inline`. **Gzip it before base64**: a plain base64 copy of the current
+`server.py` is over 64 KB, and a single Dockerfile line that long fails the build. A failed update makes
+Portainer roll the stack file back and leave no container running, so the server goes down until you
+redeploy a working file. Always keep a copy of the last good stack file before updating.
