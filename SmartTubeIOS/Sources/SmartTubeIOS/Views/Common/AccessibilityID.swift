@@ -38,6 +38,8 @@ enum AccessibilityID {
         static let ytDlpTokenField = "settings.ytDlpTokenField"
         static let ytDlpTestButton = "settings.ytDlpTestButton"
         static let ytDlpTestResult = "settings.ytDlpTestResult"
+        static let ytDlpAccountRow = "settings.ytDlpAccountRow"
+        static let ytDlpSignOutButton = "settings.ytDlpSignOutButton"
     }
 
     enum VideoCard {

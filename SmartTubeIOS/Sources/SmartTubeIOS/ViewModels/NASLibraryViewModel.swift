@@ -109,7 +109,12 @@ final class NASLibraryViewModel {
             return false
         } catch {
             nasLog.notice("NAS library page failed: \(error.localizedDescription, privacy: .public)")
-            if hasLoadedPage {
+            if Self.isUnauthorized(error) {
+                // The server is up but the token is not: show why, instead of hiding or leaving stale rows.
+                items = []
+                nextCursor = nil
+                message = Self.message(for: error)
+            } else if hasLoadedPage {
                 message = Self.message(for: error)
             } else {
                 gate = .hidden
@@ -159,7 +164,14 @@ final class NASLibraryViewModel {
         }
     }
 
+    private static func isUnauthorized(_ error: Error) -> Bool {
+        (error as? YtDlpServerError)?.status == 401
+    }
+
     private static func message(for error: Error) -> String {
+        if isUnauthorized(error) {
+            return String(localized: "Token revoked or wrong", bundle: .module)
+        }
         if let serverError = error as? YtDlpServerError {
             guard serverError.status != nil else {
                 return String(localized: "NAS unreachable", bundle: .module)

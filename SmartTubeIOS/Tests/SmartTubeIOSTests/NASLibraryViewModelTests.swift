@@ -39,6 +39,10 @@ private final class NASFakeClient: YtDlpServerClient, @unchecked Sendable {
         deletedIds.append(videoId)
     }
 
+    func me() throws -> YtDlpMe {
+        throw YtDlpServerError(message: "not used by these tests")
+    }
+
     func createJob(_ request: YtDlpJobRequest) throws -> YtDlpJobState {
         throw YtDlpServerError(message: "not used by these tests")
     }
@@ -312,6 +316,33 @@ struct NASLibraryViewModelRefreshTests {
 
         #expect(vm.items.count == 3)
         #expect(vm.message == "NAS unreachable")
+        #expect(vm.gate == .visible)
+    }
+
+    @Test("a rejected token shows the revoked message and no rows, and keeps the section visible")
+    func unauthorizedShowsMessage() async {
+        let client = NASFakeClient(pages: [YtDlpLibraryPage(items: items("p", 3), nextCursor: nil)])
+        let vm = NASLibraryViewModel(client: client, store: makeStore())
+        await vm.appear()
+        #expect(vm.items.count == 3)
+
+        client.libraryFailure = YtDlpServerError(message: "rejected", status: 401)
+        await vm.refresh()
+
+        #expect(vm.items.isEmpty)
+        #expect(vm.message == "Token revoked or wrong")
+        #expect(vm.gate == .visible)
+    }
+
+    @Test("a rejected token before the first load still shows the message, not a hidden section")
+    func unauthorizedBeforeFirstLoad() async {
+        let client = NASFakeClient()
+        client.libraryFailure = YtDlpServerError(message: "rejected", status: 401)
+        let vm = NASLibraryViewModel(client: client, store: makeStore())
+        await vm.appear()
+
+        #expect(vm.items.isEmpty)
+        #expect(vm.message == "Token revoked or wrong")
         #expect(vm.gate == .visible)
     }
 
