@@ -86,3 +86,5 @@ hs_err_pid*.log
 
 # SideStore IPA output
 /build/
+
+.claude/worktrees/
