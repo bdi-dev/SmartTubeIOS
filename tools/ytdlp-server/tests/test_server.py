@@ -74,7 +74,7 @@ class ServerTests(unittest.TestCase):
         code, body, _ = self.call("GET", "/v1/health", token=None)
         self.assertEqual(code, 200)
         self.assertEqual(json.loads(body)["ytdlpVersion"], "2099.01.01")
-        self.assertEqual(json.loads(body)["apiVersion"], 4)
+        self.assertEqual(json.loads(body)["apiVersion"], 5)
         self.assertIs(json.loads(body)["ok"], True)
 
     def test_requires_token(self):
@@ -827,6 +827,203 @@ class MultiUserTests(unittest.TestCase):
             new = re.findall(r"shown once\)?: (\S+)", out.getvalue())[-1]
             self.assertIsNone(server.JobManager(cfg).authenticate(token))
             self.assertEqual(server.JobManager(cfg).authenticate(new)["name"], "Sam")
+
+
+class StatusTests(unittest.TestCase):
+    """GET /v1/status (plan item 6). Each test gets its own server and data dir; fake runs are counted."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        logdir = tempfile.TemporaryDirectory()
+        self.addCleanup(logdir.cleanup)
+        patcher = unittest.mock.patch.dict(os.environ, {"FAKE_YTDLP_LOG": os.path.join(logdir.name, "runs.log")})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.cfg = server.Config(
+            {"YTDLP_TOKEN": TOKEN, "YTDLP_BIN": FAKE, "YTDLP_DATA_DIR": self.tmp.name, "YTDLP_PORT": "0"}
+        )
+        self.srv = server.build_server(self.cfg)
+        self.base = "http://127.0.0.1:%d" % self.srv.server_address[1]
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.addCleanup(self.srv.shutdown)
+        self.addCleanup(self.srv.server_close)
+
+    # -- helpers --
+    def jcall(self, method, path, body=None, token=TOKEN):
+        code, raw, _ = http(self.base, method, path, body, token)
+        return code, (json.loads(raw) if raw else None), raw
+
+    def make_user(self, name, admin=False):
+        code, data, _ = self.jcall("POST", "/v1/admin/users", {"name": name, "role": "admin" if admin else "user"})
+        self.assertEqual(code, 201)
+        return data["user"]["id"], data["token"]
+
+    def status(self, token):
+        code, data, raw = self.jcall("GET", "/v1/status", token=token)
+        self.assertEqual(code, 200)
+        return data, raw
+
+    def wait_state(self, token, vid, want):
+        state = None
+        for _ in range(200):
+            _, state, _ = self.jcall("GET", "/v1/jobs/" + vid, token=token)
+            if state["status"] == want:
+                return state
+            time.sleep(0.05)
+        self.fail("job %s never reached %s (last %s)" % (vid, want, state))
+
+    def fetch(self, token, vid, keep=True, title=None):
+        body = {"videoId": vid, "keep": keep}
+        if title is not None:
+            body["title"] = title
+        code, _, _ = self.jcall("POST", "/v1/jobs", body, token=token)
+        self.assertEqual(code, 202)
+        return self.wait_state(token, vid, "ready")
+
+    # -- cases --
+    def test_status_needs_a_token(self):
+        for token in (None, "wrong"):
+            code, raw, _ = http(self.base, "GET", "/v1/status", None, token)
+            self.assertEqual((code, json.loads(raw)), (401, {"error": "unauthorised"}))
+
+    def test_empty_store(self):
+        _, user_token = self.make_user("Ann")
+        admin, _ = self.status(TOKEN)
+        self.assertEqual(admin["apiVersion"], 5)
+        self.assertEqual(admin["ytdlpVersion"], "2099.01.01")
+        self.assertGreaterEqual(admin["uptimeSeconds"], 0)
+        self.assertGreater(admin["disk"]["totalBytes"], 0)
+        self.assertEqual(admin["you"]["videoCount"], 0)
+        self.assertEqual(admin["you"]["kept"], {"count": 0, "bytes": 0})
+        self.assertEqual(admin["you"]["unkept"], {"count": 0, "bytes": 0})
+        self.assertEqual(admin["you"]["capBytes"], 20 * 1024**3)
+        self.assertEqual(admin["jobs"], {"running": 0, "queued": 0})
+        self.assertEqual(admin["recentFailures"], [])
+        self.assertEqual(admin["server"], {"profiles": 2, "totalFiles": 0, "totalBytes": 0})
+        ann, _ = self.status(user_token)
+        self.assertEqual(ann["you"]["videoCount"], 0)
+        self.assertEqual(ann["recentFailures"], [])
+        self.assertEqual(ann["jobs"], {"running": 0, "queued": 0})
+
+    def test_server_block_only_for_admins(self):
+        _, user_token = self.make_user("Ann")
+        user, _ = self.status(user_token)
+        self.assertNotIn("server", user)
+        admin, _ = self.status(TOKEN)
+        self.assertEqual(set(admin["server"]), {"profiles", "totalFiles", "totalBytes"})
+
+    def test_mixed_kept_and_unkept(self):
+        _, ann = self.make_user("Ann")
+        self.fetch(ann, "KEEPvideo01", keep=True)
+        self.fetch(ann, "UNKEPTvid01", keep=False)
+        self.fetch(ann, "UNKEPTvid02", keep=False)
+        you, _ = self.status(ann)
+        self.assertEqual(you["you"]["videoCount"], 3)
+        self.assertEqual(you["you"]["kept"], {"count": 1, "bytes": 1024})
+        self.assertEqual(you["you"]["unkept"], {"count": 2, "bytes": 2048})
+
+    def test_shared_video_counts_in_full_for_each_owner_but_once_on_disk(self):
+        _, ann = self.make_user("Ann")
+        _, ben = self.make_user("Ben")
+        self.fetch(ann, GOOD, keep=False)
+        self.fetch(ben, GOOD, keep=False)  # dedup: no second download
+        for token in (ann, ben):
+            you, _ = self.status(token)
+            self.assertEqual(you["you"]["unkept"], {"count": 1, "bytes": 1024})
+            self.assertEqual(you["you"]["videoCount"], 1)
+        admin, _ = self.status(TOKEN)
+        self.assertEqual((admin["server"]["totalFiles"], admin["server"]["totalBytes"]), (1, 1024))
+
+    def test_user_never_sees_another_users_failures_or_jobs(self):
+        _, ann = self.make_user("Ann")
+        _, ben = self.make_user("Ben")
+        failed = "FAILaaaaaaa"
+        self.assertEqual(self.jcall("POST", "/v1/jobs", {"videoId": failed}, token=ann)[0], 202)
+        self.wait_state(ann, failed, "failed")
+        slow = "SLOWvideo01"
+        self.assertEqual(self.jcall("POST", "/v1/jobs", {"videoId": slow}, token=ann)[0], 202)
+        ann_status, _ = self.status(ann)
+        self.assertEqual(ann_status["jobs"]["running"] + ann_status["jobs"]["queued"], 1)
+        self.assertEqual([f["videoId"] for f in ann_status["recentFailures"]], [failed])
+        self.assertIn("unavailable", ann_status["recentFailures"][0]["message"].lower())
+        ben_status, ben_raw = self.status(ben)
+        self.assertEqual(ben_status["jobs"], {"running": 0, "queued": 0})
+        self.assertEqual(ben_status["recentFailures"], [])
+        self.assertNotIn(failed.encode(), ben_raw)
+        self.assertNotIn(slow.encode(), ben_raw)
+        self.wait_state(ann, slow, "ready")
+
+    def test_titles_are_never_returned(self):
+        _, ann = self.make_user("Ann")
+        self.fetch(ann, GOOD, keep=False, title="Secret title XYZ")
+        _, ann_raw = self.status(ann)
+        _, admin_raw = self.status(TOKEN)
+        self.assertNotIn(b"Secret title XYZ", ann_raw)
+        self.assertNotIn(b"Secret title XYZ", admin_raw)
+
+    def test_cap_exceeded_is_reported_within_the_cap(self):
+        ann_id, ann = self.make_user("Ann")
+        code, _, _ = self.jcall("PATCH", "/v1/admin/users/" + ann_id, {"capBytes": 1500})
+        self.assertEqual(code, 200)
+        for vid in ("CAPvideo001", "CAPvideo002", "CAPvideo003"):
+            self.fetch(ann, vid, keep=False)  # three 1024-byte unkept files against a 1500-byte cap
+        you, _ = self.status(ann)
+        self.assertEqual(you["you"]["capBytes"], 1500)
+        self.assertEqual(you["you"]["unkept"], {"count": 1, "bytes": 1024})
+        self.assertEqual(you["you"]["videoCount"], 1)
+
+    def test_failure_ring_is_bounded_and_per_profile(self):
+        _, ann = self.make_user("Ann")
+        _, ben = self.make_user("Ben")
+        ids = ["FAIL%07d" % i for i in range(25)]
+        for vid in ids:
+            self.assertEqual(self.jcall("POST", "/v1/jobs", {"videoId": vid}, token=ann)[0], 202)
+            self.wait_state(ann, vid, "failed")
+        ann_status, _ = self.status(ann)
+        self.assertEqual(len(ann_status["recentFailures"]), server.FAILURE_RING_SIZE)
+        self.assertEqual(ann_status["recentFailures"][0]["videoId"], ids[-1])  # newest first
+        self.assertNotIn(ids[0], [f["videoId"] for f in ann_status["recentFailures"]])  # oldest dropped
+        self.assertEqual(self.jcall("POST", "/v1/jobs", {"videoId": "FAILbenone1"}, token=ben)[0], 202)
+        self.wait_state(ben, "FAILbenone1", "failed")
+        ben_status, _ = self.status(ben)
+        self.assertEqual([f["videoId"] for f in ben_status["recentFailures"]], ["FAILbenone1"])
+        ann_again, _ = self.status(ann)
+        self.assertEqual(len(ann_again["recentFailures"]), server.FAILURE_RING_SIZE)
+
+    def test_failure_ring_resets_on_restart(self):
+        _, ann = self.make_user("Ann")
+        self.jcall("POST", "/v1/jobs", {"videoId": "FAILrst0001"}, token=ann)
+        self.wait_state(ann, "FAILrst0001", "failed")
+        self.assertEqual(len(self.status(ann)[0]["recentFailures"]), 1)
+        restarted = server.JobManager(self.cfg)  # same data dir, new process state
+        self.assertEqual(restarted.caller_status(self.make_user_id_for(ann))["recentFailures"], [])
+
+    def make_user_id_for(self, token):
+        code, me, _ = self.jcall("GET", "/v1/me", token=token)
+        self.assertEqual(code, 200)
+        return me["id"]
+
+    def test_shared_facts_are_cached_for_ten_seconds(self):
+        with unittest.mock.patch("server.shutil.disk_usage", wraps=server.shutil.disk_usage) as usage:
+            self.status(TOKEN)
+            self.status(TOKEN)
+            self.assertEqual(usage.call_count, 1)
+
+    def test_admin_page_has_a_server_panel_fed_by_status(self):
+        code, raw, _ = http(self.base, "GET", "/admin", None, None)
+        self.assertEqual(code, 200)
+        self.assertIn(b'id="serverCard"', raw)
+        self.assertIn(b'api("GET", "/v1/status")', raw)  # through the page's Bearer helper, not the URL
+
+    def test_older_routes_are_unchanged(self):
+        code, health, _ = self.jcall("GET", "/v1/health", token=None)
+        self.assertEqual((code, health["apiVersion"], health["ok"]), (200, 5, True))
+        _, ann = self.make_user("Ann")
+        code, me, _ = self.jcall("GET", "/v1/me", token=ann)
+        self.assertEqual(set(me), {"id", "name", "role", "capBytes"})
+        code, library, _ = self.jcall("GET", "/v1/library", token=ann)
+        self.assertEqual(set(library), {"items", "nextCursor"})
 
 
 if __name__ == "__main__":

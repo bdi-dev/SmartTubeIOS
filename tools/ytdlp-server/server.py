@@ -32,16 +32,18 @@ import math
 import os
 import re
 import secrets
+import shutil
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote
 
-API_VERSION = 4  # 2 = sidecar metadata, library, keep, delete; 3 = unused; 4 = profiles and ownership
+API_VERSION = 5  # 2 = sidecar metadata, library, keep, delete; 3 = unused; 4 = profiles and ownership; 5 = status
 VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}\Z")  # \Z, not $: "$" also matches before a newline
 PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,47}\Z")
 DOWNLOADED_AT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\Z")
@@ -54,6 +56,9 @@ NAME_MAX = 60
 CAP_MAX = 1 << 50  # bytes; a sanity bound, not a policy
 MAX_BODY = 1 << 20
 LAST_SEEN_WRITE_INTERVAL = 60  # seconds between persisted lastSeen updates
+STATUS_CACHE_SECONDS = 10  # disk and yt-dlp version in /v1/status are reused for this long
+FAILURE_RING_SIZE = 20  # recent job failures kept in memory per profile; reset on restart
+FAILURE_MESSAGE_MAX = 200  # characters of a yt-dlp error kept in the failure ring
 ADMIN_USER_RE = re.compile(r"^/v1/admin/users/([a-z0-9][a-z0-9-]{0,47})\Z")
 ADMIN_TOKEN_RE = re.compile(r"^/v1/admin/users/([a-z0-9][a-z0-9-]{0,47})/token\Z")
 # AVPlayer-friendly: H.264 + AAC in MP4, falling back to whatever yt-dlp can merge into MP4.
@@ -180,6 +185,10 @@ class JobManager:
         self.owners = {}  # profile id -> {video_id: {"keep": bool, "addedAt": str}}
         self.migrated = False  # True once existing sidecars were given to the admin profile
         self._last_saved = {}  # profile id -> time.time() of the last persisted lastSeen
+        self.failures = {}  # profile id -> deque of recent job failures (in memory only)
+        self.started = time.time()
+        self._shared_lock = threading.Lock()
+        self._shared = None  # (expires at time.monotonic(), shared status facts) for /v1/status
         self._load_profiles()
         self._ensure_admin()
 
@@ -300,17 +309,30 @@ class JobManager:
                 self._save_profiles()
             return dict(found)
 
-    def _usage_locked(self, pid):
-        count = total = unkept = 0
+    def _usage_detail_locked(self, pid):
+        """Per-profile usage. A shared file counts in full toward each owner that lists it."""
+        kept_count = kept_bytes = unkept_count = unkept_bytes = 0
         for vid, rec in self.owners.get(pid, {}).items():
             size = self._size(vid)
             if size is None:
                 continue
-            count += 1
-            total += size
-            if not rec["keep"]:
-                unkept += size
-        return {"videoCount": count, "totalBytes": total, "unkeptBytes": unkept}
+            if rec["keep"]:
+                kept_count += 1
+                kept_bytes += size
+            else:
+                unkept_count += 1
+                unkept_bytes += size
+        return {
+            "videoCount": kept_count + unkept_count,
+            "totalBytes": kept_bytes + unkept_bytes,
+            "unkeptBytes": unkept_bytes,
+            "kept": {"count": kept_count, "bytes": kept_bytes},
+            "unkept": {"count": unkept_count, "bytes": unkept_bytes},
+        }
+
+    def _usage_locked(self, pid):
+        detail = self._usage_detail_locked(pid)
+        return {k: detail[k] for k in ("videoCount", "totalBytes", "unkeptBytes")}
 
     def _view_locked(self, p):
         view = public_profile(p)
@@ -390,6 +412,7 @@ class JobManager:
                 if self._drop_owner_locked(pid, vid):
                     removed += 1
             self.owners.pop(pid, None)
+            self.failures.pop(pid, None)
             try:
                 os.remove(self._owners_path(pid))
             except FileNotFoundError:
@@ -570,6 +593,18 @@ class JobManager:
         with self.lock:
             self.jobs.setdefault(video_id, {}).update(fields)
 
+    def _fail(self, video_id, message):
+        """Marks a job failed and records the failure in the ring of each profile that asked for it."""
+        with self.lock:
+            job = self.jobs.setdefault(video_id, {})
+            job.update(status="failed", error=message)
+            at = now_iso()
+            for pid in job.get("owners", {}):
+                if self._profile(pid) is None:
+                    continue
+                ring = self.failures.setdefault(pid, deque(maxlen=FAILURE_RING_SIZE))
+                ring.append({"videoId": video_id, "message": message[:FAILURE_MESSAGE_MAX], "at": at})
+
     def _finish(self, video_id, meta):
         """Writes the sidecar and grants every owner who asked while the job ran."""
         with self.lock:
@@ -609,6 +644,69 @@ class JobManager:
         next_cursor = encode_cursor(page[-1][0]) if len(found) > limit else None
         return [item for _, item in page], next_cursor
 
+    # -- status --
+    def _shared_status(self):
+        """Facts every caller sees: disk and yt-dlp version, cached for STATUS_CACHE_SECONDS. The yt-dlp
+        call runs outside self.lock so a slow binary never blocks the other routes."""
+        with self._shared_lock:
+            now = time.monotonic()
+            if self._shared is None or now >= self._shared[0]:
+                usage = shutil.disk_usage(self.config.data_dir)
+                facts = {
+                    "ytdlpVersion": _ytdlp_version(self.config),
+                    "disk": {"freeBytes": usage.free, "totalBytes": usage.total},
+                }
+                self._shared = (now + STATUS_CACHE_SECONDS, facts)
+            return self._shared[1]
+
+    def _server_totals_locked(self):
+        """Physical files on disk, each counted once. Admin only."""
+        files = total = 0
+        for name in os.listdir(self.config.data_dir):
+            if not (name.endswith(".mp4") and VIDEO_ID_RE.match(name[:-4])):
+                continue
+            size = self._size(name[:-4])
+            if size is not None:
+                files += 1
+                total += size
+        return {"profiles": len(self.profiles), "totalFiles": files, "totalBytes": total}
+
+    def caller_status(self, pid):
+        """The body of GET /v1/status for profile pid. Shared facts plus numbers scoped to the caller;
+        the server block is added only for admins. Titles and other users' ids never appear here."""
+        shared = self._shared_status()
+        with self.lock:
+            p = self._profile(pid)
+            if p is None:
+                raise ApiError(401, "unauthorised")
+            usage = self._usage_detail_locked(pid)
+            running = queued = 0
+            for job in self.jobs.values():
+                if pid not in job.get("owners", {}):
+                    continue
+                if job.get("status") == "running":
+                    running += 1
+                elif job.get("status") == "queued":
+                    queued += 1
+            failures = [dict(f) for f in reversed(self.failures.get(pid, ()))]
+            out = {
+                "apiVersion": API_VERSION,
+                "ytdlpVersion": shared["ytdlpVersion"],
+                "uptimeSeconds": int(time.time() - self.started),
+                "disk": dict(shared["disk"]),
+                "you": {
+                    "videoCount": usage["videoCount"],
+                    "kept": usage["kept"],
+                    "unkept": usage["unkept"],
+                    "capBytes": p["capBytes"],
+                },
+                "jobs": {"running": running, "queued": queued},
+                "recentFailures": failures,
+            }
+            if p["role"] == "admin":
+                out["server"] = self._server_totals_locked()
+            return out
+
     def _run(self, video_id, height):
         with self.lock:
             meta = self.meta.pop(video_id, {})
@@ -638,18 +736,18 @@ class JobManager:
             stderr_tail = proc.stderr.read().strip().splitlines()[-3:]
             code = proc.wait()
         except OSError as e:
-            self._set(video_id, status="failed", error="Could not run yt-dlp: %s" % e)
+            self._fail(video_id, "Could not run yt-dlp: %s" % e)
             return
         if code == 0 and os.path.exists(out_path):
             try:
                 self._finish(video_id, meta)
             except OSError as e:
-                self._set(video_id, status="failed", error="Could not save the file: %s" % e)
+                self._fail(video_id, "Could not save the file: %s" % e)
         else:
             if os.path.exists(out_path):
                 os.remove(out_path)
             message = " ".join(stderr_tail)[:300] or "yt-dlp exited with code %s" % code
-            self._set(video_id, status="failed", error=message)
+            self._fail(video_id, message)
 
     def _enforce_caps_locked(self, pids, skip=None):
         """For each profile, evicts its own oldest unkept entries until its unkept total (every unkept
@@ -886,6 +984,16 @@ code { font-family: ui-monospace, Menlo, monospace; font-size: 13px; word-break:
 </div>
 
 <div id="app" hidden>
+  <div class="card" id="serverCard">
+    <div class="row" style="justify-content: space-between;">
+      <h2>Server</h2>
+      <button id="refreshStatus">Refresh</button>
+    </div>
+    <div id="statusBody" class="muted">Loading status.</div>
+    <div class="err" id="statusErr"></div>
+    <p class="muted">Jobs and failures are yours only. Counts and sizes for the whole server; no titles.</p>
+  </div>
+
   <div class="card">
     <h2>Add user</h2>
     <div class="row">
@@ -971,6 +1079,7 @@ code { font-family: ui-monospace, Menlo, monospace; font-size: 13px; word-break:
     $("signOut").hidden = false;
     $("app").hidden = false;
     $("signErr").textContent = "";
+    loadStatus();
     loadUsers();
   }
 
@@ -1098,6 +1207,43 @@ code { font-family: ui-monospace, Menlo, monospace; font-size: 13px; word-break:
     }
   }
 
+  function uptime(sec) {
+    var h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60);
+    return h + "h " + m + "m";
+  }
+  function renderStatus(s) {
+    var box = $("statusBody");
+    box.replaceChildren();
+    var used = s.disk.totalBytes - s.disk.freeBytes;
+    box.appendChild(el("div", "Disk: " + gb(used) + " used of " + gb(s.disk.totalBytes) + " (" + gb(s.disk.freeBytes) + " free)"));
+    var bar = el("progress");
+    bar.max = Math.max(s.disk.totalBytes, 1);
+    bar.value = Math.min(used, bar.max);
+    bar.setAttribute("aria-label", "Disk used");
+    box.appendChild(bar);
+    box.appendChild(el("div", "yt-dlp " + (s.ytdlpVersion || "unknown") + ", API " + s.apiVersion + ", up " + uptime(s.uptimeSeconds), "muted"));
+    if (s.server) {
+      box.appendChild(el("div", "Whole server: " + s.server.profiles + " users, " + s.server.totalFiles + " files, " + gb(s.server.totalBytes) + " on disk"));
+    }
+    box.appendChild(el("div", "Your jobs: " + s.jobs.running + " running, " + s.jobs.queued + " queued"));
+    box.appendChild(el("div", "Your recent failures:"));
+    if (!s.recentFailures.length) {
+      box.appendChild(el("div", "None.", "muted"));
+    }
+    var list = document.createElement("ul");
+    s.recentFailures.forEach(function (f) {
+      var li = el("li", f.videoId + ": " + f.message + " (" + when(f.at) + ")");
+      list.appendChild(li);
+    });
+    box.appendChild(list);
+  }
+  function loadStatus() {
+    $("statusErr").textContent = "";
+    api("GET", "/v1/status").then(renderStatus, function (err) {
+      if (err && err.message !== "unauthorised") { $("statusErr").textContent = err.message; }
+    });
+  }
+
   var inFlight = false;
   function run(task, then, errBox) {
     if (inFlight) { return; }  // ignore a second click while a request is running
@@ -1131,6 +1277,7 @@ code { font-family: ui-monospace, Menlo, monospace; font-size: 13px; word-break:
     showSignIn("Signed out.");
   });
   $("refresh").addEventListener("click", loadUsers);
+  $("refreshStatus").addEventListener("click", loadStatus);
   $("addUser").addEventListener("click", function () {
     var name = $("newName").value.trim();
     if (!name) { $("addErr").textContent = "Type a name first."; return; }
@@ -1229,6 +1376,11 @@ def make_handler(config, manager):
                 return
             if path == "/v1/me":
                 return self._json(200, me_view(me))
+            if path == "/v1/status":
+                try:
+                    return self._json(200, manager.caller_status(me["id"]))
+                except ApiError as e:
+                    return self._api_error(e)
             if path == "/v1/library":
                 return self._library(me["id"], query)
             if path == "/v1/admin/users":
