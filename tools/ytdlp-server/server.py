@@ -977,10 +977,40 @@ code { font-family: ui-monospace, Menlo, monospace; font-size: 13px; word-break:
   function inviteLink(token) {
     return "smarttube://nas?url=" + encodeURIComponent(location.origin) + "&token=" + encodeURIComponent(token);
   }
-  function copyText(text, btn) {
-    var done = function () { var old = btn.textContent; btn.textContent = "Copied"; setTimeout(function () { btn.textContent = old; }, 1500); };
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(done, function () {});
+  // navigator.clipboard only exists on secure pages (HTTPS or localhost), and this page is usually
+  // plain HTTP on a LAN address, so fall back to a hidden textarea and execCommand, and finally to
+  // selecting the text so the user can copy it by hand.
+  function selectNode(node) {
+    var range = document.createRange();
+    range.selectNodeContents(node);
+    var sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+  function copyText(text, btn, source) {
+    var old = btn.textContent;
+    var flash = function (msg) { btn.textContent = msg; setTimeout(function () { btn.textContent = old; }, 2000); };
+    var fallback = function () {
+      var ok = false;
+      var ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.top = "0";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      ta.setSelectionRange(0, text.length);
+      try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+      document.body.removeChild(ta);
+      if (ok) { flash("Copied"); return; }
+      if (source) { selectNode(source); }
+      flash("Selected: press Ctrl/Cmd+C");
+    };
+    if (window.isSecureContext && navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { flash("Copied"); }, fallback);
+    } else {
+      fallback();
     }
   }
   function showToken(title, token, user) {
@@ -990,14 +1020,17 @@ code { font-family: ui-monospace, Menlo, monospace; font-size: 13px; word-break:
     wrap.appendChild(el("h2", title + " " + (user.name || "")));
     wrap.appendChild(el("p", "Shown once. Give it to the user now; it cannot be shown again.", "muted"));
     var t = el("code", token);
+    t.addEventListener("click", function () { selectNode(t); });
     wrap.appendChild(t);
     wrap.appendChild(el("div"));
-    wrap.appendChild(button("Copy token", function (e) { copyText(token, e.target); }));
+    wrap.appendChild(button("Copy token", function (e) { copyText(token, e.target, t); }));
     var link = inviteLink(token);
     wrap.appendChild(el("p", "Invite link (open it on the user's device):", "muted"));
-    wrap.appendChild(el("code", link));
+    var linkEl = el("code", link);
+    linkEl.addEventListener("click", function () { selectNode(linkEl); });
+    wrap.appendChild(linkEl);
     wrap.appendChild(el("div"));
-    wrap.appendChild(button("Copy invite link", function (e) { copyText(link, e.target); }));
+    wrap.appendChild(button("Copy invite link", function (e) { copyText(link, e.target, linkEl); }));
     wrap.appendChild(button("Dismiss", function () { box.replaceChildren(); }));
     box.appendChild(wrap);
   }
@@ -1029,7 +1062,10 @@ code { font-family: ui-monospace, Menlo, monospace; font-size: 13px; word-break:
       capTd.appendChild(button("Save", function () {
         var gbVal = parseFloat(capIn.value);
         if (!(gbVal >= 0)) { $("listErr").textContent = "Cap must be a number of GB."; return; }
-        patchUser(u.id, { capBytes: Math.round(gbVal * GB) });
+        var newCap = Math.round(gbVal * GB);
+        if (newCap < u.unkeptBytes && !confirm(u.name + " has " + gb(u.unkeptBytes) + " unkept. A cap of " + gb(newCap) +
+            " evicts their oldest unkept downloads from their list. Continue?")) { return; }
+        patchUser(u.id, { capBytes: newCap });
       }));
       tr.appendChild(capTd);
 
@@ -1062,10 +1098,15 @@ code { font-family: ui-monospace, Menlo, monospace; font-size: 13px; word-break:
     }
   }
 
-  function run(task, then) {
-    $("listErr").textContent = "";
-    task().then(then, function (err) {
-      if (err && err.message !== "unauthorised") { $("listErr").textContent = err.message; }
+  var inFlight = false;
+  function run(task, then, errBox) {
+    if (inFlight) { return; }  // ignore a second click while a request is running
+    inFlight = true;
+    var box = $(errBox || "listErr");
+    box.textContent = "";
+    task().then(function (data) { inFlight = false; then(data); }, function (err) {
+      inFlight = false;
+      if (err && err.message !== "unauthorised") { box.textContent = err.message; }
     });
   }
   function patchUser(id, changes) {
@@ -1082,6 +1123,8 @@ code { font-family: ui-monospace, Menlo, monospace; font-size: 13px; word-break:
     $("tokenIn").value = "";
     showApp();
   });
+  $("tokenIn").addEventListener("keydown", function (e) { if (e.key === "Enter") { $("useToken").click(); } });
+  $("newName").addEventListener("keydown", function (e) { if (e.key === "Enter") { $("addUser").click(); } });
   $("signOut").addEventListener("click", function () {
     setToken("");
     $("tokenOut").replaceChildren();
@@ -1098,7 +1141,7 @@ code { font-family: ui-monospace, Menlo, monospace; font-size: 13px; word-break:
       $("newAdmin").checked = false;
       showToken("Token for", data.token, data.user);
       loadUsers();
-    });
+    }, "addErr");
   });
 
   if (getToken()) { showApp(); } else { showSignIn(""); }
