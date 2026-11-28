@@ -21,6 +21,7 @@ struct DownloadsView: View {
     #endif
 
     @State private var deleteConfirmationVideoId: String?
+    @State private var showNASStatus = false
 
     var body: some View {
         #if os(iOS)
@@ -115,6 +116,7 @@ struct DownloadsView: View {
             nasLibrary = Self.makeNASLibrary(store: downloadStore)
             await nasLibrary?.appear()
         }
+        .sheet(isPresented: $showNASStatus) { NASStatusSheet() }
         .alert(
             "Delete Download",
             isPresented: Binding(
@@ -217,8 +219,19 @@ struct DownloadsView: View {
                     .accessibilityIdentifier(AccessibilityID.Downloads.nasMessage)
             }
         } header: {
-            Text("Available on NAS")
-                .accessibilityIdentifier(AccessibilityID.Downloads.nasSection)
+            HStack {
+                Text("Available on NAS")
+                    .accessibilityIdentifier(AccessibilityID.Downloads.nasSection)
+                if NASStatusTarget.current() != nil {
+                    Button {
+                        showNASStatus = true
+                    } label: {
+                        Image(systemName: AppSymbol.info)
+                    }
+                    .accessibilityLabel("NAS status")
+                    .accessibilityIdentifier(AccessibilityID.Downloads.nasStatusButton)
+                }
+            }
         }
     }
 

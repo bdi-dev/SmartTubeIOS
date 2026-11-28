@@ -114,6 +114,14 @@ private struct YtDlpServerSettingsRows: View {
                         .accessibilityIdentifier(AccessibilityID.Settings.ytDlpTestResult)
                 }
                 accountRow
+                if let target = NASStatusTarget(baseURL: store.settings.ytDlpServerURL, token: tokenText) {
+                    NavigationLink {
+                        NASStatusView(client: target.client, host: target.host)
+                    } label: {
+                        Text("NAS status")
+                    }
+                    .accessibilityIdentifier(AccessibilityID.Settings.nasStatusLink)
+                }
                 if !tokenText.isEmpty {
                     Button("Sign out", role: .destructive) { signOut() }
                         .accessibilityIdentifier(AccessibilityID.Settings.ytDlpSignOutButton)

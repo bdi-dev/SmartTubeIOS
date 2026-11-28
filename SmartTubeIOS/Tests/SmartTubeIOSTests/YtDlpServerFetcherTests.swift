@@ -43,6 +43,8 @@ private final class FakeClient: YtDlpServerClient, @unchecked Sendable {
     func deleteFromServer(videoId: String) async throws {}
     // swiftlint:disable:next async_without_await
     func me() async throws -> YtDlpMe { throw YtDlpServerError(message: "not used by these tests") }
+    // swiftlint:disable:next async_without_await
+    func status() async throws -> YtDlpServerStatus { throw YtDlpServerError(message: "not used by these tests") }
 }
 
 private struct FakeAssembler: DownloadFetching {
@@ -182,6 +184,8 @@ private final class ProbeClient: YtDlpServerClient, @unchecked Sendable {
     func deleteFromServer(videoId: String) async throws {}
     // swiftlint:disable:next async_without_await
     func me() async throws -> YtDlpMe { throw YtDlpServerError(message: "not used by these tests") }
+    // swiftlint:disable:next async_without_await
+    func status() async throws -> YtDlpServerStatus { throw YtDlpServerError(message: "not used by these tests") }
 }
 
 private func router(

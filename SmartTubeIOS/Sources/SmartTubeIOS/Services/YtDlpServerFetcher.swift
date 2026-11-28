@@ -160,6 +160,8 @@ public protocol YtDlpServerClient: Sendable {
     func deleteFromServer(videoId: String) async throws
     /// The caller's identity (`GET /v1/me`). A 404 means the server is too old to have it.
     func me() async throws -> YtDlpMe
+    /// The status page (`GET /v1/status`, API version 5). A 404 means the server is too old.
+    func status() async throws -> YtDlpServerStatus
 }
 
 struct YtDlpServerError: LocalizedError {
@@ -289,6 +291,12 @@ public struct URLSessionYtDlpServerClient: YtDlpServerClient {
         try await send(
             try request("v1/me"), as: YtDlpMe.self,
             notFound: "The yt-dlp server has no account endpoint (update the server)")
+    }
+
+    public func status() async throws -> YtDlpServerStatus {
+        try await send(
+            try request("v1/status"), as: YtDlpServerStatus.self,
+            notFound: "The yt-dlp server has no status endpoint (update the server)")
     }
 }
 

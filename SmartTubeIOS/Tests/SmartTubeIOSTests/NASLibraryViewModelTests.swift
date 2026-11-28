@@ -43,6 +43,10 @@ private final class NASFakeClient: YtDlpServerClient, @unchecked Sendable {
         throw YtDlpServerError(message: "not used by these tests")
     }
 
+    func status() throws -> YtDlpServerStatus {
+        throw YtDlpServerError(message: "not used by these tests")
+    }
+
     func createJob(_ request: YtDlpJobRequest) throws -> YtDlpJobState {
         throw YtDlpServerError(message: "not used by these tests")
     }

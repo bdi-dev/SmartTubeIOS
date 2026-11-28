@@ -25,6 +25,7 @@ enum AccessibilityID {
         static func nasDownload(_ videoId: String) -> String { "downloads.nas.download.\(videoId)" }
         static func nasPin(_ videoId: String) -> String { "downloads.nas.pin.\(videoId)" }
         static func nasDelete(_ videoId: String) -> String { "downloads.nas.delete.\(videoId)" }
+        static let nasStatusButton = "downloads.nas.statusButton"
     }
 
     enum Settings {
@@ -40,6 +41,10 @@ enum AccessibilityID {
         static let ytDlpTestResult = "settings.ytDlpTestResult"
         static let ytDlpAccountRow = "settings.ytDlpAccountRow"
         static let ytDlpSignOutButton = "settings.ytDlpSignOutButton"
+        static let nasStatusLink = "settings.nasStatusLink"
+        static let nasStatusList = "settings.nasStatusList"
+        static let nasStatusRefreshButton = "settings.nasStatusRefreshButton"
+        static let nasStatusMessage = "settings.nasStatusMessage"
     }
 
     enum VideoCard {
